@@ -354,6 +354,8 @@ xangi tool schedule_remove --id <スケジュールID>
 xangi tool schedule_toggle --id <スケジュールID>
 ```
 
+--input は日時と本文を一緒に置き換えます。時刻だけを変える場合も、既存の本文を含めて `--input "cron 0 9 * * * 既存の依頼本文"` と指定してください。裸のcron式や時刻だけの入力は使えません。
+
 `schedule_update`は未指定項目を保持します。`--input`と`--message`は同時に指定できません。有効状態の変更には`schedule_toggle`を使います。
 
 ### データ保存

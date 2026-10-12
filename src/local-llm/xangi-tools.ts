@@ -257,13 +257,14 @@ export function createScheduleAddHandler(
   return {
     name: 'schedule_add',
     description:
-      'Add a schedule. Omit channel and platform to send to the current conversation. Examples: "30分後 ミーティング", "15:00 レビュー", "毎日 9:00 おはよう", "cron 0 9 * * * おはよう"',
+      'Add a schedule. Omit channel and platform to send to the current conversation. Example: "cron 0 9 * * * Send a reminder"',
     parameters: {
       type: 'object',
       properties: {
         input: {
           type: 'string',
-          description: 'Schedule input (e.g. "毎日 9:00 おはよう")',
+          description:
+            'Time and message are both required (e.g. "cron 0 9 * * * Send a reminder"); a time alone is not supported',
         },
         channel: {
           type: 'string',
@@ -300,7 +301,8 @@ const scheduleUpdateHandler: ToolHandler = {
       id: { type: 'string', description: 'Schedule ID' },
       input: {
         type: 'string',
-        description: 'Natural-language input updating time, type, and body together',
+        description:
+          'Time/type and body together, e.g. "cron 0 9 * * * existing task". Include the existing body when changing the time; a time alone or a bare cron expression is not supported',
       },
       message: { type: 'string', description: 'New body without changing time or type' },
       channel: { type: 'string', description: 'New destination channel ID' },

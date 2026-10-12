@@ -32,13 +32,13 @@ describe('web file security', () => {
     expect(isRealFileWithin(root, link)).toBe(false);
   });
 
-  it('removes attachment markers and keeps only valid unique files', () => {
+  it.each(['Attachment', '添付ファイル'])('removes %s markers and keeps only valid unique files', (marker) => {
     const root = mkdtempSync(join(tmpdir(), 'xangi-web-attachments-'));
     const attachment = join(root, 'photo.png');
     writeFileSync(attachment, 'image');
 
     const parsed = parseDisplayedUserAttachments(
-      `説明\n[添付ファイル]\n- ${attachment}\n- ${attachment}\n- /missing/file\n\n続き`,
+      `説明\n[${marker}]\n- ${attachment}\n- ${attachment}\n- /missing/file\n\n続き`,
       [root]
     );
 

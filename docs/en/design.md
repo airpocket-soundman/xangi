@@ -12,6 +12,14 @@ xangi is "a wrapper that makes AI CLIs (Claude Code / Codex CLI / OpenCode / Cur
 User → Chat surfaces → xangi → AI agent → Workspace
 ```
 
+## Internal prompt language
+
+Use concise English by default for fixed instructions that xangi sends to AI agents, to reduce token overhead. This covers system prompts, runtime guidance, tool and parameter descriptions, AI-facing CLI help, and input-correction guidance. Prefer supported English examples, such as `cron 0 9 * * * Send a reminder`. Actual savings depend on the model's tokenizer and wording; English alone does not guarantee a fixed reduction.
+
+- Preserve the original language and content of user messages, scheduled tasks, quotations, and workspace instructions. Reply in the user's preferred language.
+- Keep exact Japanese input syntax and UI text when matching requires them. Emit `[Attachment]` for internal attachment labels; readers also accept legacy `[添付ファイル]` markers. Preserve filenames, paths, and user text. Do not invent unsupported English syntax for examples.
+- This is not a requirement to translate Japanese user-facing UI, documentation, or source comments. When adding or changing internal fixed text, review both shared prompts and tool descriptions.
+
 ## Architecture
 
 ```mermaid

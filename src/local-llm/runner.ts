@@ -2578,7 +2578,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     let content = cleanPrompt;
     if (otherPaths.length > 0) {
       const fileList = otherPaths.map((p) => `  - ${p}`).join('\n');
-      content = `${cleanPrompt}\n\n[添付ファイル]\n${fileList}`;
+      content = `${cleanPrompt}\n\n[Attachment]\n${fileList}`;
     }
 
     const msg: LLMMessage = { role: 'user', content };

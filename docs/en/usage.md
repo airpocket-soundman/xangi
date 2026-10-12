@@ -351,6 +351,8 @@ xangi tool schedule_remove --id <scheduleId>
 xangi tool schedule_toggle --id <scheduleId>
 ```
 
+--input replaces both the schedule and its message. To change only the time, include the existing message: `--input "cron 0 9 * * * existing task"`. A bare cron expression or a time alone is not supported.
+
 `schedule_update` preserves omitted fields. `--input` and `--message` cannot be used together. Use `schedule_toggle` to change the enabled state.
 
 ### Data Storage

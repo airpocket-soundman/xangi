@@ -15,7 +15,7 @@ export function parseDisplayedUserAttachments(
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const marker = line.match(/^\[添付ファイル\](?:[ \t]+(.+?))?[ \t]*$/);
+    const marker = line.match(/^\[(?:Attachment|添付ファイル)\](?:[ \t]+(.+?))?[ \t]*$/);
     if (!marker) {
       displayLines.push(line);
       continue;

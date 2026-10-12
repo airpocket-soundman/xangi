@@ -396,5 +396,5 @@ export function buildPromptWithAttachments(prompt: string, filePaths: string[]):
   if (filePaths.length === 0) return prompt;
 
   const fileList = filePaths.map((p) => `  - ${p}`).join('\n');
-  return `${prompt}\n\n[添付ファイル]\n${fileList}`;
+  return `${prompt}\n\n[Attachment]\n${fileList}`;
 }
