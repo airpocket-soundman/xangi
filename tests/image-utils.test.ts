@@ -40,6 +40,10 @@ describe('getMimeType', () => {
 });
 
 describe('extractAttachmentPaths', () => {
+  it.each(['Attachment', '添付ファイル'])('supports %s markers without changing the message or paths', (marker) => {
+    const result = extractAttachmentPaths(`確認して\n\n[${marker}]\n  - /tmp/猫.jpg\n  - /tmp/資料.pdf`);
+    expect(result).toEqual({ imagePaths: ['/tmp/猫.jpg'], otherPaths: ['/tmp/資料.pdf'], cleanPrompt: '確認して' });
+  });
   it('should return empty arrays when no attachments', () => {
     const result = extractAttachmentPaths('Hello, world!');
     expect(result.imagePaths).toEqual([]);

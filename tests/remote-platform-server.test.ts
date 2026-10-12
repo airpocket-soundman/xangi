@@ -93,6 +93,12 @@ describe('remote platform server', () => {
     );
   });
 
+  it('uses the English attachment marker and preserves filenames', () => {
+    const prompt = buildRemotePlatformPrompt(parseRemotePlatformTurn({ ...body(), attachments: ['/tmp/資料.pdf'] }));
+    expect(prompt).toContain('[Attachment]\n- /tmp/資料.pdf');
+    expect(prompt).not.toContain('[添付ファイル]');
+  });
+
   it('requires the adapter bearer token', async () => {
     const response = await fetch(`${baseUrl}/api/remote-platform/turn`, {
       method: 'POST',

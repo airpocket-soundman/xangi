@@ -162,6 +162,17 @@ async function scheduleList(scheduler?: Scheduler): Promise<string> {
   return formatScheduleList(schedules);
 }
 
+function scheduleInputError(input: string): string {
+  const value = input.trim();
+  let hint = '--input requires both a schedule and a message; a time alone is not supported.';
+  if (/^(?:\S+\s+){4}\S+$/.test(value) && !value.startsWith('cron ')) {
+    hint = 'The cron prefix and a message are required.';
+  } else if (/^cron\s+(?:\S+\s+){4}\S+$/i.test(value) || /^毎日\s+\d{1,2}:\d{2}$/.test(value)) {
+    hint = 'A message is required.';
+  }
+  return `Invalid schedule input: ${input}\n${hint} Example: --input "cron 0 9 * * * Send a reminder"`;
+}
+
 async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler): Promise<string> {
   const input = flags['input'];
   const channelId = flags['channel'];
@@ -171,7 +182,7 @@ async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler)
 
   const parsed = parseForCommand(input);
   if (!parsed) {
-    throw new Error(`スケジュール形式を解析できません: ${input}`);
+    throw new Error(scheduleInputError(input));
   }
 
   // targetChannelId が指定されていればそちらを優先
@@ -251,7 +262,7 @@ async function scheduleUpdate(
 
   const parsed = hasInput ? parseForCommand(flags['input']) : undefined;
   if (hasInput && !parsed) {
-    throw new ValidationError(`スケジュール形式を解析できません: ${flags['input']}`);
+    throw new ValidationError(scheduleInputError(flags['input']));
   }
   if (hasMessage && !flags['message'].trim()) {
     throw new ValidationError('--message must not be empty');

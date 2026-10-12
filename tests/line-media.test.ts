@@ -132,7 +132,7 @@ describe('添付パスのプロンプトへの合流', () => {
   it('No.12 保存したパスがプロンプトに入る', () => {
     expect(
       buildPromptWithAttachments('添付ファイルを確認してください', ['/tmp/line_m1.jpg'])
-    ).toBe('添付ファイルを確認してください\n\n[添付ファイル]\n  - /tmp/line_m1.jpg');
+    ).toBe('添付ファイルを確認してください\n\n[Attachment]\n  - /tmp/line_m1.jpg');
   });
 });
 

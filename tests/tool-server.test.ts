@@ -381,7 +381,7 @@ describe('tool-server HTTP status codes', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body.ok).toBe(false);
-    expect(body.error).toContain('スケジュール形式を解析できません');
+    expect(body.error).toContain('Invalid schedule input');
   });
 
   it('returns the running instance Web UI status', async () => {

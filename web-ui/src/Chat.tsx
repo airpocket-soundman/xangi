@@ -1119,7 +1119,7 @@ function ChatPane({
       return;
     }
     const shownMessage = displayMessage ?? cleanMessage;
-    const attachmentLines = pendingFiles.map((file) => `[添付ファイル] ${file.path}`);
+    const attachmentLines = pendingFiles.map((file) => `[Attachment] ${file.path}`);
     const modelMessage = [
       displayMessage ? extensionConversationPrompt(cleanMessage, displayMessage) : cleanMessage,
       ...attachmentLines,

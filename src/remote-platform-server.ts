@@ -104,7 +104,7 @@ export function buildRemotePlatformPrompt(input: RemotePlatformTurn): string {
   if (input.parentChannelName) lines.push(`[親チャンネル: #${input.parentChannelName}]`);
   lines.push(`[発言者: ${input.userName} (ID: ${input.userId})]`);
   if (input.attachments?.length) {
-    lines.push(`[添付ファイル]\n${input.attachments.map((path) => `- ${path}`).join('\n')}`);
+    lines.push(`[Attachment]\n${input.attachments.map((path) => `- ${path}`).join('\n')}`);
   }
   lines.push(input.text);
   return lines.join('\n');

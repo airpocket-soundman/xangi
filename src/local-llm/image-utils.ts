@@ -54,7 +54,7 @@ export function encodeImageToBase64(filePath: string): string | null {
 }
 
 /**
- * プロンプトから「[添付ファイル]」セクションのファイルパスを抽出
+ * プロンプトから「[Attachment]」（旧ラベルも対応）セクションのファイルパスを抽出
  * @returns { imagePaths: 画像ファイルパス[], otherPaths: 非画像ファイルパス[], cleanPrompt: 添付ファイルセクションを除去したプロンプト }
  */
 export function extractAttachmentPaths(prompt: string): {
@@ -65,8 +65,8 @@ export function extractAttachmentPaths(prompt: string): {
   const imagePaths: string[] = [];
   const otherPaths: string[] = [];
 
-  // [添付ファイル] セクションを検出
-  const attachmentMatch = prompt.match(/\n\n\[添付ファイル\]\n([\s\S]*?)$/);
+  // Accept both the current English marker and legacy Japanese transcripts.
+  const attachmentMatch = prompt.match(/\n\n\[(?:Attachment|添付ファイル)\]\n([\s\S]*?)$/);
   if (!attachmentMatch) {
     return { imagePaths, otherPaths, cleanPrompt: prompt };
   }

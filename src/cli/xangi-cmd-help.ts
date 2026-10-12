@@ -178,8 +178,9 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'schedule',
     summary: 'Add a schedule',
     usage:
-      'xangi tool schedule_add --input <natural-language-or-cron> [--channel <id>] [--platform <discord|slack|telegram|web|line>]',
+      'xangi tool schedule_add --input <schedule-and-message> [--channel <id>] [--platform <discord|slack|telegram|web|line>]',
     notes: [
+      '--input requires both a time and a message. Example: --input "cron 0 9 * * * Send a reminder". Bare cron expressions are not supported.',
       'Omitting the destination uses the current conversation. Platform precedence: explicit option, XANGI_PLATFORM, inferred from destination, then discord.',
     ],
   },
@@ -188,8 +189,9 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'schedule',
     summary: 'Update an existing schedule while preserving its ID',
     usage:
-      'xangi tool schedule_update --id <schedule-id> [--input <natural-language-or-cron> | --message <text>] [--channel <id>] [--platform <discord|slack|telegram|web|line>]',
+      'xangi tool schedule_update --id <schedule-id> [--input <schedule-and-message> | --message <text>] [--channel <id>] [--platform <discord|slack|telegram|web|line>]',
     notes: [
+      '--input replaces time/type AND message; include the existing message when changing only the time. Example: --input "cron 0 9 * * * Existing task". A time alone or a bare cron expression is not supported. Use --message to change only the body.',
       'Unspecified fields are preserved. --input and --message are mutually exclusive. Changing platform also requires --channel.',
     ],
   },

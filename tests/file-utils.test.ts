@@ -233,7 +233,7 @@ describe('buildPromptWithAttachments', () => {
 
   it('appends the attachment list', () => {
     expect(buildPromptWithAttachments('hi', ['/a/b.png'])).toBe(
-      'hi\n\n[添付ファイル]\n  - /a/b.png'
+      'hi\n\n[Attachment]\n  - /a/b.png'
     );
   });
 });
