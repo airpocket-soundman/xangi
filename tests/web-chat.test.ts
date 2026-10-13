@@ -2094,6 +2094,14 @@ describe('web-chat HTTP API', () => {
           uiAvailable: true,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
         }),
+        expect.objectContaining({
+          id: 'xangi-dots',
+          displayName: 'xangi-dots',
+          capabilities: ['dots.jobs'],
+          installed: false,
+          uiAvailable: false,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-dots',
+        }),
       ],
       issues: [],
     });
@@ -2141,6 +2149,7 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-stackchan' }),
         expect.objectContaining({ id: 'xangi-even-g2' }),
         expect.objectContaining({ id: 'xangi-avatar' }),
+        expect.objectContaining({ id: 'xangi-dots' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });

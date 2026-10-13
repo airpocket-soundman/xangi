@@ -143,6 +143,25 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
   },
+  {
+    id: 'xangi-dots',
+    displayName: 'xangi-dots',
+    description: 'Dotsとxangiの間で依頼・回答・ファイルをやり取りします。',
+    permissions: [
+      'workspaceの.xangi-dotsに依頼・結果・接続秘密を保存',
+      'localhostで管理APIとDots用MCPサーバーを起動',
+      'OpenAI/ChatGPTの検証済みHTTPS宛先へイベント送信',
+      '設定したxangi CLIで依頼元へ結果通知、固定受付先へDots起点の依頼通知',
+    ],
+    capabilities: ['dots.jobs'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: false,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-dots',
+  },
 ];
 
 export interface ExtensionSetupRequest {
