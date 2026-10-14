@@ -568,6 +568,42 @@ export function updateLatestMessageUsage(
   return entry;
 }
 
+/** このターンのassistant応答へ構造化添付を記録する。「編集済み」にはしない。 */
+export function attachLatestAssistantAttachments(
+  workdir: string,
+  appSessionId: string,
+  attachments: readonly string[]
+): TranscriptEntry | null {
+  const additions = attachments.filter(
+    (path): path is string => typeof path === 'string' && path.length > 0
+  );
+  if (additions.length === 0) return null;
+
+  const entries = readSessionMessages(workdir, appSessionId);
+  let lastUserIndex = -1;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    if (entries[index].role === 'user') {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex === -1) return null;
+
+  const entry = entries
+    .slice(lastUserIndex + 1)
+    .find((candidate) => candidate.role === 'assistant');
+  if (!entry) return null;
+  const base: Record<string, unknown> =
+    typeof entry.content === 'string' ? { result: entry.content } : { ...entry.content };
+  const previous = Array.isArray(base.attachments)
+    ? base.attachments.filter((path): path is string => typeof path === 'string')
+    : [];
+  const merged = [...new Set([...previous, ...additions])];
+  entry.content = { ...base, attachments: merged };
+  rewriteSessionFile(workdir, appSessionId, entries);
+  return entry;
+}
+
 /** Attach execution evidence only to a response written during this turn. */
 export function attachResponseModelExecution(
   workdir: string,

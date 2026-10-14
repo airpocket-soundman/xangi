@@ -66,6 +66,7 @@ import {
   readSessionMessagesTail,
   updateMessageContent,
   updateLatestMessageUsage,
+  attachLatestAssistantAttachments,
   deleteMessage as deleteTranscriptMessage,
   ensureVisibleAssistantResponse,
 } from './transcript-logger.js';
@@ -849,6 +850,9 @@ export function startWebChat(options: WebChatOptions) {
       updateLatestMessageUsage(workdir, appSessionId, ['assistant'], {
         duration_ms: Math.max(1, Date.now() - startedAt),
       });
+      if (!result.failed && result.attachments?.length) {
+        attachLatestAssistantAttachments(workdir, appSessionId, result.attachments);
+      }
     } catch (error) {
       updateLatestMessageUsage(workdir, appSessionId, ['error'], {
         duration_ms: Math.max(1, Date.now() - startedAt),
@@ -3889,6 +3893,9 @@ export function startWebChat(options: WebChatOptions) {
               cached_input_tokens: result.usage?.cachedInputTokens,
               output_tokens: result.usage?.outputTokens,
             });
+            if (!result.failed && result.attachments?.length) {
+              attachLatestAssistantAttachments(workdir, appSessionId, result.attachments);
+            }
 
             const msgs = readSessionMessages(workdir, appSessionId);
             const reversed = [...msgs].reverse();

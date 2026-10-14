@@ -1440,7 +1440,12 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           });
 
           this.timeoutController.clear(channelId, 'completed');
-          return { result, sessionId, ...this.pendingModels.get(channelId)?.result() };
+          return {
+            result,
+            sessionId,
+            attachments: this.drainAttachments(channelId),
+            ...this.pendingModels.get(channelId)?.result(),
+          };
         } catch (retryErr) {
           this.rethrowUserCancellation(session, abortController.signal);
           const errorMsg = formatLlmError(retryErr);
@@ -1606,6 +1611,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           const result: RunResult = {
             result: fullText,
             sessionId,
+            attachments: this.drainAttachments(channelId),
             ...this.pendingModels.get(channelId)?.result(),
           };
           callbacks.onComplete?.(result);
