@@ -40,7 +40,19 @@ interface ModelDiscoveryResponse {
   supportedEfforts: string[];
 }
 
-export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[] }) {
+export function AgentSettings({
+  workspaces,
+  defaultAI,
+  onDefaultAISaved,
+}: {
+  workspaces: RegisteredWorkspace[];
+  defaultAI?: {
+    enabled: boolean;
+    value: { backend: string; model?: string; effort?: string };
+    options: string[];
+  };
+  onDefaultAISaved?: () => Promise<void>;
+}) {
   const [channels, setChannels] = useState<
     Array<{ platform: string; id: string; name: string; group?: string }>
   >([]);
@@ -160,9 +172,10 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
     setChannelTarget('');
     setAgentName(agent.name);
     setAgentPrompt(agent.prompt);
-    setAgentBackend(agent.backend || '');
-    setAgentModel(agent.model || '');
-    setAgentEffort(agent.effort || '');
+    const ai = agent.id === 'xangi:default' ? defaultAI?.value : agent;
+    setAgentBackend(ai?.backend || '');
+    setAgentModel(ai?.model || '');
+    setAgentEffort(ai?.effort || '');
     setAgentWorkspaceId(agent.workspaceId || 'default');
     setAgentLlmMode(agent.localLlmMode || '');
     setAgentReasoning(agent.localLlmReasoningEffort || '');
@@ -194,6 +207,7 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
       setSavingChannel(false);
     }
   }
+  const editingDefault = editingAgentId === 'xangi:default';
   const currentBinding = agents.find((a) => a.id === editingAgentId)?.workChannel;
   const openRouterModel =
     agentBackend === 'openrouter'
@@ -210,7 +224,13 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
 
   async function saveAgent(event: FormEvent) {
     event.preventDefault();
-    if (!agentName.trim() || savingAgent || invalidOpenRouterEffort) return;
+    if (
+      !agentName.trim() ||
+      savingAgent ||
+      invalidOpenRouterEffort ||
+      (editingDefault && (!defaultAI?.enabled || !agentBackend))
+    )
+      return;
     setSavingAgent(true);
     try {
       const body = {
@@ -229,7 +249,33 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
       };
       const base = '/api/agents';
       const endpoint = editingAgentId ? `${base}/${encodeURIComponent(editingAgentId)}` : base;
-      await requestJson(endpoint, jsonInit(editingAgentId ? 'PATCH' : 'POST', body));
+      await requestJson(
+        endpoint,
+        jsonInit(
+          editingAgentId ? 'PATCH' : 'POST',
+          editingDefault ? { name: body.name, workspaceId: body.workspaceId } : body
+        )
+      );
+      if (editingDefault) {
+        try {
+          await requestJson(
+            '/api/runtime-settings',
+            jsonInit('POST', {
+              name: 'backend',
+              action: 'set',
+              backend: agentBackend,
+              ...(agentModel && { model: agentModel }),
+              ...(agentEffort && { effort: agentEffort }),
+            })
+          );
+          await onDefaultAISaved?.();
+        } catch (cause) {
+          throw new Error(
+            '名前と作業場所は保存済みですが、AI設定を保存できませんでした。入力を確認して再度保存してください。 ' +
+              String(cause)
+          );
+        }
+      }
       setAgents((await requestJson<{ agents: Agent[] }>('/api/agents')).agents);
       setAgentFormOpen(false);
       setEditingAgentId(undefined);
@@ -285,279 +331,300 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
         onChange={setCatalogQuery}
       />
       {agentFormOpen ? (
-        <form className="project-form" onSubmit={(event) => void saveAgent(event)}>
-          {editingAgentId && (
-            <fieldset disabled={savingChannel || savingAgent}>
-              <legend>作業チャンネル</legend>
-              <p>現在の設定先: {channelLabel(currentBinding)}</p>
-              {currentBinding ? (
-                <>
-                  <p>別のチャンネルに変更する場合は、先に解除してください。</p>
-                  <button type="button" onClick={() => void changeWorkChannel('reset')}>
-                    チャンネルの紐づきを解除
-                  </button>
-                </>
-              ) : (
-                <>
-                  <label htmlFor="agent-work-channel">
-                    <span>設定先チャンネル</span>
-                    <select
-                      id="agent-work-channel"
-                      aria-label="設定先チャンネル"
-                      value={channelTarget}
-                      onChange={(e) => setChannelTarget(e.target.value)}
+        <>
+          <form className="project-form" onSubmit={(event) => void saveAgent(event)}>
+            {editingAgentId && (
+              <fieldset disabled={savingChannel || savingAgent}>
+                <legend>作業チャンネル</legend>
+                <p>現在の設定先: {channelLabel(currentBinding)}</p>
+                {currentBinding ? (
+                  <>
+                    <p>別のチャンネルに変更する場合は、先に解除してください。</p>
+                    <button type="button" onClick={() => void changeWorkChannel('reset')}>
+                      チャンネルの紐づきを解除
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <label htmlFor="agent-work-channel">
+                      <span>設定先チャンネル</span>
+                      <select
+                        id="agent-work-channel"
+                        aria-label="設定先チャンネル"
+                        value={channelTarget}
+                        onChange={(e) => setChannelTarget(e.target.value)}
+                      >
+                        <option value="">チャンネルを選択</option>
+                        {channels.map((c) => (
+                          <option
+                            key={`${c.platform}:${c.id}`}
+                            value={`${c.platform}:${c.id}`}
+                            disabled={agents.some(
+                              (a) =>
+                                a.id !== editingAgentId &&
+                                a.workChannel?.platform === c.platform &&
+                                a.workChannel.channelId === c.id
+                            )}
+                          >
+                            {channelLabel({ platform: c.platform, channelId: c.id })}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={!channelTarget}
+                      onClick={() => void changeWorkChannel('set')}
                     >
-                      <option value="">チャンネルを選択</option>
-                      {channels.map((c) => (
-                        <option
-                          key={`${c.platform}:${c.id}`}
-                          value={`${c.platform}:${c.id}`}
-                          disabled={agents.some(
-                            (a) =>
-                              a.id !== editingAgentId &&
-                              a.workChannel?.platform === c.platform &&
-                              a.workChannel.channelId === c.id
-                          )}
-                        >
-                          {channelLabel({ platform: c.platform, channelId: c.id })}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    disabled={!channelTarget}
-                    onClick={() => void changeWorkChannel('set')}
-                  >
-                    チャンネルを設定
-                  </button>
-                </>
+                      チャンネルを設定
+                    </button>
+                  </>
+                )}
+                <p className="muted">チャンネルの操作はすぐに保存されます。設定先は最大1つです。</p>
+                {channelNotice && <p role="status">{channelNotice}</p>}
+              </fieldset>
+            )}
+            <>
+              {editingDefault && (
+                <p>既定の担当です。名前を変えても会話やチャンネルの紐付けは維持されます。</p>
               )}
-              <p className="muted">チャンネルの操作はすぐに保存されます。設定先は最大1つです。</p>
-              {channelNotice && <p role="status">{channelNotice}</p>}
-            </fieldset>
-          )}
-          <label>
-            <span>名前</span>
-            <input
-              value={agentName}
-              onChange={(event) => setAgentName(event.target.value)}
-              maxLength={80}
-              required
-            />
-          </label>
-          <label>
-            <span>基本指示</span>
-            <textarea
-              value={agentPrompt}
-              onChange={(event) => setAgentPrompt(event.target.value)}
-              maxLength={20_000}
-              rows={5}
-              placeholder="この担当に守ってほしい指示"
-            />
-          </label>
-          <label>
-            <span>ワークスペース</span>
-            <select
-              aria-label="ワークスペース"
-              value={agentWorkspaceId}
-              onChange={(event) => setAgentWorkspaceId(event.target.value)}
-            >
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name}
-                  {workspace.isDefault ? ' (default)' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <small>このエージェントは、会話でも委譲された作業でも、この場所で動きます。</small>
-          <fieldset className="project-model-settings">
-            <legend>使用するAI</legend>
-            <label>
-              <span>バックエンド</span>
-              <select
-                aria-label="バックエンド"
-                value={agentBackend}
-                onChange={(event) => {
-                  setAgentBackend(event.target.value);
-                  setAgentModel('');
-                  setAgentEffort('');
-                  setAgentLlmMode('');
-                  setAgentReasoning('');
-                }}
-              >
-                <option value="">xangiのデフォルト</option>
-                {config.allowedBackends.map((backend) => (
-                  <option key={backend} value={backend}>
-                    {backend === 'openrouter' ? 'OpenRouter' : backend}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {agentBackend === 'openrouter' && (
-              <small role="note">
-                モデルごとに別のエージェントを作れます。学習利用禁止・ZDRは既定ONです。起動設定で個別に変更でき、選んだ条件に合う提供先がなければ停止します。接続設定にAPIキーを保存してください。OpenRouter側のデータ利用・ログ保存はアカウント設定で管理します。
+              <label>
+                <span>名前</span>
+                <input
+                  value={agentName}
+                  onChange={(event) => setAgentName(event.target.value)}
+                  maxLength={80}
+                  required
+                />
+              </label>
+              {!editingDefault && (
+                <label>
+                  <span>基本指示</span>
+                  <textarea
+                    value={agentPrompt}
+                    onChange={(event) => setAgentPrompt(event.target.value)}
+                    maxLength={20_000}
+                    rows={5}
+                    placeholder="この担当に守ってほしい指示"
+                  />
+                </label>
+              )}
+              <label>
+                <span>ワークスペース</span>
+                <select
+                  aria-label="ワークスペース"
+                  value={agentWorkspaceId}
+                  onChange={(event) => setAgentWorkspaceId(event.target.value)}
+                >
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name}
+                      {workspace.isDefault ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <small>
+                作業場所は新しい会話から適用されます。既存の会話は現在の作業場所を保持します。
               </small>
-            )}
-            {['local-llm', 'openrouter'].includes(agentBackend) && (
-              <>
+              <fieldset className="project-model-settings">
+                <legend>使用するAI</legend>
                 <label>
-                  <span>動作モード</span>
+                  <span>バックエンド</span>
                   <select
-                    aria-label="動作モード"
-                    value={agentLlmMode}
-                    onChange={(e) => setAgentLlmMode(e.target.value)}
-                  >
-                    <option value="">xangiの既定設定</option>
-                    <option value="agent">Agent（ツールを使って作業）</option>
-                    <option value="chat">Chat（会話のみ）</option>
-                  </select>
-                </label>
-                <label>
-                  <span>
-                    {agentBackend === 'openrouter' ? 'OpenRouterの推論強度' : 'Local LLMの推論強度'}
-                  </span>
-                  <select
-                    aria-label={
-                      agentBackend === 'openrouter' ? 'OpenRouterの推論強度' : 'Local LLMの推論強度'
-                    }
-                    disabled={agentBackend === 'openrouter' && loadingAgentModels}
-                    value={agentReasoning}
-                    onChange={(e) => setAgentReasoning(e.target.value)}
-                  >
-                    <option value="">xangiの既定設定</option>
-                    {invalidOpenRouterEffort && (
-                      <option value={agentReasoning} disabled>
-                        {agentReasoning}（対応未確認・選び直してください）
-                      </option>
-                    )}
-                    {reasoningOptions.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                  {agentBackend === 'openrouter' ? (
-                    <small>
-                      {openRouterModel
-                        ? `モデル既定: ${openRouterModel.defaultEffort || '非公開'}${openRouterModel.reasoningDefaultEnabled === false ? '（推論OFF）' : ''}。${openRouterModel.reasoningMandatory ? '推論は必須です。' : ''}対応する値だけを表示します。`
-                        : 'モデル情報を確認できるまで、推論強度は指定できません。'}{' '}
-                      未指定時はxangiの共通設定、共通設定もなければモデル既定を使用します。
-                      {invalidOpenRouterEffort &&
-                        ' 現在の値を確認できません。既定設定または対応値を選び直してください。'}
-                    </small>
-                  ) : (
-                    <small>モデルが対応している値を選んでください。</small>
-                  )}
-                </label>
-              </>
-            )}
-            {agentBackend && (
-              <>
-                <label>
-                  <span>モデル</span>
-                  <select
-                    aria-label="モデル"
-                    value={agentModel}
-                    disabled={loadingAgentModels}
+                    aria-label="バックエンド"
+                    value={agentBackend}
                     onChange={(event) => {
-                      setAgentModel(event.target.value);
-                      const model = agentModelOptions.find(
-                        (candidate) => candidate.id === event.target.value
-                      );
-                      if (
-                        agentBackend === 'openrouter' &&
-                        agentReasoning &&
-                        !model?.supportedEfforts?.includes(agentReasoning)
-                      ) {
-                        setAgentReasoning('');
-                      }
-                      if (
-                        agentEffort &&
-                        model?.supportedEfforts?.length &&
-                        !model.supportedEfforts.includes(agentEffort)
-                      ) {
-                        setAgentEffort('');
-                        setAgentLlmMode('');
-                        setAgentReasoning('');
-                      }
+                      setAgentBackend(event.target.value);
+                      setAgentModel('');
+                      setAgentEffort('');
+                      setAgentLlmMode('');
+                      setAgentReasoning('');
                     }}
                   >
-                    <option value="">バックエンドのデフォルト</option>
-                    {agentModel && !agentModelOptions.some((model) => model.id === agentModel) && (
-                      <option value={agentModel}>{agentModel}</option>
+                    {!editingDefault && <option value="">デフォルト担当の設定を使う</option>}
+                    {(editingDefault ? defaultAI?.options || [] : config.allowedBackends).map(
+                      (backend) => (
+                        <option key={backend} value={backend}>
+                          {backend === 'openrouter' ? 'OpenRouter' : backend}
+                        </option>
+                      )
                     )}
-                    {agentModelOptions.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.displayName && model.displayName !== model.id
-                          ? `${model.displayName} (${model.id})`
-                          : model.id}
-                      </option>
-                    ))}
                   </select>
                 </label>
-                <details>
-                  <summary>詳細設定</summary>
-                  <label>
-                    <span>effort</span>
-                    <select
-                      aria-label="effort"
-                      value={agentEffort}
-                      disabled={agentEffortOptions.length === 0}
-                      onChange={(event) => setAgentEffort(event.target.value)}
-                    >
-                      <option value="">デフォルト</option>
-                      {(
-                        (agentModel
-                          ? agentModelOptions.find((model) => model.id === agentModel)
-                          : agentModelOptions.find((model) => model.isDefault)
-                        )?.supportedEfforts?.filter((effort) =>
-                          agentEffortOptions.includes(effort)
-                        ) || agentEffortOptions
-                      ).map((effort) => (
-                        <option key={effort} value={effort}>
-                          {effort}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </details>
-                {(loadingAgentModels || agentModelStatus) && (
-                  <small className="project-model-status" role="status">
-                    {loadingAgentModels ? 'モデルを取得中…' : agentModelStatus}
+                {agentBackend === 'openrouter' && (
+                  <small role="note">
+                    モデルごとに別のエージェントを作れます。学習利用禁止・ZDRは既定ONです。起動設定で個別に変更でき、選んだ条件に合う提供先がなければ停止します。接続設定にAPIキーを保存してください。OpenRouter側のデータ利用・ログ保存はアカウント設定で管理します。
                   </small>
                 )}
-              </>
-            )}
-          </fieldset>
-          <p>どの会話からも使える設定です。変更は次の作業から反映されます。</p>
-          <div className="project-form-actions">
-            {editingAgentId && (
-              <button
-                type="button"
-                className="danger"
-                onClick={() => setAgentToDelete(editingAgentId)}
-              >
-                エージェントを削除
+                {!editingDefault && ['local-llm', 'openrouter'].includes(agentBackend) && (
+                  <>
+                    <label>
+                      <span>動作モード</span>
+                      <select
+                        aria-label="動作モード"
+                        value={agentLlmMode}
+                        onChange={(e) => setAgentLlmMode(e.target.value)}
+                      >
+                        <option value="">xangiの既定設定</option>
+                        <option value="agent">Agent（ツールを使って作業）</option>
+                        <option value="chat">Chat（会話のみ）</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>
+                        {agentBackend === 'openrouter'
+                          ? 'OpenRouterの推論強度'
+                          : 'Local LLMの推論強度'}
+                      </span>
+                      <select
+                        aria-label={
+                          agentBackend === 'openrouter'
+                            ? 'OpenRouterの推論強度'
+                            : 'Local LLMの推論強度'
+                        }
+                        disabled={agentBackend === 'openrouter' && loadingAgentModels}
+                        value={agentReasoning}
+                        onChange={(e) => setAgentReasoning(e.target.value)}
+                      >
+                        <option value="">xangiの既定設定</option>
+                        {invalidOpenRouterEffort && (
+                          <option value={agentReasoning} disabled>
+                            {agentReasoning}（対応未確認・選び直してください）
+                          </option>
+                        )}
+                        {reasoningOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      {agentBackend === 'openrouter' ? (
+                        <small>
+                          {openRouterModel
+                            ? `モデル既定: ${openRouterModel.defaultEffort || '非公開'}${openRouterModel.reasoningDefaultEnabled === false ? '（推論OFF）' : ''}。${openRouterModel.reasoningMandatory ? '推論は必須です。' : ''}対応する値だけを表示します。`
+                            : 'モデル情報を確認できるまで、推論強度は指定できません。'}{' '}
+                          未指定時はxangiの共通設定、共通設定もなければモデル既定を使用します。
+                          {invalidOpenRouterEffort &&
+                            ' 現在の値を確認できません。既定設定または対応値を選び直してください。'}
+                        </small>
+                      ) : (
+                        <small>モデルが対応している値を選んでください。</small>
+                      )}
+                    </label>
+                  </>
+                )}
+                {agentBackend && (
+                  <>
+                    <label>
+                      <span>モデル</span>
+                      <select
+                        aria-label="モデル"
+                        value={agentModel}
+                        disabled={loadingAgentModels}
+                        onChange={(event) => {
+                          setAgentModel(event.target.value);
+                          const model = agentModelOptions.find(
+                            (candidate) => candidate.id === event.target.value
+                          );
+                          if (
+                            agentBackend === 'openrouter' &&
+                            agentReasoning &&
+                            !model?.supportedEfforts?.includes(agentReasoning)
+                          ) {
+                            setAgentReasoning('');
+                          }
+                          if (
+                            agentEffort &&
+                            model?.supportedEfforts?.length &&
+                            !model.supportedEfforts.includes(agentEffort)
+                          ) {
+                            setAgentEffort('');
+                            setAgentLlmMode('');
+                            setAgentReasoning('');
+                          }
+                        }}
+                      >
+                        <option value="">バックエンドのデフォルト</option>
+                        {agentModel &&
+                          !agentModelOptions.some((model) => model.id === agentModel) && (
+                            <option value={agentModel}>{agentModel}</option>
+                          )}
+                        {agentModelOptions.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.displayName && model.displayName !== model.id
+                              ? `${model.displayName} (${model.id})`
+                              : model.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <details>
+                      <summary>詳細設定</summary>
+                      <label>
+                        <span>effort</span>
+                        <select
+                          aria-label="effort"
+                          value={agentEffort}
+                          disabled={agentEffortOptions.length === 0}
+                          onChange={(event) => setAgentEffort(event.target.value)}
+                        >
+                          <option value="">デフォルト</option>
+                          {(
+                            (agentModel
+                              ? agentModelOptions.find((model) => model.id === agentModel)
+                              : agentModelOptions.find((model) => model.isDefault)
+                            )?.supportedEfforts?.filter((effort) =>
+                              agentEffortOptions.includes(effort)
+                            ) || agentEffortOptions
+                          ).map((effort) => (
+                            <option key={effort} value={effort}>
+                              {effort}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </details>
+                    {(loadingAgentModels || agentModelStatus) && (
+                      <small className="project-model-status" role="status">
+                        {loadingAgentModels ? 'モデルを取得中…' : agentModelStatus}
+                      </small>
+                    )}
+                  </>
+                )}
+              </fieldset>
+              <p>どの会話からも使える設定です。変更は次の作業から反映されます。</p>
+            </>
+            <div className="project-form-actions">
+              {editingAgentId && !editingDefault && (
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => setAgentToDelete(editingAgentId)}
+                >
+                  エージェントを削除
+                </button>
+              )}
+              <button type="button" disabled={savingAgent} onClick={() => setAgentFormOpen(false)}>
+                キャンセル
               </button>
-            )}
-            <button type="button" disabled={savingAgent} onClick={() => setAgentFormOpen(false)}>
-              キャンセル
-            </button>
-            <button
-              type="submit"
-              className="primary"
-              disabled={
-                savingAgent ||
-                invalidOpenRouterEffort ||
-                (agentBackend === 'openrouter' && loadingAgentModels)
+              {
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={
+                    savingAgent ||
+                    (editingDefault && (!defaultAI?.enabled || !agentBackend)) ||
+                    invalidOpenRouterEffort ||
+                    (agentBackend === 'openrouter' && loadingAgentModels)
+                  }
+                >
+                  {savingAgent ? '保存中…' : '保存'}
+                </button>
               }
-            >
-              {savingAgent ? '保存中…' : editingAgentId ? '更新' : '作成'}
-            </button>
-          </div>
-        </form>
+            </div>
+          </form>
+        </>
       ) : (
         <nav className="project-view-list" aria-label="エージェント一覧">
           {agents.filter(catalogVisible).map((agent) => (
@@ -566,13 +633,17 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
                 type="button"
                 className="project-view-main"
                 aria-label={`${agent.name}を編集`}
+                disabled={agent.id === 'xangi:default' && !defaultAI}
                 onClick={() => openAgentEditor(agent)}
               >
                 <span className="project-view-icon" aria-hidden="true">
                   ◇
                 </span>
                 <span className="project-view-copy">
-                  <strong title={agent.name}>{agent.name}</strong>
+                  <strong title={agent.name}>
+                    {agent.name}
+                    {agent.id === 'xangi:default' && <small> · 既定</small>}
+                  </strong>
                   <small>
                     {[agent.role, agent.backend, agent.model].filter(Boolean).join(' · ') ||
                       'xangiの既定設定'}
@@ -580,14 +651,16 @@ export function AgentSettings({ workspaces }: { workspaces: RegisteredWorkspace[
                   <small>作業チャンネル: {channelLabel(agent.workChannel)}</small>
                 </span>
               </button>
-              <button
-                type="button"
-                className="project-view-edit agent-view-delete"
-                aria-label={`${agent.name}を削除`}
-                onClick={() => setAgentToDelete(agent.id)}
-              >
-                削除
-              </button>
+              {agent.id !== 'xangi:default' && (
+                <button
+                  type="button"
+                  className="project-view-edit agent-view-delete"
+                  aria-label={`${agent.name}を削除`}
+                  onClick={() => setAgentToDelete(agent.id)}
+                >
+                  削除
+                </button>
+              )}
             </div>
           ))}
           {!agents.length && <p>新規エージェントから基本指示と使用モデルを登録してください。</p>}

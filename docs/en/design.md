@@ -1261,7 +1261,7 @@ Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web 
 
 ### Agent delegation
 
-`xangi agent` uses the Tool Server and the same live catalog and AgentRunStore as Web Chat. create/list/run do not depend on projects. Each child uses its agent settings and workspace in a separate Web session, returning results through agentId, parentContextKey and parentPlatform. Other-parent result access, self-delegation, duplicate active requests and nested delegation are rejected. Optional HTTP Agent Run projectId classifies Studio output and does not implicitly add project instructions to its initial execution.
+`xangi agent` uses the Tool Server and the same live catalog and AgentRunStore as Web Chat. create/list/run do not depend on projects. Each child uses its agent settings and workspace in a separate Web session, returning results through agentId, parentContextKey and parentPlatform. Other-parent result access, duplicate active requests and nested delegation other than consulting default are rejected. The reserved `xangi:default` ID (CLI alias `default`) starts a separate conversation with instance-default AI settings and workspace; that consultation cannot delegate further. Optional HTTP Agent Run projectId classifies Studio output and does not implicitly add project instructions to its initial execution.
 
 ### Agent execution settings
 
@@ -1351,3 +1351,7 @@ Recovery and progress notices require explicit delivery tracking recorded when a
 The `secret_` session prefix remains recognizable after close, preventing late callbacks from recreating persisted transcripts. Session serialization excludes private records and pointers; transcripts use a bounded in-memory store. Only external conversation identifiers needed to prevent history re-import are retained.
 
 DynamicRunnerManager isolates private runners, disables native resume, replays bounded plain-message history without adding recordkeeping restrictions or overriding user hook/auto-memory settings. Native privacy-flag failures never fall back to ordinary execution. AsyncLocalStorage isolates diagnostic suppression from concurrent ordinary requests. Monitor, trajectory, title generation and the tool HTTP server enforce their own boundaries. Global event subscribers receive no private content; explicit Web-session response transports can opt in for that session only. See the usage guide for retention limitations.
+
+Default agent identity (`xangi:default`) stores only its editable display name and selected workspace in project-catalog.json. AI defaults remain in the global backend resolver and its existing persistence. The settings UI edits both from the default-agent screen. Unassigned new sessions fall back to its selected workspace after channel workspace overrides; existing snapshots stay unchanged. Self-delegation checks continue to use the stable ID.
+
+Ordinary conversations may request their own agent in a new independent session without inheriting conversation history. An agent started by a self-request cannot delegate further, including consultations with default. This restriction is persisted with the run and survives restarts.

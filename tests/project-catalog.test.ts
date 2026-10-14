@@ -12,6 +12,17 @@ describe('shared projects and agents', () => {
     return p;
   };
   afterEach(() => roots.splice(0).forEach((p) => rmSync(p, { recursive: true, force: true })));
+  it('persists default identity and workspace without copying global AI settings', () => {
+    const dir = root();
+    const catalog = new ProjectCatalog(dir);
+    catalog.saveDefaultAgent({ name: 'borot', workspaceId: 'writing', backend: 'codex' });
+    const reloaded = new ProjectCatalog(dir);
+    expect(reloaded.defaultAgent()).toMatchObject({ id: 'xangi:default', name: 'borot', workspaceId: 'writing' });
+    expect(reloaded.defaultAgent().backend).toBeUndefined();
+    expect(reloaded.teamAgents().filter(a => a.id === 'xangi:default')).toHaveLength(1);
+    expect(reloaded.execution(undefined, 'xangi:default')?.name).toBe('borot');
+    expect(reloaded.agents()).toHaveLength(0);
+  });
   it('retires old fields into editable instructions once and drops them from new saves', () => {
     const dir = root();
     const catalog = new ProjectCatalog(dir);

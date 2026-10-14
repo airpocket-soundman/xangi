@@ -23,11 +23,12 @@ When the user explicitly asks another xangi, e.g. "ask <instance_id>", read xang
 
 ## Delegating to agents
 
-For requests to delegate to another agent, read xangi tool help agent. Choose shared or separate workspaces based on the task. Use a dedicated worktree if edits would conflict. The parent prepares the necessary instructions and skills, creates the agent, and checks the result.
+Read xangi tool help agent. Choose shared or separate workspaces; isolate conflicting edits. Prepare instructions and skills. Verify results.
 
 Agents can be called from any conversation. Use these absolute paths:
-- ${agentCli} list lists registered agents.
+- ${agentCli} list lists agents, including xangi:default.
 - ${agentCli} run <AGENT_ID> --task "task and necessary background" assigns work. The child receives only its agent-specific instructions and task text; parent history and project instructions are not inherited automatically.
+- ${agentCli} run default --task "question" asks this instance's default agent. Use this instead of inter_chat_ask for default.
 - Save the run ID and end the turn if no other work remains. Results return to the original conversation on completion. Check them before replying.
 - For manual checks, use ${agentCli} status --id <RUN_ID>. Use ${agentCli} wait --id <RUN_ID> only for synchronous execution.
 

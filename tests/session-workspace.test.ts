@@ -142,7 +142,7 @@ describe('ensureSessionWithWorkspace', () => {
     const otherPath = join(project.path, '..', 'other');
     await mkdir(otherPath, { recursive: true });
     const other = await registry.register('other', otherPath);
-    vi.spyOn(registry, 'resolve').mockImplementationOnce(async () => {
+    vi.spyOn(registry, 'resolveById').mockImplementationOnce(async () => {
       ensureSession('race', {
         platform: 'discord',
         workspaceId: other.id,

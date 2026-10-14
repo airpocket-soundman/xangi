@@ -775,11 +775,13 @@ Docker環境では `.env` はコンテナ外にあるため、AI（Claude Code�
 
 ### チャンネル別ワークスペース
 
+Discordの `/workspace status` は、チャンネル設定に加え、選択中のエージェント名・パスと、実行した場所のセッションのパスを表示します。親チャンネルで「この場所では未固定」と出ても、スレッド内のセッションが未設定という意味ではありません。スレッドのセッションはそのスレッド内で確認してください。
+
 DiscordとSlackではチャンネルごとに作業ディレクトリを選べます。スレッドは親チャンネルの設定を継承します。設定変更は進行中・既存セッションへ遡って適用されず、`/new`後の新規セッションから反映されます。
 
 | コマンド                                | 説明                                         |
 | --------------------------------------- | -------------------------------------------- |
-| `/workspace status`                       | チャンネル設定と現在のセッション設定を表示   |
+| `/workspace status`                       | チャンネル設定と現在のセッションの名前・パスを表示   |
 | `/workspace list`                       | 登録済みワークスペースを表示                 |
 | `/workspace set <name> <absolute-path>` | 絶対パスを登録し、チャンネルへ設定         |
 | `/workspace use <name>`                 | 登録済みワークスペースをチャンネルへ設定     |
@@ -2021,11 +2023,19 @@ xangi agent create --name "実装担当" --workspace /absolute/path/to/worktree 
 
 `xangi agent list` は接続先インスタンスの全エージェントを返します。どの会話でも `xangi agent run 担当ID --task "依頼内容と必要な背景"` で依頼できます。`--project` と `--project-name` は使いません。実行IDを控え、並行できる別作業がなければターンを終了します。完了時に元の会話へ結果が届きます。複数の子が動いている場合は最後の完了時にまとめて届けます。手動確認は `status --id 実行ID`、同期実行時だけ `wait --id 実行ID` を使います。稼働中インスタンスのTool ServerとWeb Chatが必要です。
 
-runは受付後に実行IDを返します。waitは最大25秒待ち、`succeeded` / `failed` になるまで同じIDで繰り返します。実行中の依頼をrunで再送しないでください。`status --id 実行ID` は即座に状態を返します。子には担当の指示・依頼文を渡します。親の会話全体は自動共有しないので、必要な背景を依頼に含めます。親は結果を確認して回答へ統合します。子同士の連絡・子からの再委譲はなく、親ごとの同時依頼は既定16件です。`AGENT_MAX_CONCURRENT_REQUESTS` で1〜64の整数に設定できます。
+runは受付後に実行IDを返します。waitは最大25秒待ち、`succeeded` / `failed` になるまで同じIDで繰り返します。実行中の依頼をrunで再送しないでください。`status --id 実行ID` は即座に状態を返します。子には担当の指示・依頼文を渡します。親の会話全体は自動共有しないので、必要な背景を依頼に含めます。親は結果を確認して回答へ統合します。子からはdefaultへの問い合わせだけが可能で、その他の再委譲はできません。親ごとの同時依頼は既定16件です。`AGENT_MAX_CONCURRENT_REQUESTS` で1〜64の整数に設定できます。
 
 プロジェクトの設定は名前と共通指示です。エージェントは名前・ワークスペース・役割・個別指示・使用AIを設定します。参加者・既定担当の設定はありません。
 
 プロジェクトは共通指示・関連する会話と成果物をまとめる単位です。キャラクターの外見や音声はAvatarで設定し、Avatarの会話にはエージェントだけを使います。会話開始時の担当を保存します。通常会話・子への依頼・Studioの担当付き実行は、その担当自身のワークスペースを使います。親や呼び出し元の作業場所で上書きしません。担当なしの実行のみ、呼び出し元が作業場所を指定できます。
+
+### デフォルトのエージェントへの問い合わせ
+
+設定画面の「エージェント」に既定マーク付きのデフォルト担当を表示します。編集画面に名前・作業場所・作業チャンネルと、従来の「AIの既定」のバックエンド・モデル・推論強度をまとめました。AI設定は既存の全体設定APIと保存先を使い、二重に保存しません。改名してもID `xangi:default` とチャンネルの紐付けは維持します。選んだ作業場所はデフォルト担当と担当未指定の新規会話へ適用し、既存会話の作業場所とチャンネル個別設定は保持します。デフォルト担当は削除できません。Discord/Slackの作業チャンネルを1つ設定すると、問い合わせ用スレッドをそこへ作ります。
+
+`xangi agent list`には予約済みの宛先`xangi:default`も表示します。`xangi agent run default --task "質問と必要な背景"`（`run xangi:default`も可）で問い合わせられます。インスタンスのデフォルトの作業場所・AI設定で新しい会話を開始します。呼び出し元の設定や既存の親の会話履歴は引き継ぎません。結果は既存の完了通知と`status` / `wait`で受け取れます。回答は参考情報であり、ユーザーの承認ではありません。
+
+委譲された子もdefaultへの問い合わせと自分の依頼結果の取得ができます。子は`wait`で回答を受け取り、自分の作業結果に反映してから完了してください。問い合わせを受けたdefaultからの再委譲、および他の宛先への多段委譲は禁止です。同じ宛先への重複依頼・同時実行数の制限も適用します。`inter_chat_ask`は別のxangiインスタンス専用で、この機能のための設定追加は不要です。
 
 ### エージェントの実行設定
 
@@ -2225,3 +2235,9 @@ AIへ記録禁止の追加指示は送りません。日記・memory・FACT・�
 参考: [Codex CLI](https://developers.openai.com/codex/cli/reference)、[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[Claude Code settings](https://code.claude.com/docs/en/settings-reference)。
 
 AI別の確認資料: [Cursor CLI設定](https://cursor.com/docs/cli/reference/configuration)、[Grok CLI](https://docs.x.ai/build/cli/reference)、[Grok ZDR](https://docs.x.ai/developers/faq/security)、[Antigravity CLI](https://www.antigravity.google/docs/cli/reference/)、[Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)、[OpenCode設定](https://opencode.ai/docs/config/)、[OpenRouter ZDR](https://openrouter.ai/docs/guides/features/zdr)。2026-10-09時点のCLI help/公式資料を確認。未確認の非保存フラグは付与しません。
+
+既定担当と通常担当は同じモデル選択・詳細設定フォームを使い、名前・作業場所・AI設定を一つの「保存」で更新します。通常担当は「デフォルト担当の設定を使う」を選べます。既定担当のAI保存に失敗した場合は保存済みの項目を表示し、入力を残して再試行できます。
+
+通常会話から自分と同じ担当への依頼も可能です。新しい独立会話として実行し、元の会話履歴は引き継ぎません。この自己依頼で起動された担当は、defaultへの問い合わせを含め再委譲できません。自己依頼の制限は実行情報に保存され、再起動後も維持されます。
+
+local-llmとOpenRouterのシェル実行は、現在の会話ID・プラットフォーム・担当の作業場所をxangi CLIへ自動で渡します。`xangi agent run`で会話IDを手動指定する必要はありません。

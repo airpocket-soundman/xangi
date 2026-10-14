@@ -757,11 +757,13 @@ In a Docker environment, `.env` lives outside the container and cannot be modifi
 
 ### Per-channel workspaces
 
+On Discord, `/workspace status` also shows the selected agent and its workspace path. The current session refers only to the channel or thread where the command is invoked. An unassigned session in the parent channel does not mean that its threads have no workspace; check each thread for its session path.
+
 Discord and Slack can select a working directory per channel. Threads inherit the parent channel binding. A binding change never rewrites an existing session; it takes effect for the next session after `/new`.
 
 | Command                                 | Description                                            |
 | --------------------------------------- | ------------------------------------------------------ |
-| `/workspace status`                       | Show the channel binding and current session workspace |
+| `/workspace status`                       | Show the channel binding and current session workspace (including paths on Discord) |
 | `/workspace list`                       | List registered workspaces                             |
 | `/workspace set <name> <absolute-path>` | Register an absolute path and bind it to the channel   |
 | `/workspace use <name>`                 | Bind an existing workspace to the channel              |
@@ -1994,11 +1996,19 @@ xangi agent create --name Developer --workspace /absolute/path/to/worktree --rol
 
 `xangi agent list` returns every agent registered on the connected instance. From any conversation, use `xangi agent run AGENT_ID --task "request and necessary context"`. There are no `--project` or `--project-name` options. Keep the run ID and continue other work or end the turn. Completion returns results to the original conversation; concurrent child results are delivered together. Use `status --id RUN_ID` for inspection and `wait --id RUN_ID` only for synchronous work. The running instance Tool Server and Web Chat are required.
 
-`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. No child-to-child messaging or nested delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
+`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. Children may only consult default, with no further delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
 
 Project forms contain a name and shared instructions. Agent forms contain a name, workspace, basic instructions and AI settings. There are no participant or project default agent settings.
 
 A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Agent-bound Studio runs also use that workspace; only runs without an agent accept a caller-selected workspace.
+
+### Asking the default agent
+
+Settings → Agents lists the default agent with a default badge. Its editor contains name, workspace, work-channel and global AI/model/effort settings; the former separate global AI panel is consolidated here. AI settings still use the existing global runtime-settings API and storage. Renaming preserves the reserved xangi:default ID and channel bindings. The selected workspace applies to new default and unassigned conversations; existing sessions retain their workspace snapshots and individual channel overrides remain effective. Default cannot be deleted. Bind one Discord/Slack work channel to receive request threads.
+
+`xangi agent list` includes the reserved `xangi:default` target. Use `xangi agent run default --task "question and necessary background"` (or `run xangi:default`) to ask it. It uses the instance's default workspace and AI settings in a new conversation, not the caller's settings or an existing parent's conversation history. Results return through the existing completion delivery and `status` / `wait` commands. Answers are information, not user authorization.
+
+A delegated worker may consult default and retrieve its own answer. It must use `wait` to receive and incorporate the answer before completing its own task. The default consultation cannot delegate further; other nested delegation remains prohibited. Duplicate requests and the existing concurrency limit also apply. `inter_chat_ask` remains for other xangi instances and requires no changes for this feature.
 
 ### Agent execution settings
 
@@ -2157,3 +2167,9 @@ A normal message such as `@xangi /secret on` works without Slack slash-command r
 Only explicitly handled commands support this path: `/secret on|off|status`, `/new` (also `!new` / `new`), `/stop` (also `!stop` / `stop`), and `!delete [ts]` (bare `delete` without arguments also works). `/delete`, `/models`, `/settings`, `/backend`, `/agent`, `/skill`, and `/restart` require registered Slack slash commands. Mention-prefixed forms of these are ordinary AI input, not the dedicated command. Authorization and bot-response rules still apply.
 
 Standalone Japanese requests also control secret mode: `シークレットにして` or `シークレットモードを開始してください` starts it; `シークレットを終了して` or `シークレットモードを解除してください` ends it; `今シークレット？` or `シークレットの状態を教えて` checks it. Mention the bot on Slack. The same parser applies to Discord, Telegram, LINE, Web, Web chat API and Even Terminal. xangi executes these deterministically without an AI decision. Quoted examples, negations, explanations and requests mixed with other content do not switch the mode. Wait for confirmation before sending content separately; the initial control request may be recorded before the mode starts. Arbitrary paraphrases are not supported.
+
+Default and named agents share the model and advanced-settings form and save their name, workspace, and AI settings with one Save action. Named agents may inherit the default agent settings. If saving default AI settings fails, the form reports which fields were already saved and preserves input for retry.
+
+Ordinary conversations may request their own agent in a new independent session without inheriting conversation history. An agent started by a self-request cannot delegate further, including consultations with default. This restriction is persisted with the run and survives restarts.
+
+Shell commands in local-llm and OpenRouter automatically pass the current conversation ID, platform, and agent workspace to the xangi CLI. No manual conversation ID is needed for `xangi agent run`.

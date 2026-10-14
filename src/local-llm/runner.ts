@@ -1742,6 +1742,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       signal,
       workspace: this.workdir,
       channelId: options?.channelId,
+      platform: this.platform,
       activateTools: (names: string[]) => {
         for (const name of names) session.activeToolNames.add(name);
         console.log(
@@ -2314,6 +2315,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       signal: abortController.signal,
       workspace: this.workdir,
       channelId: options?.channelId,
+      platform: this.platform,
       activateTools: (names: string[]) => {
         for (const n of names) session.activeToolNames.add(n);
       },

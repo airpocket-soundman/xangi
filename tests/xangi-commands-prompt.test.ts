@@ -39,7 +39,8 @@ describe('buildXangiCommands', () => {
 
   it('開発担当の作成方法をオンデマンドで確認させる', () => {
     expect(XANGI_COMMANDS_COMMON).toContain('xangi tool help agent');
-    expect(XANGI_COMMANDS_COMMON).toContain('Choose shared or separate workspaces based on the task');
+    expect(XANGI_COMMANDS_COMMON).toContain('Choose shared or separate workspaces');
+    expect(XANGI_COMMANDS_COMMON).toContain('run default --task');
   });
 
   it('指名された別xangiへの問い合わせを専用コマンドへ誘導する', () => {

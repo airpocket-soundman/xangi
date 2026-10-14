@@ -21,6 +21,7 @@ import {
 } from '../src/discord/ui.js';
 import { clearSessions, createSession, getActiveSessionId, initSessions } from '../src/sessions.js';
 import { clearSettingsCache, initSettings, loadSettings } from '../src/settings.js';
+import * as agentSelection from '../src/agent-selection.js';
 
 let discordCommandsTempDir: string;
 
@@ -31,6 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   clearSessions();
   clearSettingsCache();
   rmSync(discordCommandsTempDir, { recursive: true, force: true });
@@ -699,6 +701,108 @@ describe('Discord Commands', () => {
   });
 
   describe('/workspace command registration', () => {
+    it.each([false, true])(
+      'shows the parent agent workspace without a local session (thread=%s)',
+      async (thread) => {
+        const channelAgent = vi.spyOn(agentSelection, 'channelAgent').mockReturnValue({
+          id: 'history-agent',
+          name: 'History agent',
+          workspaceId: 'history-workspace',
+        } as never);
+        const resolveById = vi
+          .fn()
+          .mockResolvedValue({ name: 'history', path: '/history-workspace' });
+        const handler = createInteractionHandler({
+          config: { agent: {}, discord: { allowedUsers: ['user-123'] } } as Config,
+          resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
+          agentRunner: {} as never,
+          scheduler: {} as never,
+          workdir: discordCommandsTempDir,
+          skillsRef: { current: [] },
+          workspaceRegistry: {
+            resolve: vi.fn().mockResolvedValue({ name: 'default', path: '/channel-default' }),
+            resolveById,
+          } as never,
+        });
+        const reply = vi.fn().mockResolvedValue(undefined);
+        await handler({
+          isAutocomplete: () => false,
+          isButton: () => false,
+          isChatInputCommand: () => true,
+          commandName: 'workspace',
+          channelId: thread ? 'thread-workspace' : 'parent-workspace',
+          channel: { isThread: () => thread, parentId: thread ? 'parent-workspace' : null },
+          user: { id: 'user-123' },
+          options: { getSubcommand: () => 'status' },
+          reply,
+        } as never);
+        expect(channelAgent).toHaveBeenCalledWith('discord', 'parent-workspace');
+        expect(resolveById).toHaveBeenCalledWith('history-workspace');
+        const content = reply.mock.calls[0][0].content;
+        expect(content).toContain('選択中のエージェント: History agent');
+        expect(content).toContain('エージェントのパス: `/history-workspace`');
+        expect(content).toContain('現在のセッション: この場所では未固定');
+        expect(content).not.toContain('現在のセッションのパス:');
+      }
+    );
+
+    it.each([
+      {
+        snapshot: '/saved-workspace',
+        registered: '/registered-workspace',
+        expected: '/saved-workspace',
+      },
+      {
+        snapshot: undefined,
+        registered: '/registered-workspace',
+        expected: '/registered-workspace',
+      },
+      { snapshot: undefined, registered: undefined, expected: undefined },
+    ])(
+      'reports the active session path separately from the channel default: %j',
+      async ({ snapshot, registered, expected }) => {
+        if (registered) {
+          createSession('thread-workspace', {
+            platform: 'discord',
+            workspaceId: 'agent-workspace',
+            workspacePath: snapshot,
+          });
+        }
+        const handler = createInteractionHandler({
+          config: { agent: {}, discord: { allowedUsers: ['user-123'] } } as Config,
+          resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
+          agentRunner: {} as never,
+          scheduler: {} as never,
+          workdir: discordCommandsTempDir,
+          skillsRef: { current: [] },
+          workspaceRegistry: {
+            resolve: vi.fn().mockResolvedValue({ name: 'default', path: '/channel-default' }),
+            getById: () => ({ name: 'agent-workspace', path: registered }),
+          } as never,
+        });
+        const reply = vi.fn().mockResolvedValue(undefined);
+        await handler({
+          isAutocomplete: () => false,
+          isButton: () => false,
+          isChatInputCommand: () => true,
+          commandName: 'workspace',
+          channelId: 'thread-workspace',
+          channel: { isThread: () => true, parentId: 'parent-workspace' },
+          user: { id: 'user-123' },
+          options: { getSubcommand: () => 'status' },
+          reply,
+        } as never);
+        const content = reply.mock.calls[0][0].content;
+        expect(content).toContain('チャンネル設定のパス: `/channel-default`');
+        if (expected) {
+          expect(content).toContain(`現在のセッションのパス: \`${expected}\``);
+        } else {
+          expect(content).toContain('現在のセッション: この場所では未固定');
+          expect(content).not.toContain('現在のセッションのパス:');
+        }
+      }
+    );
+
     it('registers status/list/use/set/reset subcommands', () => {
       const config = {
         agent: { allowedBackends: ['claude-code'] },

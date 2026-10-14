@@ -83,6 +83,7 @@ export interface ToolContext {
   workspace: string;
   userId?: string;
   channelId?: string;
+  platform?: import('../prompts/index.js').ChatPlatform;
   /**
    * tool_search 経由で deferred tool をアクティブ化するためのコールバック。
    * 呼ぶと指定 tool の schema が次ターン以降の LLM リクエストに含まれる。

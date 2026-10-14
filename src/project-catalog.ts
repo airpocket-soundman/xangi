@@ -130,7 +130,21 @@ export class ProjectCatalog {
     return structuredClone(this.state.projects.find((p) => p.id === id));
   }
   agents() {
-    return structuredClone(this.state.agents);
+    return structuredClone(this.state.agents.filter((a) => a.id !== DEFAULT_TEAM_AGENT_ID));
+  }
+  defaultAgent() {
+    return this.agent(DEFAULT_TEAM_AGENT_ID) || defaultTeamAgent();
+  }
+  saveDefaultAgent(input: Input) {
+    const current = this.defaultAgent();
+    return this.saveAgent(
+      {
+        name: input.name ?? current.name,
+        workspaceId: input.workspaceId ?? current.workspaceId,
+        prompt: '',
+      },
+      DEFAULT_TEAM_AGENT_ID
+    );
   }
   agent(id: string) {
     return structuredClone(this.state.agents.find((a) => a.id === id));
@@ -171,7 +185,7 @@ export class ProjectCatalog {
     return structuredClone(this.state.teams || []);
   }
   teamAgents(): SharedAgent[] {
-    return [defaultTeamAgent(), ...this.agents()];
+    return [this.defaultAgent(), ...this.agents()];
   }
   team(id: string): Team | undefined {
     return this.teams().find((p) => p.id === id);
@@ -198,7 +212,7 @@ export class ProjectCatalog {
       ...team,
       agents: team.members.map((m) => {
         const agent =
-          m.agentId === DEFAULT_TEAM_AGENT_ID ? defaultTeamAgent() : this.agent(m.agentId);
+          m.agentId === DEFAULT_TEAM_AGENT_ID ? this.defaultAgent() : this.agent(m.agentId);
         if (!agent) throw new WebProjectError('Teamのメンバーが見つかりません', 409);
         return agent;
       }),
@@ -276,7 +290,9 @@ export class ProjectCatalog {
       ? snapshot ||
         (chosen.startsWith('team:')
           ? this.teamAgent(chosen.slice('team:'.length))
-          : this.agent(chosen))
+          : chosen === DEFAULT_TEAM_AGENT_ID
+            ? this.defaultAgent()
+            : this.agent(chosen))
       : undefined;
     if (chosen && !agent) throw new WebProjectError('エージェントが見つかりません', 404);
     if (!project && !agent) return undefined;

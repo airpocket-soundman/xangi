@@ -1,5 +1,9 @@
 import { inspectAgentRunLogs, logPageOptions } from './agent-run-logs.js';
-import { DEFAULT_TEAM_CONCURRENCY, validateTeamAssignments } from './teams.js';
+import {
+  DEFAULT_TEAM_AGENT_ID,
+  DEFAULT_TEAM_CONCURRENCY,
+  validateTeamAssignments,
+} from './teams.js';
 import { removeRegisteredAgent } from './agent-selection.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ProjectCatalog } from './project-catalog.js';
@@ -38,18 +42,32 @@ export async function executeProjectAgentCommand(
   if (!dependencies) throw new Error('Agents require Web Chat to be enabled');
   const { catalog, runs, start, workspaces } = dependencies;
   const parent = context?.channelId;
-  const session = parent ? getSessionEntry(webAppSessionId(parent)) : undefined;
-  if (
-    parent &&
-    runs.list().some((r) => r.parentContextKey && r.appSessionId === webAppSessionId(parent))
-  )
-    throw new Error('子エージェントからの再委譲はできません');
+  const session = parent
+    ? getSessionEntry(getActiveSessionId(parent) || webAppSessionId(parent))
+    : undefined;
   const action = flags.action || 'list';
+  const agentId = flags.agent === 'default' ? DEFAULT_TEAM_AGENT_ID : flags.agent;
+  const callerRun = parent
+    ? runs.list().find((r) => r.parentContextKey && r.appSessionId === webAppSessionId(parent))
+    : undefined;
+  // A worker may consult the default agent once, but cannot create a delegation chain.
+  if (
+    callerRun &&
+    !['list', 'status', 'wait', 'logs'].includes(action) &&
+    !(
+      !callerRun.selfDelegation &&
+      action === 'run' &&
+      agentId === DEFAULT_TEAM_AGENT_ID &&
+      callerRun.agentId &&
+      callerRun.agentId !== DEFAULT_TEAM_AGENT_ID
+    )
+  )
+    throw new Error('子エージェントからの再委譲はできません（defaultへの問い合わせのみ可能）');
   if (flags.project !== undefined || flags['project-name'] !== undefined)
     throw new Error('エージェント操作に --project / --project-name は不要です');
   if (action === 'list') {
     return JSON.stringify({
-      agents: catalog.agents().map((agent) => {
+      agents: [catalog.defaultAgent(), ...catalog.agents()].map((agent) => {
         const id = agent.id;
         return {
           id,
@@ -57,7 +75,9 @@ export async function executeProjectAgentCommand(
           description: agent.prompt.split('\n')[0].slice(0, 120),
           backend: agent.backend,
           model: agent.model,
-          current: id === session?.selectedAgentId,
+          current:
+            !!session &&
+            id === (callerRun?.agentId || session.selectedAgentId || DEFAULT_TEAM_AGENT_ID),
         };
       }),
     });
@@ -111,40 +131,52 @@ export async function executeProjectAgentCommand(
   if (action !== 'run')
     throw new Error('action must be create, list, delete, run, status, wait or logs');
   if (!flags.task?.trim()) throw new Error('--task is required');
-  if (!flags.agent || !catalog.agent(flags.agent)) throw new Error('エージェントが見つかりません');
-  if (flags.agent === session?.selectedAgentId)
-    throw new Error('自分以外のエージェントを指定してください');
+  const target =
+    agentId === DEFAULT_TEAM_AGENT_ID ? catalog.defaultAgent() : catalog.agent(agentId || '');
+  if (!target) throw new Error('エージェントが見つかりません');
+  const selfDelegation =
+    !callerRun && !!session && agentId === (session.selectedAgentId || DEFAULT_TEAM_AGENT_ID);
   const running = runs
     .list()
     .filter((r) => r.parentContextKey === parent && ['queued', 'running'].includes(r.status));
-  const reservation = JSON.stringify([parent, flags.agent]);
+  const reservation = JSON.stringify([parent, agentId]);
   const reservedForParent = [...reservations].filter((key) => {
     const [owner, id] = JSON.parse(key);
     return owner === parent && !running.some((r) => r.agentId === id);
   }).length;
   if (running.length + reservedForParent >= delegationLimit())
     throw new Error(`同時に依頼できる担当は${delegationLimit()}件までです。結果を待ってください`);
-  if (reservations.has(reservation) || running.some((r) => r.agentId === flags.agent))
+  if (reservations.has(reservation) || running.some((r) => r.agentId === agentId))
     throw new Error('この担当への依頼は実行中です');
   reservations.add(reservation);
   try {
-    const execution = catalog.execution(undefined, flags.agent)!;
-    return JSON.stringify(
-      await start({
-        task: flags.task,
-        instruction: execution.prompt,
-        backend: execution.backend,
-        model: execution.model,
-        effort: execution.effort,
-        workspaceId: execution.workspaceId,
-        localLlmMode: execution.localLlmMode,
-        localLlmReasoningEffort: execution.localLlmReasoningEffort,
-        agentId: flags.agent,
-        parentContextKey: parent,
-        parentPlatform: context?.platform,
-        title: `依頼: ${catalog.agent(flags.agent)!.name}`,
-      })
-    );
+    const execution = catalog.execution(undefined, agentId)!;
+    const run = await start({
+      task: flags.task,
+      instruction: execution.prompt,
+      backend: execution.backend,
+      model: execution.model,
+      effort: execution.effort,
+      workspaceId: execution.workspaceId,
+      localLlmMode: execution.localLlmMode,
+      localLlmReasoningEffort: execution.localLlmReasoningEffort,
+      agentId,
+      selfDelegation,
+      parentContextKey: parent,
+      parentPlatform: context?.platform,
+      title: `依頼: ${target.name}`,
+    });
+    return JSON.stringify({
+      ...run,
+      ...(callerRun
+        ? {
+            nextStep:
+              'Use agent wait --id ' +
+              run.id +
+              ' until completed, then incorporate the answer before completing your own task.',
+          }
+        : {}),
+    });
   } finally {
     reservations.delete(reservation);
   }

@@ -83,7 +83,10 @@ it('uses the injected instance CLI for list/run/status/wait despite login-shell 
       exec('/bin/bash', ['-lc', `export PATH='${shadow}':"$PATH"; ${line}`], { env });
     await expect(shell('xangi agent list')).rejects.toThrow('Unknown command: agent');
     const call = async (args: string) => JSON.parse((await shell(`${command} ${args}`)).stdout);
-    expect((await call('list')).agents.map((a: { id: string }) => a.id)).toEqual([agent.id]);
+    expect((await call('list')).agents.map((a: { id: string }) => a.id)).toEqual(['xangi:default', agent.id]);
+    const defaultRun = await call("run default --task 'question for default'");
+    expect(defaultRun.agentId).toBe('xangi:default');
+    expect(await call(`wait --id ${defaultRun.id}`)).toMatchObject({ result: 'CHILD_RESULT' });
     const created = await call(`create --name Developer --workspace '${childPath}'`);
     expect(created.agent.workspaceId).toBe(created.workspace.id);
     expect(catalog.list()).toEqual([]);
