@@ -1257,7 +1257,7 @@ Agent指定時は、その担当のバックエンド・モデル・推論設定
 
 ### エージェントへの委譲
 
-`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、自分への依頼、同一担当への重複実行、再委譲は拒否します。HTTP Agent Runの任意projectIdはStudio成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
+`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、同一担当への重複実行、defaultへの問い合わせ以外の再委譲は拒否します。予約ID `xangi:default`（CLI別名 `default`）はインスタンス既定のAI設定・Workspaceで独立会話を開始し、その問い合わせ先からの再委譲は拒否します。HTTP Agent Runの任意projectIdはStudio成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
 
 ### エージェントの実行設定
 
@@ -1349,3 +1349,7 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 `secret_` IDは終了後も保存禁止と判定できる識別子。`sessions.ts` は通常セッションだけをシリアライズし、`transcript-logger.ts` は生存中のシークレット履歴だけをメモリに保持する。終了後の遅延callbackは履歴を復活させない。外部履歴の再取り込みを防ぐ会話先IDだけは保持する。
 
 `DynamicRunnerManager` は全backend共通で非resume・専用runner・メモリ内履歴再送を適用する。AIへの記録禁止指示は追加せず、ユーザー設定のhook・auto memoryは変更しない。非対応CLIへ保存ありでfallbackしない。diagnostic抑止はAsyncLocalStorageで並行する通常会話から分離する。monitor、trajectory、AI title、tool HTTP serverも個別に保存境界を確認する。全体event購読者には配信せず、明示的なWeb会話IDに限定した応答transportのみ配信する。詳細と残存範囲はusageのシークレットモードを参照。
+
+デフォルト担当 `xangi:default` の表示名と選択Workspaceはproject-catalog.jsonへ保存し、AI既定値は従来の全体BackendResolverと保存先を使います。設定UIはデフォルト担当の画面へ統合します。担当未指定の新規会話はチャンネルWorkspace指定を優先し、未指定ならデフォルト担当のWorkspaceを使います。既存会話のsnapshotは変更せず、自己呼び出し判定は固定IDで維持します。
+
+通常会話から自分と同じ担当への依頼も可能です。新しい独立会話として実行し、元の会話履歴は引き継ぎません。この自己依頼で起動された担当は、defaultへの問い合わせを含め再委譲できません。自己依頼の制限は実行情報に保存され、再起動後も維持されます。

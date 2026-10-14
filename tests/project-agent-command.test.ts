@@ -48,8 +48,8 @@ it('discovers all agents without loading their full prompts, and returns persist
   const { catalog, reviewer, call, start, runs } = setup();
   catalog.saveAgent({ name: 'Outside', prompt: 'private instructions' });
   const list = await call({ action: 'list' });
-  expect(list.agents).toHaveLength(3);
-  expect(list.agents[1]).toMatchObject({ description: 'review code' });
+  expect(list.agents).toHaveLength(4);
+  expect(list.agents[2]).toMatchObject({ description: 'review code' });
   expect(JSON.stringify(list)).not.toContain('check bugs');
   const run = await call({ action: 'run', agent: reviewer.id, task: 'review the patch' });
   expect(start.mock.calls[0][0]).toMatchObject({
@@ -65,18 +65,17 @@ it('discovers all agents without loading their full prompts, and returns persist
   });
   expect(AgentRunStore.fromDataDir(root).get(run.id)?.projectId).toBeUndefined();
 });
-it('rejects unknown agents, self-delegation, duplicate work, other-parent result access and nested delegation', async () => {
+it('rejects unknown agents, duplicate work, other-parent result access and nested delegation', async () => {
   const { writer, reviewer, call, runs } = setup();
   await expect(call({ action: 'run', agent: 'outside', task: 'test' })).rejects.toThrow(
     '見つかりません'
   );
-  await expect(call({ action: 'run', agent: writer.id, task: 'test' })).rejects.toThrow('自分');
   const run = await call({ action: 'run', agent: reviewer.id, task: 'test' });
   await expect(call({ action: 'run', agent: reviewer.id, task: 'test' })).rejects.toThrow('実行中');
   await expect(call({ action: 'status', id: run.id }, 'other-parent')).rejects.toThrow(
     '見つかりません'
   );
-  await expect(call({ action: 'list' }, `web-chat:${run.appSessionId}`)).rejects.toThrow('再委譲');
+  await expect(call({ action: 'run', agent: writer.id, task: 'nested' }, `web-chat:${run.appSessionId}`)).rejects.toThrow('再委譲');
   runs.markFailed(run.id, new Error('backend unavailable'));
   expect(await call({ action: 'wait', id: run.id })).toMatchObject({
     status: 'failed',
@@ -196,7 +195,7 @@ it('creates and calls an agent outside Web Chat without a project', async () => 
   expect(catalog.list()).toHaveLength(1);
   expect(
     JSON.parse(await executeProjectAgentCommand({ action: 'list' }, { channelId }, deps)).agents
-  ).toHaveLength(3);
+  ).toHaveLength(4);
   await executeProjectAgentCommand(
     { action: 'run', agent: created.agent.id, task: 'implement' },
     { channelId },
@@ -220,6 +219,49 @@ it('lists all agents without a conversation or project', async () => {
   const result = JSON.parse(
     await executeProjectAgentCommand({ action: 'list' }, undefined, { catalog, runs, start })
   );
-  expect(result.agents.map((agent: { id: string }) => agent.id)).toEqual([writer.id, reviewer.id]);
+  expect(result.agents.map((agent: { id: string }) => agent.id)).toEqual(['xangi:default', writer.id, reviewer.id]);
   expect(result).not.toHaveProperty('project');
+});
+
+
+it('discovers and consults default, normalizes aliases, and restricts result access', async () => {
+  const { call, start, runs } = setup();
+  expect((await call({ action: 'list' })).agents[0]).toMatchObject({ id: 'xangi:default', current: false });
+  const run = await call({ action: 'run', agent: 'default', task: 'find the existing avatar' });
+  expect(start.mock.calls[0][0]).toMatchObject({ agentId: 'xangi:default', workspaceId: 'default' });
+  expect(start.mock.calls[0][0].backend).toBeUndefined();
+  await expect(call({ action: 'run', agent: 'xangi:default', task: 'duplicate' })).rejects.toThrow('実行中');
+  runs.markSucceeded(run.id, { result: 'avatar path', sessionId: 'provider' });
+  expect(await call({ action: 'wait', id: run.id })).toMatchObject({ result: 'avatar path' });
+  await expect(call({ action: 'status', id: run.id }, 'unrelated')).rejects.toThrow('見つかりません');
+});
+
+it('lets a delegated worker consult default and read the answer without further delegation', async () => {
+  const { call, reviewer, runs } = setup();
+  const worker = await call({ action: 'run', agent: reviewer.id, task: 'work' });
+  const childContext = `web-chat:${worker.appSessionId}`;
+  expect((await call({ action: 'list' }, childContext)).agents[0].id).toBe('xangi:default');
+  const question = await call({ action: 'run', agent: 'default', task: 'question' }, childContext);
+  expect(question.nextStep).toContain(`wait --id ${question.id}`);
+  await expect(call({ action: 'run', agent: reviewer.id, task: 'recurse' }, `web-chat:${question.appSessionId}`)).rejects.toThrow('再委譲');
+  await expect(call({ action: 'run', agent: 'default', task: 'recurse' }, `web-chat:${question.appSessionId}`)).rejects.toThrow('再委譲');
+  runs.markSucceeded(question.id, { result: 'answer', sessionId: 'provider' });
+  expect(await call({ action: 'wait', id: question.id }, childContext)).toMatchObject({ result: 'answer' });
+  await expect(call({ action: 'status', id: question.id })).rejects.toThrow('見つかりません');
+});
+
+it.each(['default', 'xangi:default', 'named'])('allows ordinary self-request %s but blocks all child delegation', async (target) => {
+  const { call, writer, reviewer, runs } = setup();
+  const context = `web-chat:${createWebSession(target === 'named' ? { selectedAgentId: writer.id } : {})}`;
+  const agent = target === 'named' ? writer.id : target;
+  const run = await call({ action: 'run', agent, task: 'hello' }, context);
+  expect(run.selfDelegation).toBe(true);
+  expect(`web-chat:${run.appSessionId}`).not.toBe(context);
+  expect(AgentRunStore.fromDataDir(root).get(run.id)?.selfDelegation).toBe(true);
+  await expect(call({ action: 'run', agent, task: 'duplicate' }, context)).rejects.toThrow('実行中');
+  for (const next of [agent, 'default', reviewer.id]) {
+    await expect(call({ action: 'run', agent: next, task: 'recurse' }, `web-chat:${run.appSessionId}`)).rejects.toThrow('再委譲');
+  }
+  runs.markSucceeded(run.id, { result: 'hello!', sessionId: 'provider' });
+  expect(await call({ action: 'wait', id: run.id }, context)).toMatchObject({ result: 'hello!' });
 });

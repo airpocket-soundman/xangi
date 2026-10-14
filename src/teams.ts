@@ -24,7 +24,7 @@ export interface TeamSnapshot extends Team {
 export const DEFAULT_TEAM_CONCURRENCY = 16;
 export const MAX_TEAM_CONCURRENCY = 64;
 
-/** Reserved Team-only member; it is not a separately editable catalog Agent. */
+/** Reserved default agent for Teams and direct requests; it is not a separately editable catalog Agent. */
 export const DEFAULT_TEAM_AGENT_ID = 'xangi:default';
 export function defaultTeamAgent(): SharedAgent {
   return {

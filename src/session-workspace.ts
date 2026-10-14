@@ -1,5 +1,6 @@
 import {
   channelAgent,
+  defaultAgentWorkspaceId,
   agentWorkspaceRegistry,
   beginAgentChannelTurn,
   retireAgentSession,
@@ -85,7 +86,9 @@ async function resolveSessionWithWorkspace(
   const workspace =
     agent && (!agent.team || (agent.team.leadership === 'caller' && !agent.id.startsWith('team:')))
       ? await registry.resolveById(agent.workspaceId || 'default')
-      : await registry.resolve(platform, bindingKey);
+      : await registry.resolveById(
+          registry.getBinding(platform, bindingKey) || defaultAgentWorkspaceId()
+        );
   if (channelAgent(platform, bindingKey)?.id !== agent?.id)
     return ensureSessionWithWorkspace(options);
   const appSessionId = ensureSession(contextKey, {

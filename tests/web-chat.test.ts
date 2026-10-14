@@ -668,7 +668,7 @@ describe('web-chat HTTP API', () => {
     const { sessionId } = await post('/api/sessions', { projectId: project.id });
     const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
     const list = JSON.parse(await executeProjectAgentCommand({ action: 'list' }, context));
-    expect(list.agents[0]).toMatchObject({ id: agent.id, description: 'Review code' });
+    expect(list.agents.find((entry: { id: string }) => entry.id === agent.id)).toMatchObject({ id: agent.id, description: 'Review code' });
     const run = JSON.parse(
       await executeProjectAgentCommand(
         { action: 'run', agent: agent.id, task: 'Inspect this patch' },
@@ -856,6 +856,35 @@ describe('web-chat HTTP API', () => {
     rmSync(childPath, { recursive: true, force: true });
   });
 
+  it.each([false, true])('consults default using instance settings and workspace (self=%s)', async (self) => {
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      expect(response.ok).toBe(true);
+      return response.json();
+    };
+    const { agent } = await post('/api/agents', { name: 'Questioner', backend: 'codex', model: 'caller-model' });
+    const { sessionId } = await post('/api/sessions', self ? {} : { agentId: agent.id });
+    const context = { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`, platform: 'web' as const };
+    const oldResolve = resolver.resolve;
+    resolver.resolve = (channelId, requestDefault) => channelId
+      ? oldResolve(channelId, requestDefault)
+      : { backend: 'claude-code', model: 'claude-sonnet-4-6', effort: 'high' };
+    resolver.setChannelOverride(context.channelId, { backend: 'codex', model: 'caller-model' });
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: 'default', task: 'Find the existing avatar' }, context));
+    expect(run.selfDelegation).toBe(self);
+    if (self) {
+      await expect(executeProjectAgentCommand({ action: 'run', agent: 'default', task: 'recurse' }, { channelId: `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`, platform: 'web' })).rejects.toThrow('再委譲');
+    }
+    expect(run).toMatchObject({ agentId: 'xangi:default', workspaceId: 'default', backend: 'claude-code', model: 'claude-sonnet-4-6', effort: 'high' });
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    expect(runner.options.find((o) => o?.appSessionId === run.appSessionId)).toMatchObject({ workdir: realpathSync(testDir), defaultBackend: 'claude-code', defaultModel: 'claude-sonnet-4-6', defaultEffort: 'high' });
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    const answer = JSON.parse(await executeProjectAgentCommand({ action: 'wait', id: run.id }, context));
+    expect(answer.status).toBe('succeeded');
+    expect(answer.result).toBeTruthy();
+    await vi.waitFor(() => expect(runner.callOrder).toContain(context.channelId));
+  });
+
   it('resumes a Web parent once after its delegated child finishes', async () => {
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`${baseUrl}${path}`, {
@@ -894,6 +923,53 @@ describe('web-chat HTTP API', () => {
       });
     } finally {
       rmSync(childPath, { recursive: true, force: true });
+    }
+  });
+
+  it('renames default without changing channel identity or allowing deletion', async () => {
+    const request = async (path: string, body: unknown, method = 'PUT') => fetch(`${baseUrl}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const endpoint = '/api/agents/xangi%3Adefault';
+    const before = await (await fetch(`${baseUrl}/api/agents`)).json();
+    expect(before.agents.find((a: { id: string }) => a.id === 'xangi:default')).toMatchObject({ workspaceId: 'default', workChannel: null });
+    expect((await request(endpoint + '/channel', { action: 'set', platform: 'discord', channelId: 'default-work' })).status).toBe(200);
+    const after = await (await fetch(`${baseUrl}/api/agents`)).json();
+    expect(after.agents.find((a: { id: string }) => a.id === 'xangi:default').workChannel).toEqual({ platform: 'discord', channelId: 'default-work' });
+    expect((await request(endpoint, { name: 'borot' }, 'PATCH')).status).toBe(200);
+    const renamed = await (await fetch(`${baseUrl}/api/agents`)).json();
+    expect(renamed.agents.find((a: { id: string }) => a.id === 'xangi:default')).toMatchObject({ name: 'borot', workChannel: { platform: 'discord', channelId: 'default-work' } });
+    expect((await request(endpoint, { backend: 'codex' }, 'PATCH')).status).toBe(400);
+    expect((await request(endpoint, { workspaceId: 'missing' }, 'PATCH')).status).toBe(400);
+    expect((await request(endpoint, {}, 'DELETE')).status).toBe(400);
+    const create = vi.fn(async (channelId: string) => ({ platform: 'discord' as const, channelId, threadId: 'default-thread', url: 'https://discord.com/channels/g/default-thread' }));
+    registerWorkTransport('discord', { create, send: async () => {}, progress: async () => {} });
+    const context = { channelId: 'questioner', platform: 'discord' as const };
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: 'default', task: 'answer a question' }, context));
+    expect(create.mock.calls[0][0]).toBe('default-work');
+    expect(run.workThread).toMatchObject({ channelId: 'default-work', threadId: 'default-thread' });
+    await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
+    runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    await executeProjectAgentCommand({ action: 'wait', id: run.id }, context);
+    expect((await request(endpoint + '/channel', { action: 'reset' })).status).toBe(200);
+  });
+
+  it('uses the edited default workspace for new Web sessions and protects it from removal', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'default-agent-workspace-'));
+    try {
+      const post = async (path: string, body: unknown, method = 'POST') => {
+        const response = await fetch(`${baseUrl}${path}`, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        expect(response.ok).toBe(true);
+        return response.json();
+      };
+      const { sessionId: before } = await post('/api/sessions', {});
+      const { workspace } = await post('/api/workspaces', { name: 'Writing', path: directory });
+      await post('/api/agents/xangi%3Adefault', { name: 'borot', workspaceId: workspace.id }, 'PATCH');
+      const { sessionId: after } = await post('/api/sessions', {});
+      expect(getSessionEntry(after)?.workspacePath).toBe(realpathSync(directory));
+      expect(getSessionEntry(before)?.workspacePath).toBe(realpathSync(testDir));
+      const response = await fetch(`${baseUrl}/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+      expect(response.status).toBe(409);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

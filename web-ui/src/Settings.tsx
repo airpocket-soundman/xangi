@@ -84,12 +84,6 @@ interface RuntimeSettingsMutation {
   settings: RuntimeSettingsSnapshot;
 }
 
-interface ModelsResponse {
-  status: string;
-  models: Array<{ id: string; displayName?: string; isDefault?: boolean }>;
-  supportedEfforts: string[];
-}
-
 interface RegisteredWorkspace {
   id: string;
   name: string;
@@ -187,10 +181,6 @@ export function Settings() {
   const [backendAuthentication, setBackendAuthentication] = useState<BackendAuthenticationStatus[]>(
     []
   );
-  const [backend, setBackend] = useState('');
-  const [model, setModel] = useState('');
-  const [effort, setEffort] = useState('');
-  const [models, setModels] = useState<ModelsResponse>();
   const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
   const [workspacesStatus, setWorkspacesStatus] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
@@ -233,9 +223,6 @@ export function Settings() {
     ])
       .then(([runtime, startup]) => {
         setSettings(runtime);
-        setBackend(runtime.backend.value.backend);
-        setModel(runtime.backend.value.model || '');
-        setEffort(runtime.backend.value.effort || '');
         setStartupGroups(startup.groups);
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
@@ -267,14 +254,6 @@ export function Settings() {
   };
 
   useEffect(loadWorkspaces, []);
-
-  useEffect(() => {
-    if (!backend) return;
-    setModels(undefined);
-    void getJson<ModelsResponse>(`/api/models?backend=${encodeURIComponent(backend)}`)
-      .then(setModels)
-      .catch(() => setModels({ status: 'unavailable', models: [], supportedEfforts: [] }));
-  }, [backend]);
 
   const loadChannels = () => {
     setChannelsLoading(true);
@@ -368,20 +347,6 @@ export function Settings() {
     } finally {
       setSaving('');
     }
-  };
-
-  const saveBackend = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    void update(
-      {
-        name: 'backend',
-        action: 'set',
-        backend,
-        ...(model && { model }),
-        ...(effort && { effort }),
-      },
-      'backend'
-    );
   };
 
   const updateChannel = async (name: string, value: string) => {
@@ -530,88 +495,6 @@ export function Settings() {
 
         {settings ? (
           <div className="settings-sections">
-            <section className="settings-card" aria-labelledby="settings-ai-title">
-              <div className="settings-card-heading">
-                <div>
-                  <h2 id="settings-ai-title">AIの既定</h2>
-                  <p>チャンネル・Project固有の設定がない会話に使います。</p>
-                </div>
-                <ApplyBadge mode={settings.backend.applyMode} />
-              </div>
-              <form className="settings-backend-form" onSubmit={saveBackend}>
-                <label>
-                  <span>バックエンド</span>
-                  <select
-                    value={backend}
-                    onChange={(event) => {
-                      setBackend(event.target.value);
-                      setModel('');
-                      setEffort('');
-                    }}
-                    disabled={!settings.backend.enabled || saving === 'backend'}
-                  >
-                    {settings.backend.options.map((option) => (
-                      <option value={option} key={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>モデル</span>
-                  {models?.models.length ? (
-                    <select
-                      value={model}
-                      onChange={(event) => setModel(event.target.value)}
-                      disabled={!settings.backend.enabled || saving === 'backend'}
-                    >
-                      <option value="">バックエンド既定</option>
-                      {model && !models.models.some((option) => option.id === model) ? (
-                        <option value={model}>{model}（現在の設定）</option>
-                      ) : null}
-                      {models.models.map((option) => (
-                        <option value={option.id} key={option.id}>
-                          {option.displayName && option.displayName !== option.id
-                            ? `${option.displayName} (${option.id})`
-                            : option.id}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      value={model}
-                      onChange={(event) => setModel(event.target.value)}
-                      placeholder={models ? 'モデル名を入力' : 'モデルを取得中…'}
-                      disabled={
-                        !settings.backend.enabled || saving === 'backend' || models === undefined
-                      }
-                    />
-                  )}
-                </label>
-                <label>
-                  <span>effort</span>
-                  <select
-                    value={effort}
-                    onChange={(event) => setEffort(event.target.value)}
-                    disabled={!settings.backend.enabled || saving === 'backend'}
-                  >
-                    <option value="">バックエンド既定</option>
-                    {(models?.supportedEfforts || []).map((option) => (
-                      <option value={option} key={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="submit"
-                  disabled={!settings.backend.enabled || !backend || saving === 'backend'}
-                >
-                  {saving === 'backend' ? '保存中…' : '既定を保存'}
-                </button>
-              </form>
-            </section>
-
             <section
               id="workspaces"
               className="settings-card"
@@ -708,7 +591,15 @@ export function Settings() {
               )}
             </section>
 
-            <AgentSettings workspaces={workspaces} />
+            <AgentSettings
+              workspaces={workspaces}
+              defaultAI={settings?.backend}
+              onDefaultAISaved={() =>
+                getJson<RuntimeSettingsSnapshot>('/api/runtime-settings')
+                  .then(setSettings)
+                  .catch((cause) => setError(String(cause)))
+              }
+            />
             <TeamSettings />
 
             <section className="settings-card" aria-labelledby="settings-channel-title">

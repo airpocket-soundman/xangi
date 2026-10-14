@@ -1,3 +1,4 @@
+import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
 import { SECRET_NOTICE, parseSecretCommand, isSecretSession } from './secret.js';
 import { checkAgentParents, parentDeliveryDue, parentWatchSettings } from './agent-parent-watch.js';
 import { reserveTeamContinuation } from './team-runner.js';
@@ -325,7 +326,9 @@ export function startWebChat(options: WebChatOptions) {
   const workspaceBrowsers = new Map<string, WorkspaceBrowser>();
   const resolveWorkspace = async (workspaceId?: unknown): Promise<WorkspaceEntry> => {
     const id =
-      typeof workspaceId === 'string' && workspaceId.trim() ? workspaceId.trim() : 'default';
+      typeof workspaceId === 'string' && workspaceId.trim()
+        ? workspaceId.trim()
+        : webProjects.defaultAgent().workspaceId || 'default';
     if (!workspaceRegistry) {
       if (id !== 'default') throw new WebProjectError('Workspaceが見つかりません', 404);
       return { id: 'default', name: 'default', path: realpathSync(workdir), isDefault: true };
@@ -524,12 +527,13 @@ export function startWebChat(options: WebChatOptions) {
           ? options.resolver.resolve(String(body.parentContextKey)).backend
           : '')
     ).trim() as AgentBackend;
-    const modelValue = agentId ? execution?.model : body.model;
-    const effortValue = agentId ? execution?.effort : body.effort;
+    const defaults = agentId === DEFAULT_TEAM_AGENT_ID ? options.resolver.resolve() : undefined;
+    const modelValue = defaults ? defaults.model : agentId ? execution?.model : body.model;
+    const effortValue = defaults ? defaults.effort : agentId ? execution?.effort : body.effort;
     const model = modelValue ? String(modelValue).trim() : undefined;
     const effort = effortValue ? (String(effortValue) as EffortLevel) : undefined;
     const localOptions = normalizeAgentOptions(
-      agentId ? { ...execution, backend } : { ...body, backend }
+      agentId ? { ...execution, ...defaults, backend } : { ...body, backend }
     );
     if (!options.resolver.isBackendSelectable(backend)) {
       throw new AgentRunError(
@@ -576,6 +580,7 @@ export function startWebChat(options: WebChatOptions) {
       projectId,
       agentId,
       teamId: execution?.team?.id,
+      selfDelegation: body.selfDelegation === true,
       parentContextKey: body.parentContextKey as string | undefined,
       parentPlatform: body.parentPlatform as AgentRun['parentPlatform'],
     });
@@ -2320,7 +2325,7 @@ export function startWebChat(options: WebChatOptions) {
           return;
         }
         const agent = webProjects
-          .agents()
+          .teamAgents()
           .find((candidate) => candidate.workspaceId === workspace.id);
         if (agent) {
           sendJson(res, 409, { error: `Workspaceはエージェント「${agent.name}」で使用中です` });
@@ -2422,7 +2427,7 @@ export function startWebChat(options: WebChatOptions) {
         200,
         {
           agents: webProjects
-            .agents()
+            .teamAgents()
             .map((agent) => ({ ...agent, workChannel: agentWorkChannel(agent.id) || null })),
         },
         { 'Cache-Control': 'no-store' }
@@ -2437,7 +2442,8 @@ export function startWebChat(options: WebChatOptions) {
       }
       await handleProjectMutation(res, async () => {
         const id = decodeURIComponent(agentChannelMatch[1]);
-        if (!webProjects.agent(id)) throw new WebProjectError('エージェントが見つかりません', 404);
+        if (id !== DEFAULT_TEAM_AGENT_ID && !webProjects.agent(id))
+          throw new WebProjectError('エージェントが見つかりません', 404);
         if (!options.config || !options.resolver)
           throw new WebProjectError('runtime settings are not available', 503);
         const body = await readBody(req);
@@ -2472,6 +2478,22 @@ export function startWebChat(options: WebChatOptions) {
     ) {
       await handleProjectMutation(res, async () => {
         const id = agentMatch ? decodeURIComponent(agentMatch[1]) : undefined;
+        if (id === DEFAULT_TEAM_AGENT_ID) {
+          if (req.method === 'DELETE')
+            throw new WebProjectError('既定のエージェントは削除できません', 400);
+          const body = await readBody(req);
+          if (Object.keys(body).some((key) => !['name', 'workspaceId'].includes(key)))
+            throw new WebProjectError('既定のAI設定は全体設定のAPIで更新してください', 400);
+          if (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim()))
+            throw new WebProjectError('名前を指定してください', 400);
+          if (body.workspaceId !== undefined) {
+            if (typeof body.workspaceId !== 'string' || !body.workspaceId.trim())
+              throw new WebProjectError('作業場所を指定してください', 400);
+            await resolveWorkspace(body.workspaceId);
+          }
+          const agent = webProjects.saveDefaultAgent(body);
+          return { body: { agent } };
+        }
         if (id && !webProjects.agent(id))
           throw new WebProjectError('エージェントが見つかりません', 404);
         if (req.method === 'DELETE') {

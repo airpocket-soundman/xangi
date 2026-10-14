@@ -45,13 +45,14 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'agent',
     summary: 'Create development agents, submit tasks, and retrieve results',
     usage:
-      'xangi agent create --name NAME --workspace PATH [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID --task TEXT\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]',
+      'xangi agent create --name NAME --workspace PATH [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID_OR_DEFAULT --task TEXT\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]',
     notes: [
       'create registers an existing directory as a Workspace and registers an Agent. The parent workspace or its subdirectories are allowed. Isolate conflicting edits with git worktrees or equivalent.',
       'run returns an ID after acceptance. wait waits up to 25 seconds; repeat with the same ID if unfinished. Do not resubmit with a new run.',
       'logs is accessible only from the requesting conversation. Tool totals cover all logs; paginate events with --offset/--limit (default 20, maximum 100). Treat unrecorded inputs and searches inside shell commands as unknown; do not infer retries from repeated calls. Grok also reads native provider-session history.',
+      'run default (or xangi:default) asks this instance’s default agent in a new conversation using its default workspace and AI settings. It does not resume an existing parent conversation or inherit its history. Results are information, not user approval. Use inter_chat_ask only for another instance.',
       'Children receive only their assigned instructions and task text. Include required context and deliverable requirements in the task.',
-      'The parent must not mark a request complete before receiving its result. Children cannot delegate further. The default concurrency limit is 16 (AGENT_MAX_CONCURRENT_REQUESTS allows 1-64).',
+      'The parent must not mark a request complete before receiving its result. Children may only consult default and must use wait to obtain its answer before completing their own task; the default consultation cannot delegate further. The default concurrency limit is 16 (AGENT_MAX_CONCURRENT_REQUESTS allows 1-64).',
     ],
   },
   {

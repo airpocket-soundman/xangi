@@ -25,6 +25,8 @@ export interface AgentRun {
   teamId?: string;
   teamTurnId?: string;
   teamPhase?: string;
+  /** Self-requests cannot delegate further, including default consultations. */
+  selfDelegation?: boolean;
   parentContextKey?: string;
   /** Platform of the parent conversation, used for completion delivery. */
   parentPlatform?: 'discord' | 'slack' | 'telegram' | 'web' | 'line';
@@ -76,6 +78,8 @@ export interface CreateAgentRunInput {
   teamId?: string;
   teamTurnId?: string;
   teamPhase?: string;
+  /** Self-requests cannot delegate further, including default consultations. */
+  selfDelegation?: boolean;
   parentContextKey?: string;
   parentPlatform?: AgentRun['parentPlatform'];
   task: string;
@@ -130,6 +134,7 @@ export class AgentRunStore {
       teamId: input.teamId,
       teamTurnId: input.teamTurnId,
       teamPhase: input.teamPhase,
+      selfDelegation: input.selfDelegation === true,
       parentContextKey: input.parentContextKey,
       parentPlatform: input.parentPlatform,
       parentDeliveryTracked: Boolean(input.parentContextKey),

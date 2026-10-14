@@ -16,8 +16,9 @@ describe('settings UI', () => {
   it('uses a select when model discovery returns choices and exposes workspace management', () => {
     const source = readFileSync(new URL('../web-ui/src/Settings.tsx', import.meta.url), 'utf8');
 
-    expect(source).toContain('models?.models.length ? (');
-    expect(source).toContain('<option value="">バックエンド既定</option>');
+    const agents = readFileSync(new URL('../web-ui/src/AgentSettings.tsx', import.meta.url), 'utf8');
+    expect(agents).toContain('agentModelOptions.map((model)');
+    expect(agents).toContain('<option value="">バックエンドのデフォルト</option>');
     expect(source).toContain('aria-labelledby="settings-workspace-title"');
     expect(source).toContain("getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces')");
     expect(source).toContain('Workspaceの登録を解除');

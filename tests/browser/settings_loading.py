@@ -50,7 +50,7 @@ with sync_playwright() as playwright:
             page = context.new_page()
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto("http://settings.test/settings", wait_until="domcontentloaded")
-            expect(page.get_by_role("heading", name="AIの既定", exact=True)).to_be_visible()
+            expect(page.get_by_role("heading", name="エージェント", exact=True)).to_be_visible()
             expect(page.get_by_text("接続と認証状態を確認しています…", exact=True)).to_be_visible()
             expect(page.get_by_role("heading", name="起動設定テストの起動設定", exact=True)).to_be_attached()
             expect(page.locator("#respond-bots-setting")).to_be_enabled()
@@ -60,7 +60,7 @@ with sync_playwright() as playwright:
             pending.pop(0).fulfill(status=500, json={"error": "test failure"})
             expect(page.get_by_role("alert")).to_contain_text("接続と認証状態を取得できませんでした")
             expect(page.locator("#respond-bots-setting")).to_be_enabled()
-            page.get_by_role("button", name="再読み込み", exact=True).click()
+            page.get_by_role("alert").get_by_role("button", name="再読み込み", exact=True).click()
             expect(page.get_by_text("接続と認証状態を確認しています…", exact=True)).to_be_visible()
             # Allow the retried request to reach the mock, without a wall-clock sleep.
             page.wait_for_function("document.querySelector('[role=alert]') === null")

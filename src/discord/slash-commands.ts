@@ -1,6 +1,6 @@
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
 import { handleSecretConversationCommand } from '../secret-conversation-command.js';
-import { listSelectableAgents, listSelectableTeams } from '../agent-selection.js';
+import { channelAgent, listSelectableAgents, listSelectableTeams } from '../agent-selection.js';
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
@@ -1349,6 +1349,10 @@ export function createInteractionHandler(
       try {
         if (subcommand === 'status') {
           const selected = await workspaceRegistry.resolve('discord', settingsChannelId);
+          const agent = channelAgent('discord', settingsChannelId);
+          const agentWorkspace = agent
+            ? await workspaceRegistry.resolveById(agent.workspaceId || 'default')
+            : undefined;
           const activeId = getActiveSessionId(channelId);
           const active = activeId ? getSessionEntry(activeId) : undefined;
           const activeWorkspace = active?.workspaceId
@@ -1357,10 +1361,19 @@ export function createInteractionHandler(
           await interaction.reply({
             content: [
               `チャンネル設定: ${selected.name}`,
-              `パス: \`${selected.path}\``,
+              `チャンネル設定のパス: \`${selected.path}\``,
+              ...(agent && agentWorkspace
+                ? [
+                    `選択中のエージェント: ${agent.name}`,
+                    `エージェントのパス: \`${agentWorkspace.path}\``,
+                  ]
+                : []),
               activeWorkspace
                 ? `現在のセッション: ${activeWorkspace.name}（変更は次の /new から反映）`
-                : '現在のセッション: 未固定',
+                : '現在のセッション: この場所では未固定（スレッド内のセッションは各スレッドで確認）',
+              ...(active?.workspacePath || activeWorkspace?.path
+                ? [`現在のセッションのパス: \`${active?.workspacePath || activeWorkspace?.path}\``]
+                : []),
             ].join('\n'),
             ephemeral: true,
           });

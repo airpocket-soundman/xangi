@@ -147,3 +147,40 @@ it('does not persist a selection whose backend is unavailable',async()=>{
   await expect(executeRuntimeSettingsCommand({name:'agent',platform:'discord',channelId:'channel',action:'set',value:f.agent.id},{resolver:f.resolver})).rejects.toThrow('利用できません');
   expect(channelAgent('discord','channel')).toBeUndefined();
 });
+
+
+it.each(['discord', 'slack'])('binds the reserved default agent on %s and restores individual settings on reset', async platform => {
+  const f = await setup();
+  f.resolver.setChannelOverride('C-default', { backend: 'claude-code', model: 'channel-model' });
+  await changeChannelAgent(platform, 'C-default', 'xangi:default');
+  expect(channelAgent(platform, 'C-default')).toMatchObject({ id: 'xangi:default', workspaceId: 'default' });
+  const snapshot = await channelAgentSnapshot(platform, 'C-default');
+  expect(snapshot).toMatchObject({ workspaceId: 'default', workspacePath: root, selectedAgentId: 'xangi:default' });
+  expect(f.resolver.resolve('C-default')).toMatchObject({ backend: 'codex', model: 'global-model' });
+  registerAgentSelection(root, { catalog: f.catalog, registry: f.registry, runner: f.runner, busy: f.busy });
+  expect(channelAgent(platform, 'C-default')?.id).toBe('xangi:default');
+  await expect(changeChannelAgent(platform, 'other', 'xangi:default')).rejects.toThrow('最大1つ');
+  f.busy.mockReturnValue(true);
+  await expect(changeChannelAgent(platform, 'C-default')).rejects.toThrow('処理中');
+  f.busy.mockReturnValue(false);
+  await changeChannelAgent(platform, 'C-default');
+  expect(channelAgent(platform, 'C-default')).toBeUndefined();
+  expect(f.resolver.resolve('C-default')).toMatchObject({ backend: 'claude-code', model: 'channel-model' });
+});
+
+it('uses the renamed default workspace for new unassigned conversations and preserves channel overrides', async () => {
+  const f = await setup();
+  const first = await ensureSessionWithWorkspace({ registry: f.registry, platform: 'discord', contextKey: 'old', bindingKey: 'old' });
+  f.catalog.saveDefaultAgent({ name: 'borot', workspaceId: f.workspace.id });
+  expect(() => removeRegisteredAgent('xangi:default', f.catalog)).toThrow('削除できません');
+  const next = await ensureSessionWithWorkspace({ registry: f.registry, platform: 'discord', contextKey: 'new', bindingKey: 'new' });
+  expect(next.workspace?.id).toBe(f.workspace.id);
+  const old = await ensureSessionWithWorkspace({ registry: f.registry, platform: 'discord', contextKey: 'old', bindingKey: 'old' });
+  expect(old.workspace?.id).toBe('default');
+  expect(old.appSessionId).toBe(first.appSessionId);
+  await f.registry.bind('discord', 'override', 'default');
+  const override = await ensureSessionWithWorkspace({ registry: f.registry, platform: 'discord', contextKey: 'override', bindingKey: 'override' });
+  expect(override.workspace?.id).toBe('default');
+  await changeChannelAgent('discord', 'bound', 'xangi:default');
+  expect(channelAgent('discord', 'bound')?.name).toBe('borot');
+});

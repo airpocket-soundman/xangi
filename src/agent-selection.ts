@@ -1,5 +1,5 @@
 import { agentWorkBusy } from './agent-work.js';
-import { teamCallerInstructions, upgradeLegacyTeam } from './teams.js';
+import { DEFAULT_TEAM_AGENT_ID, teamCallerInstructions, upgradeLegacyTeam } from './teams.js';
 import { migrateTeamId } from './team-migration.js';
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -46,7 +46,9 @@ export async function channelAgentSnapshot(
     const workspace = registry
       ? agent
         ? await registry.resolveById(agent.workspaceId || 'default')
-        : await registry.resolve(platform, channel)
+        : await registry.resolveById(
+            registry.getBinding(platform, channel) || defaultAgentWorkspaceId()
+          )
       : undefined;
     return {
       workspaceId: workspace?.id,
@@ -126,17 +128,25 @@ export function listSelectableTeams() {
   return active?.catalog.teams() || [];
 }
 export function listSelectableAgents() {
-  return active?.catalog.agents() || [];
+  return active ? [active.catalog.defaultAgent(), ...active.catalog.agents()] : [];
 }
 export function retireAgentSession(contextKey: string): void {
   active?.runner.destroy?.(contextKey);
+}
+export function defaultAgentWorkspaceId(): string {
+  return active?.catalog.defaultAgent().workspaceId || 'default';
 }
 export function agentWorkspaceRegistry(): WorkspaceRegistry | undefined {
   return active?.registry;
 }
 export function channelAgent(platform: string, channel: string) {
   const id = bindings[key(platform, channel)];
-  const agent = id ? active?.catalog.agent(id) : undefined;
+  const agent =
+    id === DEFAULT_TEAM_AGENT_ID
+      ? active?.catalog.defaultAgent()
+      : id
+        ? active?.catalog.agent(id)
+        : undefined;
   if (id && !agent)
     throw new Error('設定されたエージェントが見つかりません。担当設定を解除してください');
   return agent;
@@ -228,7 +238,12 @@ export async function changeChannelAgent(
   if (!active || !file) throw new Error('エージェント設定はWeb Chat有効時に利用できます');
   if (!['discord', 'slack'].includes(platform) || !channel.trim())
     throw new Error('Discord/Slackのチャンネルを指定してください');
-  const candidate = id ? active.catalog.agent(id) : undefined;
+  const candidate =
+    id === DEFAULT_TEAM_AGENT_ID
+      ? active.catalog.defaultAgent()
+      : id
+        ? active.catalog.agent(id)
+        : undefined;
   if (id && !candidate) throw new Error('エージェントが見つかりません');
   if (bindings[key(platform, channel)] === id) return;
   if (id && Object.entries(bindings).some(([k, v]) => v === id && k !== key(platform, channel)))
@@ -272,6 +287,8 @@ export function removeRegisteredAgent(
   catalog: ProjectCatalog,
   isBusy: (id: string) => boolean = () => false
 ): void {
+  if (id === DEFAULT_TEAM_AGENT_ID)
+    throw new WebProjectError('既定のエージェントは削除できません', 400);
   if (!catalog.agent(id)) throw new WebProjectError('エージェントが見つかりません', 404);
   const channels = Object.entries(bindings)
     .filter(([, value]) => value === id)

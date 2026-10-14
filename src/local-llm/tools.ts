@@ -15,8 +15,7 @@ import { tmpdir } from 'os';
 import { resolve, join, dirname, relative, sep, isAbsolute, basename } from 'path';
 import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler, ToolCatalogEntry } from './types.js';
-import { getSafeEnv } from '../safe-env.js';
-import { getGitHubEnv } from '../github-auth.js';
+import { buildCliEnv } from '../cli-process.js';
 import { loadSkills, type Skill } from '../skills.js';
 import { resolveAttachmentPath } from '../file-utils.js';
 
@@ -123,13 +122,13 @@ const execToolHandler: ToolHandler = {
     }
 
     try {
-      const safeEnv = getSafeEnv();
+      const env = buildCliEnv(context.channelId, context.platform, context.workspace);
       const { stdout, stderr } = await shellExec(command, {
         cwd,
         timeout: EXEC_TIMEOUT_MS,
         signal: context.signal,
         maxBuffer: 1024 * 1024,
-        env: { ...safeEnv, ...getGitHubEnv(safeEnv) },
+        env,
       });
       return { success: true, output: [stdout, stderr].filter(Boolean).join('\n').trim() };
     } catch (err) {

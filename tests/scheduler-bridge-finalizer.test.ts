@@ -25,10 +25,8 @@ type StreamCallbacks = {
 function buildBridge(
   runImpl: (callbacks: StreamCallbacks) => Promise<AgentRunResult>,
   workspaceRegistry?: {
-    resolve: (
-      platform: string,
-      channelId: string
-    ) => Promise<{
+    getBinding: (platform: string, channelId: string) => string | undefined;
+    resolveById: (id: string) => Promise<{
       id: string;
       name: string;
       path: string;
@@ -268,7 +266,8 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
 
   it('スケジューラ実行はチャンネル設定のワークスペースを使う', async () => {
     const workspaceRegistry = {
-      resolve: vi.fn(async () => ({
+      getBinding: vi.fn(() => 'project'),
+      resolveById: vi.fn(async () => ({
         id: 'project',
         name: 'project',
         path: '/mounted/project',
@@ -282,7 +281,8 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
 
     await runner('scheduled prompt', 'channel-1');
 
-    expect(workspaceRegistry.resolve).toHaveBeenCalledWith('discord', 'channel-1');
+    expect(workspaceRegistry.getBinding).toHaveBeenCalledWith('discord', 'channel-1');
+    expect(workspaceRegistry.resolveById).toHaveBeenCalledWith('project');
     expect(agentRunner.runStream).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(Object),
