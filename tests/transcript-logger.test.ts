@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
+import {
+  appendFileSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -11,6 +19,7 @@ import {
   readSessionMessagesTail,
   updateMessageContent,
   updateLatestMessageUsage,
+  attachLatestAssistantAttachments,
   deleteMessage,
   attachPlatformMessageIdToLast,
   ensureVisibleAssistantResponse,
@@ -21,6 +30,7 @@ import {
   getSessionLogPathForRead,
   logCompactionCheckpoint,
   readLatestCompactionCheckpoint,
+  openSecretTranscript,
 } from '../src/transcript-logger.js';
 
 describe('transcript-logger edit/delete', () => {
@@ -80,6 +90,106 @@ describe('transcript-logger edit/delete', () => {
     expect(readSessionMessages(workdir, sessionId).at(-1)).toMatchObject({
       usage: { duration_ms: 12_345 },
     });
+  });
+
+  it('records attachments on the first assistant response after the last user', () => {
+    logPrompt(workdir, sessionId, 'first question');
+    logResponse(workdir, sessionId, { result: 'first answer' });
+    logPrompt(workdir, sessionId, 'second question');
+    logError(workdir, sessionId, 'Session resume failed, retrying');
+    logResponse(workdir, sessionId, { result: 'second answer', sessionId: 'provider-session' });
+
+    const updated = attachLatestAssistantAttachments(workdir, sessionId, [
+      '/x/レポート（最終版）、確認.pdf',
+      '/x/my report (v2).pdf',
+    ]);
+
+    expect(updated).toMatchObject({
+      role: 'assistant',
+      content: {
+        result: 'second answer',
+        sessionId: 'provider-session',
+        attachments: ['/x/レポート（最終版）、確認.pdf', '/x/my report (v2).pdf'],
+      },
+    });
+    expect(updated?.edited).toBeUndefined();
+    expect(updated?.editedAt).toBeUndefined();
+    const entries = readSessionMessages(workdir, sessionId);
+    expect(entries[1].content).toEqual({ result: 'first answer' });
+    expect(entries[3].role).toBe('error');
+  });
+
+  it('converts string content without changing the visible result', () => {
+    logPrompt(workdir, sessionId, 'question');
+    const logsDir = join(workdir, 'logs', 'sessions');
+    appendFileSync(
+      join(logsDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        id: 'string-assistant',
+        role: 'assistant',
+        content: 'same answer',
+        createdAt: new Date().toISOString(),
+      })}\n`
+    );
+
+    attachLatestAssistantAttachments(workdir, sessionId, ['/x/report.pdf']);
+
+    expect(readSessionMessages(workdir, sessionId).at(-1)?.content).toEqual({
+      result: 'same answer',
+      attachments: ['/x/report.pdf'],
+    });
+  });
+
+  it('merges attachments in order and de-duplicates them', () => {
+    const report = '/x/レポート（最終版）、確認.pdf';
+    const spaced = '/x/my report (v2).pdf';
+    logPrompt(workdir, sessionId, 'question');
+    logResponse(workdir, sessionId, { result: 'answer', attachments: [report] });
+
+    attachLatestAssistantAttachments(workdir, sessionId, [report, spaced, report]);
+    expect(readSessionMessages(workdir, sessionId).at(-1)?.content).toMatchObject({
+      attachments: [report, spaced],
+    });
+  });
+
+  it('returns null for empty attachments and does not target another turn', () => {
+    logPrompt(workdir, sessionId, 'first question');
+    logResponse(workdir, sessionId, { result: 'first answer' });
+    expect(attachLatestAssistantAttachments(workdir, sessionId, [])).toBeNull();
+
+    logPrompt(workdir, sessionId, 'unfinished question');
+    expect(attachLatestAssistantAttachments(workdir, sessionId, ['/x/wrong.pdf'])).toBeNull();
+    expect(readSessionMessages(workdir, sessionId)[1].content).toEqual({
+      result: 'first answer',
+    });
+
+    const noUserSession = 'no-user';
+    const noUserDir = join(workdir, 'logs', 'sessions');
+    appendFileSync(
+      join(noUserDir, `${noUserSession}.jsonl`),
+      `${JSON.stringify({
+        id: 'orphan-assistant',
+        role: 'assistant',
+        content: { result: 'orphan' },
+        createdAt: new Date().toISOString(),
+      })}\n`
+    );
+    expect(attachLatestAssistantAttachments(workdir, noUserSession, ['/x/wrong.pdf'])).toBeNull();
+  });
+
+  it('updates secret transcripts through the in-memory rewrite route', () => {
+    const secretSessionId = 'secret_attachment-test';
+    openSecretTranscript(secretSessionId);
+    logPrompt(workdir, secretSessionId, 'private question');
+    logResponse(workdir, secretSessionId, { result: 'private answer' });
+
+    attachLatestAssistantAttachments(workdir, secretSessionId, ['/x/private report.pdf']);
+
+    expect(readSessionMessages(workdir, secretSessionId).at(-1)?.content).toEqual({
+      result: 'private answer',
+      attachments: ['/x/private report.pdf'],
+    });
+    expect(existsSync(join(workdir, 'logs', 'sessions', `${secretSessionId}.jsonl`))).toBe(false);
   });
 
   it('deleteMessage removes the matching entry and keeps order of others', () => {

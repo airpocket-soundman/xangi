@@ -18,7 +18,7 @@ import {
   realpathSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { createServer, type Server } from 'http';
 import { startWebChat } from '../src/web-chat.js';
 import {
@@ -140,6 +140,7 @@ class FakeRunner implements AgentRunner {
   nextResult = 'ok';
   nextFailed = false;
   nextError?: Error;
+  nextAttachments?: string[];
   persistResults = false;
 
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
@@ -156,7 +157,12 @@ class FakeRunner implements AgentRunner {
       }
       throw error;
     }
-    const result = { result: this.nextResult, sessionId: `provider-${channelId}` };
+    const result = {
+      result: this.nextResult,
+      sessionId: `provider-${channelId}`,
+      attachments: this.nextAttachments,
+    };
+    this.nextAttachments = undefined;
     if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
       const logsDir = join(process.env.WORKSPACE_PATH, 'logs', 'sessions');
       mkdirSync(logsDir, { recursive: true });
@@ -190,8 +196,10 @@ class FakeRunner implements AgentRunner {
           result: this.nextResult,
           sessionId: `provider-${channelId}`,
           failed: this.nextFailed,
+          attachments: this.nextAttachments,
         };
         this.nextFailed = false;
+        this.nextAttachments = undefined;
         if (this.persistResults && options?.appSessionId && process.env.WORKSPACE_PATH) {
           const logsDir = join(process.env.WORKSPACE_PATH, 'logs', 'sessions');
           mkdirSync(logsDir, { recursive: true });
@@ -200,7 +208,11 @@ class FakeRunner implements AgentRunner {
             join(logsDir, `${options.appSessionId}.jsonl`),
             [
               JSON.stringify({ role: 'user', content: prompt, createdAt }),
-              JSON.stringify({ role: 'assistant', content: result, createdAt }),
+              JSON.stringify({
+                role: 'assistant',
+                content: { ...result, attachments: undefined },
+                createdAt,
+              }),
             ].join('\n') + '\n'
           );
         }
@@ -2859,6 +2871,182 @@ process.stdin.on('end', () => process.exit(0));
     expect(textEvent?.data.fullText).toBe('回答本文');
     expect(done?.data.response).toBe('回答本文');
     expect(done?.data.replySuggestions).toEqual(['続けて', '詳しく', '別案']);
+  });
+
+  describe('structured assistant attachments', () => {
+    const sendChat = async (id: string, message: string) => {
+      const responsePromise = fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appSessionId: id, message }),
+      });
+      const contextKey = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
+      await vi.waitFor(() => expect(runner.pending.has(contextKey)).toBe(true));
+      expect(runner.release(contextKey)).toBe(true);
+      const response = await responsePromise;
+      const { events: streamEvents } = await readSSEUntilDone(response.body);
+      return streamEvents.find((event) => event.event === 'done');
+    };
+
+    const latestAssistantEntry = (id: string) =>
+      readSessionMessages(testDir, id)
+        .filter((entry) => entry.role === 'assistant')
+        .at(-1);
+
+    const createWebSessionFromApi = async () =>
+      (
+        (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()) as {
+          sessionId: string;
+        }
+      ).sessionId;
+
+    it('persists attachments, reloads them, and serves downloads', async () => {
+      const id = await createWebSessionFromApi();
+      const japanesePdf = join(testDir, 'レポート（最終版）、確認.pdf');
+      const spacedPdf = join(testDir, 'my report (v2).pdf');
+      const japaneseText = join(testDir, 'レポート（最終版）、確認.txt');
+      writeFileSync(japanesePdf, 'japanese pdf bytes');
+      writeFileSync(spacedPdf, 'spaced pdf bytes');
+      writeFileSync(japaneseText, '確認用テキスト');
+      const attachments = [
+        realpathSync(japanesePdf),
+        realpathSync(spacedPdf),
+        realpathSync(japaneseText),
+      ];
+      runner.persistResults = true;
+      runner.nextResult = '添付を用意しました';
+      runner.nextAttachments = attachments;
+
+      const done = await sendChat(id, 'ファイルを送って');
+      const stored = latestAssistantEntry(id);
+
+      expect(stored?.content).toMatchObject({
+        result: '添付を用意しました',
+        attachments,
+      });
+      expect(stored?.edited).toBeUndefined();
+      expect(stored?.editedAt).toBeUndefined();
+      expect(done?.data).not.toHaveProperty('attachments');
+
+      const detail = (await (await fetch(`${baseUrl}/api/sessions/${id}`)).json()) as {
+        messages: Array<{ role: string; content: string; attachments: string[] }>;
+      };
+      expect(detail.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        content: '添付を用意しました',
+        attachments,
+      });
+
+      for (const file of attachments.slice(0, 2)) {
+        const params = new URLSearchParams({ sessionId: id, path: file, mode: 'download' });
+        const download = await fetch(`${baseUrl}/api/session-attachment?${params}`);
+        expect(download.status).toBe(200);
+        expect(download.headers.get('content-disposition')).toContain('attachment');
+        expect(download.headers.get('content-disposition')).toContain(
+          `filename*=UTF-8''${encodeURIComponent(basename(file))}`
+        );
+        expect(Buffer.from(await download.arrayBuffer())).toEqual(readFileSync(file));
+      }
+
+      const infoParams = new URLSearchParams({
+        sessionId: id,
+        path: attachments[2],
+        mode: 'info',
+      });
+      const info = await fetch(`${baseUrl}/api/session-attachment?${infoParams}`);
+      expect(info.status).toBe(200);
+      expect(await info.json()).toMatchObject({ kind: 'text', text: '確認用テキスト' });
+
+      const otherSession = await createWebSessionFromApi();
+      const denied = await fetch(
+        `${baseUrl}/api/session-attachment?${new URLSearchParams({
+          sessionId: otherSession,
+          path: attachments[0],
+          mode: 'download',
+        })}`
+      );
+      expect(denied.status).toBe(403);
+    });
+
+    it('leaves stored content unchanged without attachments and ignores failed attachments', async () => {
+      const id = await createWebSessionFromApi();
+      runner.persistResults = true;
+      runner.nextResult = '添付なし';
+      await sendChat(id, '通常応答');
+      const plain = latestAssistantEntry(id);
+      expect(plain?.content).toEqual({
+        result: '添付なし',
+        sessionId: `provider-${WEB_CHAT_CONTEXT_PREFIX}${id}`,
+        failed: false,
+      });
+
+      runner.nextResult = '失敗応答';
+      runner.nextFailed = true;
+      runner.nextAttachments = [join(testDir, 'partial.pdf')];
+      await sendChat(id, '失敗して');
+      const failed = latestAssistantEntry(id);
+      expect(failed?.content).toEqual({
+        result: '失敗応答',
+        sessionId: `provider-${WEB_CHAT_CONTEXT_PREFIX}${id}`,
+        failed: true,
+      });
+      expect(readSessionMessages(testDir, id).every((entry) => !entry.edited)).toBe(true);
+    });
+
+    it('keeps the previous turn attachments and leaves the next turn unattached', async () => {
+      const id = await createWebSessionFromApi();
+      const first = join(testDir, 'first report.pdf');
+      writeFileSync(first, 'first');
+      runner.persistResults = true;
+      runner.nextResult = 'first answer';
+      runner.nextAttachments = [first];
+      await sendChat(id, 'first turn');
+
+      runner.nextResult = 'second answer';
+      await sendChat(id, 'second turn');
+      const assistants = readSessionMessages(testDir, id).filter(
+        (entry) => entry.role === 'assistant'
+      );
+      expect(assistants[0].content).toMatchObject({ attachments: [first] });
+      expect(assistants[1].content).not.toHaveProperty('attachments');
+    });
+
+    it('persists attachments returned by the scheduled Web runner', async () => {
+      const attached = join(testDir, 'scheduled report.pdf');
+      writeFileSync(attached, 'scheduled');
+      runner.persistResults = true;
+      runner.nextResult = '定期レポートです';
+      runner.nextAttachments = [attached];
+      const sessionsBefore = new Set(listAllSessions().map((session) => session.id));
+
+      const returned = await scheduler.getAgentRunner('web')?.('週報を作って', '__new__', {
+        id: 'web-attachment',
+        type: 'cron',
+        expression: '0 9 * * *',
+        message: '週報を作って',
+        channelId: '__new__',
+        platform: 'web',
+        createdAt: new Date().toISOString(),
+        enabled: true,
+      });
+
+      expect(returned).toBe('定期レポートです');
+      const created = listAllSessions().find(
+        (session) => session.platform === 'web' && !sessionsBefore.has(session.id)
+      );
+      expect(created).toBeDefined();
+      expect(latestAssistantEntry(created!.id)?.content).toMatchObject({
+        result: '定期レポートです',
+        attachments: [attached],
+      });
+      const detail = (await (await fetch(`${baseUrl}/api/sessions/${created!.id}`)).json()) as {
+        messages: Array<{ role: string; attachments: string[] }>;
+      };
+      expect(detail.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        attachments: [attached],
+      });
+    });
   });
 
   it('stores terminal inbox suggestions for the session detail API', async () => {
