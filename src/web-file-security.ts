@@ -1,4 +1,5 @@
 import { isAbsolute } from 'path';
+import { parseAttachmentMarkers } from './attachment-markers.js';
 import { realFileWithinRoots } from './file-utils.js';
 
 export function isRealFileWithin(root: string, target: string): boolean {
@@ -10,40 +11,26 @@ export function parseDisplayedUserAttachments(
   allowedRoots: string[]
 ): { content: string; attachments: string[] } {
   const attachments: string[] = [];
-  const displayLines: string[] = [];
-  const lines = content.split('\n');
+  const parsed = parseAttachmentMarkers(content, allowedRoots);
+  const removedLines = new Set<number>();
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const marker = line.match(/^\[(?:Attachment|添付ファイル)\](?:[ \t]+(.+?))?[ \t]*$/);
-    if (!marker) {
-      displayLines.push(line);
-      continue;
+  for (const marker of parsed.markers) {
+    removedLines.add(marker.markerLineIndex);
+    for (const candidate of marker.candidates) {
+      if (!candidate.inline) removedLines.add(candidate.lineIndex);
     }
-
-    const candidates: string[] = [];
-    if (marker[1]) candidates.push(marker[1].trim());
-
-    while (index + 1 < lines.length) {
-      const bullet = lines[index + 1].match(/^[ \t]*-[ \t]+(.+?)[ \t]*$/);
-      if (!bullet) break;
-      index += 1;
-      candidates.push(bullet[1].trim());
-    }
-
-    for (const candidate of candidates) {
-      if (
-        allowedRoots.some((root) => isRealFileWithin(root, candidate)) &&
-        !attachments.includes(candidate)
-      ) {
-        attachments.push(candidate);
+    for (const candidate of marker.candidates) {
+      if (candidate.realPath && !attachments.includes(candidate.path)) {
+        attachments.push(candidate.path);
       }
     }
   }
 
   return {
-    content: displayLines
-      .join('\n')
+    content: parsed.lines
+      .filter((line) => !removedLines.has(line.index))
+      .map((line) => line.raw)
+      .join('')
       .replace(/\n{3,}/g, '\n\n')
       .trim(),
     attachments,

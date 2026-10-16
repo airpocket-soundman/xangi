@@ -9,6 +9,7 @@ import { ProviderModels } from '../provider-model.js';
  * 外部HTTPサーバー不要。
  */
 import { EventEmitter } from 'events';
+import { resolve } from 'path';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from '../agent-runner.js';
 import { TimeoutController } from '../timeout-controller.js';
 import type { LocalLlmMode } from '../backend-resolver.js';
@@ -25,6 +26,7 @@ import type {
 import { LLMClient } from './llm-client.js';
 import { formatErrorDiagnostic, isTransientNetworkError } from '../errors.js';
 import { extractAttachmentPaths, encodeImageToBase64, getMimeType } from './image-utils.js';
+import { getAttachmentDownloadDir } from '../file-utils.js';
 import { loadWorkspaceContext } from './context.js';
 import {
   getAllTools,
@@ -2569,26 +2571,32 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
    * 添付ファイルに画像が含まれている場合はマルチモーダルメッセージにする。
    */
   private buildUserMessage(prompt: string): LLMMessage {
-    const { imagePaths, otherPaths, cleanPrompt } = extractAttachmentPaths(prompt);
+    const { imagePaths, cleanPrompt } = extractAttachmentPaths(prompt, [
+      this.workdir,
+      resolve(process.env.WORKSPACE_PATH || process.cwd(), 'tmp', 'web-uploads'),
+      getAttachmentDownloadDir(),
+    ]);
 
     // 画像をbase64エンコード
     const images: LLMImageContent[] = [];
+    const failedImagePaths: string[] = [];
     for (const imagePath of imagePaths) {
       const base64 = encodeImageToBase64(imagePath);
       if (base64) {
         const mimeType = getMimeType(imagePath);
         images.push({ base64, mimeType });
         console.log(`[local-llm] Image attached: ${imagePath} (${mimeType})`);
+      } else {
+        failedImagePaths.push(imagePath);
       }
     }
 
-    // 非画像ファイルがある場合はテキストに添付情報を残す
-    let content = cleanPrompt;
-    if (otherPaths.length > 0) {
-      const fileList = otherPaths.map((p) => `  - ${p}`).join('\n');
-      content = `${cleanPrompt}\n\n[Attachment]\n${fileList}`;
-    }
-
+    const failedAttachments = failedImagePaths.map((path) => `[Attachment] ${path}`).join('\n');
+    const content = failedAttachments
+      ? cleanPrompt
+        ? `${cleanPrompt}\n${failedAttachments}`
+        : failedAttachments
+      : cleanPrompt;
     const msg: LLMMessage = { role: 'user', content };
     if (images.length > 0) {
       msg.images = images;
