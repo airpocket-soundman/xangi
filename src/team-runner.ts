@@ -1,3 +1,5 @@
+import { delegationScopeCount, unfinished } from './team-delegation.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { executeAgentWork, prepareAgentWork } from './agent-work.js';
 import { relative, isAbsolute, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -165,6 +167,16 @@ export async function runTeamTurn(
   if (turns.has(channel)) throw new Error('このTeamの会話は処理中です');
   const turn: Turn = { cancelled: false, children: new Set() };
   turns.set(channel, turn);
+  const request = deps.runs.list().find((run) => run.appSessionId === options.appSessionId);
+  const rootId = request?.delegationRootId;
+  const root = rootId ? deps.runs.get(rootId) : undefined;
+  const rootUnavailable = () =>
+    !!rootId &&
+    (!root?.teamDelegation ||
+      !deps.runs.get(rootId) ||
+      !unfinished(deps.runs.get(rootId)!) ||
+      deps.runs.get(rootId)!.teamDelegationClosed ||
+      Date.now() >= root.teamDelegation.deadline);
   const turnId = randomUUID();
   const startedAt = Date.now();
   const usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
@@ -193,9 +205,19 @@ export async function runTeamTurn(
             (serial || p.serial) &&
             (contains(p.path, workspace.path) || contains(workspace.path, p.path))
         );
-      while (!turn.cancelled && ((running.get(team.id) || 0) >= limit || overlaps()))
-        await new Promise<void>((resolve) => waiters.add(resolve));
-      if (turn.cancelled)
+      const scopeFull = () =>
+        !!root?.teamDelegation &&
+        delegationScopeCount(deps.runs, root.parentContextKey!) >=
+          root.teamDelegation.maxConcurrency;
+      while (
+        !turn.cancelled &&
+        !rootUnavailable() &&
+        ((running.get(team.id) || 0) >= limit || overlaps() || scopeFull())
+      ) {
+        if (rootId) await delay(100);
+        else await new Promise<void>((resolve) => waiters.add(resolve));
+      }
+      if (turn.cancelled || rootUnavailable())
         return { result: 'Teamの実行を中止しました', sessionId: '', failed: true };
       running.set(team.id, (running.get(team.id) || 0) + 1);
       const reservation = Symbol();
@@ -231,6 +253,7 @@ export async function runTeamTurn(
           agentId: agent.id,
           parentContextKey: channel,
           parentPlatform: options.platform,
+          delegationRootId: rootId,
           teamId: team.id,
           teamTurnId: turnId,
           teamPhase: phase,
@@ -261,7 +284,7 @@ export async function runTeamTurn(
               skipPermissions: options.skipPermissions,
             },
             (prompt, callbacks, nextOptions) => {
-              if (turn.cancelled)
+              if (turn.cancelled || rootUnavailable())
                 return Promise.resolve({
                   result: 'Teamの実行を中止しました',
                   sessionId: '',

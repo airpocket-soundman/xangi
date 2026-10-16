@@ -1,3 +1,4 @@
+import { cancelTeamDelegation } from './team-delegation.js';
 import { withPrivateDiagnostics } from './privacy-console.js';
 import { setSecretTurnInput } from './transcript-logger.js';
 import { isSecretSession } from './secret.js';
@@ -657,20 +658,22 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * キャンセル
    */
   cancel(channelId?: string): boolean {
+    const delegated = channelId ? cancelTeamDelegation(channelId) : false;
     if (channelId && cancelTeam(channelId, this)) return true;
     if (channelId) {
       const channelEntry = this.channelRunners.get(channelId);
       if (channelEntry?.runner.cancel) {
-        return channelEntry.runner.cancel(channelId);
+        return channelEntry.runner.cancel(channelId) || delegated;
       }
     }
-    return this.defaultRunner.cancel?.(channelId) ?? false;
+    return (this.defaultRunner.cancel?.(channelId) ?? false) || delegated;
   }
 
   /**
    * 指定チャンネルのランナーを破棄
    */
   destroy(channelId: string): boolean {
+    cancelTeamDelegation(channelId);
     if (cancelTeam(channelId, this)) return true;
     // チャンネル専用ランナーがあれば破棄
     const hadChannelRunner = this.channelRunners.has(channelId);

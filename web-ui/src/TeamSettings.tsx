@@ -1,3 +1,4 @@
+import { CatalogCreateButton, CatalogRow, CatalogFormActions } from './CatalogControls';
 import { useEffect, useState, type FormEvent } from 'react';
 import { requestJson } from './api';
 import { jsonInit } from './chatPresentation';
@@ -14,6 +15,7 @@ interface Team {
   prompt: string;
   members: Member[];
   leadership?: 'caller' | 'fixed';
+  leaderAgentId?: string;
   maxConcurrency?: number;
   serializeWorkspaces?: boolean;
 }
@@ -68,6 +70,7 @@ export function TeamSettings() {
           prompt: editing.prompt,
           members: editing.members,
           leadership: 'caller',
+          leaderAgentId: editing.leaderAgentId || '',
           maxConcurrency: editing.maxConcurrency ?? 16,
           serializeWorkspaces: editing.serializeWorkspaces ?? false,
         })
@@ -75,9 +78,7 @@ export function TeamSettings() {
       setTeams((current) => [...current.filter((p) => p.id !== team.id), team]);
       setEditing(undefined);
       window.dispatchEvent(new Event('xangi:teams-changed'));
-      setNotice(
-        'チームを保存しました。チャンネル固有設定で担当に指定できます。変更は新しい会話から適用されます。'
-      );
+      setNotice('チームを保存しました。変更は次のチームへの依頼から適用されます。');
     } catch (e) {
       setError(String(e));
     } finally {
@@ -110,65 +111,50 @@ export function TeamSettings() {
             デフォルトの担当や登録済みエージェントを組み合わせ、メンバーと共通指示を設定します。担当は必要な場合だけ指定できます。
           </p>
         </div>
+        {!editing && (
+          <CatalogCreateButton
+            label="チーム"
+            disabled={loading}
+            onClick={() => {
+              setEditing({ id: '', name: '', prompt: '', members: [], leadership: 'caller' });
+              setNotice('');
+              setError('');
+              void requestJson<{ agents: Agent[] }>('/api/teams')
+                .then((r) => setAgents(r.agents || []))
+                .catch((e) => setError(String(e)));
+            }}
+          />
+        )}
       </div>
       {loading ? (
         <p role="status">読み込み中…</p>
       ) : (
         !editing && (
           <>
-            <div className="project-form-actions">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditing({ id: '', name: '', prompt: '', members: [], leadership: 'caller' });
-                  setNotice('');
-                  setError('');
-                  void requestJson<{ agents: Agent[] }>('/api/teams')
-                    .then((r) => setAgents(r.agents || []))
-                    .catch((e) => setError(String(e)));
-                }}
-              >
-                チームを作成
-              </button>
-              <button type="button" className="secondary" onClick={() => void load()}>
-                再読み込み
-              </button>
-            </div>
             {!teams.length && (
               <p>チームはまだありません。デフォルトの担当や登録済みエージェントで編成できます。</p>
             )}
             {teams.map((p) => (
-              <div className="team-list-row" key={p.id}>
-                <div>
-                  <strong>{p.name}</strong>
-                  <p>{p.members.length}名 · 呼び出し元がリーダー</p>
-                </div>
-                <div className="project-form-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => {
-                      setEditing(structuredClone(p));
-                      setError('');
-                      setNotice('');
-                      void requestJson<{ agents: Agent[] }>('/api/teams')
-                        .then((r) => setAgents(r.agents || []))
-                        .catch((e) => setError(String(e)));
-                    }}
-                    aria-label={`${p.name}を編集`}
-                  >
-                    編集
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => setDeleting(p)}
-                    aria-label={`${p.name}を削除`}
-                  >
-                    削除
-                  </button>
-                </div>
-              </div>
+              <CatalogRow
+                key={p.id}
+                name={p.name}
+                onEdit={() => {
+                  setEditing(structuredClone(p));
+                  setError('');
+                  setNotice('');
+                  void requestJson<{ agents: Agent[] }>('/api/teams')
+                    .then((r) => setAgents(r.agents || []))
+                    .catch((e) => setError(String(e)));
+                }}
+                onDelete={() => setDeleting(p)}
+              >
+                <small>
+                  {p.members.length}名 ·{' '}
+                  {p.leaderAgentId
+                    ? `リーダー: ${agents.find((a) => a.id === p.leaderAgentId)?.name || p.leaderAgentId}`
+                    : '呼び出し元がリーダー'}
+                </small>
+              </CatalogRow>
             ))}
           </>
         )
@@ -186,8 +172,25 @@ export function TeamSettings() {
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
               />
             </label>
-            <p>
-              呼び出し元が前提確認・分担・結果の取りまとめを担当します。チームには作業メンバーだけを登録します。
+            <label>
+              リーダー（任意）
+              <select
+                value={editing.leaderAgentId || ''}
+                aria-describedby="team-leader-help"
+                onChange={(e) => setEditing({ ...editing, leaderAgentId: e.target.value })}
+              >
+                <option value="">指定なし（呼び出し元が担当）</option>
+                {agents
+                  .filter((a) => !editing.members.some((m) => m.agentId === a.id))
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <p id="team-leader-help">
+              指定すると、このAgentがメンバーへの分担・結果の確認・修正依頼・統合を担当します。委譲先はこのチームのメンバーに限ります。未指定なら呼び出し元が担当します。
             </p>
             <label>
               同時実行数
@@ -268,7 +271,11 @@ export function TeamSettings() {
               >
                 <option value="">Agentを選択（最大64名）</option>
                 {agents
-                  .filter((a) => !editing.members.some((m) => m.agentId === a.id))
+                  .filter(
+                    (a) =>
+                      a.id !== editing.leaderAgentId &&
+                      !editing.members.some((m) => m.agentId === a.id)
+                  )
                   .map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name}
@@ -277,23 +284,17 @@ export function TeamSettings() {
               </select>
             </label>
             <p>
-              「デフォルト」は普段のxangiのAI設定と既定の作業場所を使います。登録済みエージェントは各自の設定を使い、同じ作業場所のメンバーは順番に実行します。
+              「デフォルト」は普段のxangiのAI設定と既定の作業場所を使います。登録済みエージェントは各自の設定を使い、順番に実行したい場合は上の設定を有効にしてください。
             </p>
-            <div className="project-form-actions">
-              <button type="submit" disabled={!editing.members.length}>
-                {saving ? '保存中…' : 'チームを保存'}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  setEditing(undefined);
-                  setError('');
-                }}
-              >
-                キャンセル
-              </button>
-            </div>
+            <CatalogFormActions
+              creating={!editing.id}
+              saving={saving}
+              disabled={!editing.members.length || !editing.name.trim()}
+              onCancel={() => {
+                setEditing(undefined);
+                setError('');
+              }}
+            />
           </fieldset>
         </form>
       )}

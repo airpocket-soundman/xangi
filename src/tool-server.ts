@@ -1,5 +1,9 @@
 import { getActiveSessionId, getSessionEntry } from './sessions.js';
-import { executeProjectAgentCommand, executeTeamCommand } from './project-agent-command.js';
+import {
+  executeProjectAgentCommand,
+  executeTeamCommand,
+  executeWorkspaceCommand,
+} from './project-agent-command.js';
 /**
  * xangi Tool Server — Claude Code向けHTTPエンドポイント
  *
@@ -175,6 +179,8 @@ async function executeCommand(
     return webStatusCommand();
   } else if (command === 'agent') {
     return executeProjectAgentCommand(flags, context);
+  } else if (command === 'workspace') {
+    return executeWorkspaceCommand(flags, context);
   } else if (command === 'team') {
     return executeTeamCommand(flags, context);
   } else if (command === 'progress_card') {

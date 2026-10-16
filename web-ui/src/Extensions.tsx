@@ -2,8 +2,7 @@ import { useExtensionFavorites } from './extensionFavorites';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { getJson, requestJson } from './api';
-import { extensionSetupStorageKey } from './extensionSetup';
-import { sessionPath } from './sessionPermalink';
+import { openSetupSession } from './extensionSetup';
 
 interface ExtensionEntry {
   id: string;
@@ -38,14 +37,6 @@ interface ExtensionSetupResponse {
   sessionId: string;
   prompt: string;
   displayMessage: string;
-}
-
-function openSetupSession(result: ExtensionSetupResponse): void {
-  window.sessionStorage.setItem(
-    extensionSetupStorageKey(result.sessionId),
-    JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
-  );
-  window.location.assign(sessionPath(result.sessionId));
 }
 
 function statusLabel(extension: ExtensionEntry): string {

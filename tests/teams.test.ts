@@ -604,3 +604,47 @@ it('serializes completed-member continuations using the saved Team concurrency l
   expect(secondStarted).toBe(true);
   releaseSecond();
 });
+
+it('shares the leader admission slots across delegated members and prevents queued work after parent closure', async () => {
+  const f = await setup();
+  const leader = f.runs.create({ task: 'edit', backend: 'codex', workspaceId: 'default', workspacePath: root,
+    appSessionId: createWebSession({}), parentContextKey: 'original',
+    teamDelegation: { teamIds: [f.team.id], ancestorAgentIds: [], deadline: Date.now() + 60000,
+      maxMemberRuns: 10, maxConcurrency: 2 } });
+  const child = f.runs.create({ task: 'figures', backend: 'codex', workspaceId: 'default', workspacePath: root,
+    appSessionId: createWebSession({}), parentContextKey: `web-chat:${leader.appSessionId}`,
+    delegationRootId: leader.id, agentId: `team:${f.team.id}` });
+  let active = 0, peak = 0;
+  f.runner.runStream = vi.fn(async () => {
+    active++; peak = Math.max(peak, active);
+    await new Promise(r => setTimeout(r, 5));
+    active--;
+    return { result: 'figure', sessionId: '' };
+  });
+  const result = await runTeamTurn(f.runner, dispatched(f.catalog.teamAgent(f.team.id)!.team!), 'draw', {},
+    { channelId: `web-chat:${child.appSessionId}`, appSessionId: child.appSessionId });
+  expect(result.failed).toBe(false);
+  expect(peak).toBe(1); // one leader plus one maker
+  expect(f.runs.list().filter(r => r.teamTurnId).every(r => r.delegationRootId === leader.id)).toBe(true);
+  f.runs.closeTeamDelegation(leader.id);
+  vi.mocked(f.runner.runStream).mockClear();
+  expect((await runTeamTurn(f.runner, dispatched(f.catalog.teamAgent(f.team.id)!.team!), 'late', {},
+    { channelId: `web-chat:${child.appSessionId}`, appSessionId: child.appSessionId })).failed).toBe(true);
+  expect(f.runner.runStream).not.toHaveBeenCalled();
+});
+
+
+it('persists an optional leader, protects it from deletion, and clears it without changing members', async () => {
+  const f = await setup();
+  const leader = f.catalog.saveAgent({ name: 'Coordinator' });
+  f.catalog.saveTeam({ leaderAgentId: leader.id }, f.team.id);
+  expect(new ProjectCatalog(root).team(f.team.id)?.leaderAgentId).toBe(leader.id);
+  expect(() => f.catalog.removeAgent(leader.id)).toThrow('Teamで使用中');
+  expect(() => f.catalog.saveTeam({ leaderAgentId: f.agents[0].id }, f.team.id)).toThrow('別のAgent');
+  expect(() => f.catalog.saveTeam({ leaderAgentId: 'missing' }, f.team.id)).toThrow('見つかりません');
+  expect(() => f.catalog.saveTeam({ leaderAgentId: false }, f.team.id)).toThrow('不正');
+  f.catalog.saveTeam({ leaderAgentId: '' }, f.team.id);
+  expect(new ProjectCatalog(root).team(f.team.id)?.leaderAgentId).toBeUndefined();
+  expect(f.catalog.team(f.team.id)?.members).toEqual(f.members);
+  f.catalog.removeAgent(leader.id);
+});

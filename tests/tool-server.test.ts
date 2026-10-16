@@ -1,3 +1,4 @@
+import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import { registerProjectAgents } from '../src/project-agent-command.js';
 import { ProjectCatalog } from '../src/project-catalog.js';
 import { AgentRunStore } from '../src/agent-runs.js';
@@ -201,15 +202,21 @@ describe('tool-server HTTP status codes', () => {
     try {
       const catalog = new ProjectCatalog(root);
       const team = catalog.saveTeam({ name: 'リサーチ', members: [{ agentId: 'xangi:default', role: '調査' }] });
-      registerProjectAgents({ catalog, runs: AgentRunStore.fromDataDir(root), start: vi.fn() });
+      const workspaces = await WorkspaceRegistry.open({dataDir: join(root, 'state'), defaultWorkspacePath: root});
+      registerProjectAgents({ catalog, runs: AgentRunStore.fromDataDir(root), start: vi.fn(), workspaces });
       const call = async (command: string, flags: Record<string, string>) => {
         const res = await fetch(`${serverUrl}/api/execute`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command, flags, context: {} }),
+          body: JSON.stringify({ command, flags, context: {channelId: 'settings-conversation'} }),
         });
         expect(res.status).toBe(200);
         return (await res.json()).result;
       };
+      expect(await call('help', { topic: 'workspace' })).toContain('workspace create --name NAME');
+      const created = JSON.parse(await call('workspace', {action: 'create', name: '資料用', path: root}));
+      expect(JSON.parse(await call('workspace', {action: 'list'})).workspaces).toContainEqual(created.workspace);
+      const createdTeam = JSON.parse(await call('team', {action: 'create', name: '資料チーム', 'members-json': '[{"agentId":"xangi:default"}]'}));
+      expect(catalog.team(createdTeam.team.id)?.name).toBe('資料チーム');
       expect(await call('help', { topic: 'team' })).toContain('xangi team run NAME_OR_ID');
       expect(JSON.parse(await call('team', { action: 'list' })).teams[0].id).toBe(team.id);
       expect(JSON.parse(await call('team', { action: 'show', team: 'リサーチ' })).members[0].role).toBe('調査');

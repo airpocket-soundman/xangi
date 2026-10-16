@@ -1,3 +1,4 @@
+import { CatalogCreateButton, CatalogRow, CatalogFormActions } from './CatalogControls';
 import { TeamSettings } from './TeamSettings';
 import { useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
@@ -183,6 +184,8 @@ export function Settings() {
   );
   const [workspaces, setWorkspaces] = useState<RegisteredWorkspace[]>([]);
   const [workspacesStatus, setWorkspacesStatus] = useState('');
+  const [workspaceFormOpen, setWorkspaceFormOpen] = useState(false);
+  const [editingWorkspace, setEditingWorkspace] = useState<RegisteredWorkspace>();
   const [workspaceName, setWorkspaceName] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
@@ -429,16 +432,29 @@ export function Settings() {
     setError('');
     setMessage('');
     try {
-      await requestJson('/api/workspaces', {
-        method: 'POST',
-        body: JSON.stringify({ name: workspaceName.trim(), path: workspacePath.trim() }),
-      });
+      await requestJson(
+        editingWorkspace
+          ? `/api/workspaces/${encodeURIComponent(editingWorkspace.id)}`
+          : '/api/workspaces',
+        {
+          method: editingWorkspace ? 'PATCH' : 'POST',
+          body: JSON.stringify(
+            editingWorkspace
+              ? { name: workspaceName.trim() }
+              : { name: workspaceName.trim(), path: workspacePath.trim() }
+          ),
+        }
+      );
       const refreshed = await getJson<{ workspaces: RegisteredWorkspace[] }>('/api/workspaces');
       setWorkspaces(refreshed.workspaces);
       setWorkspaceName('');
       setWorkspacePath('');
       setWorkspacesStatus('');
-      setMessage('Workspaceを追加しました');
+      setWorkspaceFormOpen(false);
+      setEditingWorkspace(undefined);
+      setMessage(
+        editingWorkspace ? 'ワークスペースを保存しました' : 'ワークスペースを作成しました'
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -506,7 +522,19 @@ export function Settings() {
                   <h2 id="settings-workspace-title">ワークスペース</h2>
                   <p>Projectや会話で使う作業ディレクトリを追加・管理します。</p>
                 </div>
-                <ApplyBadge mode="immediate" />
+                {!workspaceFormOpen && (
+                  <CatalogCreateButton
+                    label="ワークスペース"
+                    onClick={() => {
+                      setEditingWorkspace(undefined);
+                      setWorkspaceName('');
+                      setWorkspacePath('');
+                      setWorkspaceFormOpen(true);
+                      setError('');
+                      setMessage('');
+                    }}
+                  />
+                )}
               </div>
               {workspacesStatus ? (
                 <p className="settings-safe-note" role="status">
@@ -514,44 +542,81 @@ export function Settings() {
                 </p>
               ) : (
                 <div className="workspace-manager settings-workspace-manager">
-                  <form className="workspace-register-form" onSubmit={registerWorkspace}>
-                    <label>
-                      <span>名前</span>
-                      <input
-                        value={workspaceName}
-                        onChange={(event) => setWorkspaceName(event.target.value)}
-                        placeholder="仕事用"
-                        disabled={saving === 'workspace-add'}
-                      />
-                    </label>
-                    <label>
-                      <span>ディレクトリの絶対パス</span>
-                      <div className="workspace-path-controls">
+                  {workspaceFormOpen ? (
+                    <form className="project-form" onSubmit={registerWorkspace}>
+                      <h3>{editingWorkspace ? 'ワークスペースを編集' : '新しいワークスペース'}</h3>
+                      <label>
+                        <span>名前</span>
                         <input
-                          value={workspacePath}
-                          onChange={(event) => setWorkspacePath(event.target.value)}
-                          placeholder="/path/to/workspace"
+                          value={workspaceName}
+                          onChange={(event) => setWorkspaceName(event.target.value)}
+                          placeholder="仕事用"
                           disabled={saving === 'workspace-add'}
                         />
-                        <button
-                          type="button"
-                          onClick={() => setDirectoryPickerOpen(true)}
-                          disabled={saving === 'workspace-add'}
+                      </label>
+                      <label>
+                        <span>ディレクトリの絶対パス</span>
+                        <div className="workspace-path-controls">
+                          <input
+                            value={workspacePath}
+                            onChange={(event) => setWorkspacePath(event.target.value)}
+                            placeholder="/path/to/workspace"
+                            disabled={Boolean(editingWorkspace) || saving === 'workspace-add'}
+                          />
+                          <button
+                            type="button"
+                            hidden={Boolean(editingWorkspace)}
+                            onClick={() => setDirectoryPickerOpen(true)}
+                            disabled={saving === 'workspace-add'}
+                          >
+                            参照…
+                          </button>
+                        </div>
+                      </label>
+                      <p>
+                        {editingWorkspace
+                          ? '表示名だけを変更します。作業場所のパスは変わりません。'
+                          : '既存のフォルダを作業場所として登録します。親フォルダのAGENTS.mdなどが適用される場合があります。独立した用途では、既存ワークスペースの外を選び、親の指示も確認してください。'}
+                      </p>
+                      <CatalogFormActions
+                        creating={!editingWorkspace}
+                        saving={saving === 'workspace-add'}
+                        disabled={!workspaceName.trim() || !workspacePath.trim()}
+                        onCancel={() => {
+                          setWorkspaceFormOpen(false);
+                          setEditingWorkspace(undefined);
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <div className="catalog-list" aria-label="登録済みワークスペース">
+                      {workspaces.map((workspace) => (
+                        <CatalogRow
+                          key={workspace.id}
+                          name={workspace.name}
+                          disabled={workspace.isDefault}
+                          deleteDisabled={workspace.isDefault || saving === 'workspace-remove'}
+                          disabledReason={
+                            workspace.isDefault
+                              ? '既定のワークスペースは編集・登録解除できません。'
+                              : undefined
+                          }
+                          deleteLabel="登録解除"
+                          onDelete={() => setWorkspaceToRemove(workspace)}
+                          onEdit={() => {
+                            setEditingWorkspace(workspace);
+                            setWorkspaceName(workspace.name);
+                            setWorkspacePath(workspace.path);
+                            setWorkspaceFormOpen(true);
+                            setError('');
+                            setMessage('');
+                          }}
                         >
-                          参照…
-                        </button>
-                      </div>
-                    </label>
-                    <button
-                      type="submit"
-                      className="primary"
-                      disabled={
-                        saving === 'workspace-add' || !workspaceName.trim() || !workspacePath.trim()
-                      }
-                    >
-                      {saving === 'workspace-add' ? '追加中…' : 'Workspaceを追加'}
-                    </button>
-                  </form>
+                          <small>{workspace.path}</small>
+                        </CatalogRow>
+                      ))}
+                    </div>
+                  )}
                   <DirectoryPicker
                     open={directoryPickerOpen}
                     initialPath={workspacePath}
@@ -561,32 +626,6 @@ export function Settings() {
                       setDirectoryPickerOpen(false);
                     }}
                   />
-                  <div className="workspace-manager-list" aria-label="登録済みWorkspace">
-                    {workspaces.map((workspace) => (
-                      <div className="workspace-manager-row" key={workspace.id}>
-                        <span className="workspace-manager-copy">
-                          <strong>
-                            {workspace.name}
-                            {workspace.isDefault ? ' (default)' : ''}
-                          </strong>
-                          <small>{workspace.path}</small>
-                        </span>
-                        <button
-                          type="button"
-                          className="workspace-unregister"
-                          disabled={workspace.isDefault || saving === 'workspace-remove'}
-                          title={
-                            workspace.isDefault
-                              ? 'default Workspaceは登録解除できません'
-                              : undefined
-                          }
-                          onClick={() => setWorkspaceToRemove(workspace)}
-                        >
-                          登録解除
-                        </button>
-                      </div>
-                    ))}
-                  </div>
                 </div>
               )}
             </section>

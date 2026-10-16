@@ -1,9 +1,6 @@
-import { fileURLToPath } from 'node:url';
+import { instanceCliCommand } from '../instance-cli.js';
 
-const agentCli =
-  "'" +
-  fileURLToPath(new URL('../../bin/xangi', import.meta.url)).replaceAll("'", "'\\''") +
-  "' agent";
+const agentCli = `${instanceCliCommand} agent`;
 
 const teamCli = agentCli.replace(/ agent$/, ' team');
 
@@ -11,7 +8,7 @@ const teamCli = agentCli.replace(/ agent$/, ' team');
 export function buildXangiCommandsCommon(triggerEnabled: boolean): string {
   return `## On-demand help
 
-Before using models / runtime_settings / system_restart${triggerEnabled ? ' / trigger' : ''}, read xangi tool help <command> and follow the displayed usage and precautions. For other xangi operations, do not guess usage or arguments; consult help only when needed.
+Before using models / runtime_settings / system_restart${triggerEnabled ? ' / trigger' : ''}, read xangi tool help <command> and follow the displayed usage and precautions. For other operations (including workspace/agent/team creation), consult help; never guess arguments.
 
 ## Scheduling
 
