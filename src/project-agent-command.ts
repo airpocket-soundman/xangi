@@ -1,10 +1,20 @@
+import {
+  delegationScopeCount,
+  delegatedRuns,
+  unfinished,
+  delegationReservations,
+} from './team-delegation.js';
 import { inspectAgentRunLogs, logPageOptions } from './agent-run-logs.js';
 import {
   DEFAULT_TEAM_AGENT_ID,
   DEFAULT_TEAM_CONCURRENCY,
   validateTeamAssignments,
 } from './teams.js';
-import { removeRegisteredAgent } from './agent-selection.js';
+import {
+  removeRegisteredAgent,
+  removeRegisteredTeam,
+  removeRegisteredWorkspace,
+} from './agent-selection.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ProjectCatalog } from './project-catalog.js';
 import type { AgentRun, AgentRunStore } from './agent-runs.js';
@@ -18,6 +28,7 @@ interface Dependencies {
   runs: AgentRunStore;
   start: (body: Record<string, unknown>) => Promise<AgentRun>;
   workspaces?: WorkspaceRegistry;
+  workspaceSwitching?: boolean;
 }
 
 export function delegationLimit(): number {
@@ -27,10 +38,60 @@ export function delegationLimit(): number {
     throw new Error('AGENT_MAX_CONCURRENT_REQUESTSは1〜64の整数で指定してください');
   return Number(value);
 }
+function teamGrant(flags: Record<string, string>, ids: string[], ancestorAgentIds: string[]) {
+  const timeoutMs = Number(flags['delegation-timeout-ms'] || process.env.TIMEOUT_MS || 3600000);
+  const maxMemberRuns = Number(flags['delegation-max-members'] || 64);
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 1000 ||
+    timeoutMs > 36000000 ||
+    !Number.isInteger(maxMemberRuns) ||
+    maxMemberRuns < 1 ||
+    maxMemberRuns > 256
+  )
+    throw new Error('委譲期限は1000〜36000000ms、累計メンバー数は1〜256で指定してください');
+  if (delegationLimit() < 2) throw new Error('一段委譲には同時実行数2以上が必要です');
+  return {
+    teamIds: [...new Set(ids)] as string[],
+    ancestorAgentIds,
+    deadline: Date.now() + timeoutMs,
+    maxMemberRuns,
+    maxConcurrency: delegationLimit(),
+  };
+}
 let active: Dependencies | undefined;
-const reservations = new Set<string>();
+const reservations = delegationReservations;
 export function registerProjectAgents(dependencies: Dependencies): void {
   active = dependencies;
+}
+
+/** Register existing directories using the same live registry as Settings. */
+export async function executeWorkspaceCommand(
+  flags: Record<string, string>,
+  context?: { channelId?: string; platform?: ChatPlatform },
+  dependencies = active
+): Promise<string> {
+  if (!dependencies?.workspaces) throw new Error('Workspace registry is unavailable');
+  if (dependencies.workspaceSwitching === false) throw new Error('workspace switching is disabled');
+  const { workspaces, runs } = dependencies;
+  const action = flags.action || 'list';
+  if (action === 'list') return JSON.stringify({ workspaces: workspaces.list() });
+  if (!['create', 'delete'].includes(action))
+    throw new Error('action must be list, create or delete');
+  const parent = context?.channelId;
+  if (!parent) throw new Error('現在の会話が必要です');
+  if (
+    runs.list().some((run) => run.parentContextKey && run.appSessionId === webAppSessionId(parent))
+  )
+    throw new Error('子エージェントから設定を変更することはできません');
+  if (action === 'delete') {
+    const id = (flags.workspace || flags.id || '').trim();
+    if (!id) throw new Error('Workspace IDを指定してください');
+    const workspace = await removeRegisteredWorkspace(id, workspaces, dependencies.catalog);
+    return JSON.stringify({ ok: true, workspace, filesPreserved: true });
+  }
+  if (!flags.name?.trim() || !flags.path?.trim()) throw new Error('--name と --path は必須です');
+  return JSON.stringify({ workspace: await workspaces.register(flags.name, flags.path) });
 }
 
 /** Use the same live catalog and run store as Web Chat; never load a second writer. */
@@ -56,6 +117,8 @@ export async function executeProjectAgentCommand(
     !['list', 'status', 'wait', 'logs'].includes(action) &&
     !(
       !callerRun.selfDelegation &&
+      !callerRun.delegationRootId &&
+      !callerRun.teamDelegation &&
       action === 'run' &&
       agentId === DEFAULT_TEAM_AGENT_ID &&
       callerRun.agentId &&
@@ -75,6 +138,7 @@ export async function executeProjectAgentCommand(
           description: agent.prompt.split('\n')[0].slice(0, 120),
           backend: agent.backend,
           model: agent.model,
+          workspaceId: agent.workspaceId || 'default',
           current:
             !!session &&
             id === (callerRun?.agentId || session.selectedAgentId || DEFAULT_TEAM_AGENT_ID),
@@ -93,18 +157,23 @@ export async function executeProjectAgentCommand(
   if (!parent) throw new Error('現在の会話が必要です');
   if (action === 'create') {
     if (!workspaces) throw new Error('Workspace registry is unavailable');
-    if (!flags.name?.trim() || !flags.workspace?.trim())
-      throw new Error('--name と --workspace は必須です');
+    if (dependencies.workspaceSwitching === false)
+      throw new Error('workspace switching is disabled');
+    if (!flags.name?.trim() || (!flags.workspace?.trim() && !flags['workspace-id']?.trim()))
+      throw new Error('--name と --workspace または --workspace-id は必須です');
+    if (flags.workspace && flags['workspace-id'])
+      throw new Error('--workspace と --workspace-id は同時指定できません');
     if (
       catalog
         .agents()
         .some((agent) => agent.name.toLocaleLowerCase() === flags.name.trim().toLocaleLowerCase())
     )
       throw new Error('同じ名前のエージェントが既にあります');
-    const workspacePath = await realpath(flags.workspace);
-    const workspace =
-      workspaces.list().find((entry) => entry.path === workspacePath) ||
-      (await workspaces.register(`agent-${flags.name}-${Date.now()}`, workspacePath));
+    const workspacePath = flags.workspace ? await realpath(flags.workspace) : undefined;
+    const workspace = flags['workspace-id']
+      ? await workspaces.resolveById(flags['workspace-id'])
+      : workspaces.list().find((entry) => entry.path === workspacePath) ||
+        (await workspaces.register(`agent-${flags.name}-${Date.now()}`, workspacePath!));
     const agent = catalog.saveAgent({
       name: flags.name,
       role: flags.role || '',
@@ -134,6 +203,24 @@ export async function executeProjectAgentCommand(
   const target =
     agentId === DEFAULT_TEAM_AGENT_ID ? catalog.defaultAgent() : catalog.agent(agentId || '');
   if (!target) throw new Error('エージェントが見つかりません');
+  let teamDelegation;
+  if (flags['allow-teams-json']) {
+    if (callerRun) throw new Error('子から委譲権限を付与できません');
+    const ids: unknown = JSON.parse(flags['allow-teams-json']);
+    if (
+      !Array.isArray(ids) ||
+      !ids.length ||
+      ids.length > 16 ||
+      ids.some((id) => typeof id !== 'string' || !catalog.team(id))
+    )
+      throw new Error('--allow-teams-json は登録済みTeam IDの配列で指定してください');
+    const ancestorAgentIds = [agentId!, session?.selectedAgentId || DEFAULT_TEAM_AGENT_ID];
+    if (
+      ids.some((id) => catalog.team(id)!.members.some((m) => ancestorAgentIds.includes(m.agentId)))
+    )
+      throw new Error('委譲先Teamにリーダー自身または親の担当を含めることはできません');
+    teamDelegation = teamGrant(flags, ids as string[], ancestorAgentIds);
+  }
   const selfDelegation =
     !callerRun && !!session && agentId === (session.selectedAgentId || DEFAULT_TEAM_AGENT_ID);
   const running = runs
@@ -144,7 +231,7 @@ export async function executeProjectAgentCommand(
     const [owner, id] = JSON.parse(key);
     return owner === parent && !running.some((r) => r.agentId === id);
   }).length;
-  if (running.length + reservedForParent >= delegationLimit())
+  if (delegationScopeCount(runs, parent, false) + reservedForParent >= delegationLimit())
     throw new Error(`同時に依頼できる担当は${delegationLimit()}件までです。結果を待ってください`);
   if (reservations.has(reservation) || running.some((r) => r.agentId === agentId))
     throw new Error('この担当への依頼は実行中です');
@@ -162,6 +249,7 @@ export async function executeProjectAgentCommand(
       localLlmReasoningEffort: execution.localLlmReasoningEffort,
       agentId,
       selfDelegation,
+      teamDelegation,
       parentContextKey: parent,
       parentPlatform: context?.platform,
       title: `依頼: ${target.name}`,
@@ -198,14 +286,45 @@ export async function executeTeamCommand(
         name: team.name,
         members: team.members.length,
         leadership: team.leadership,
+        ...(team.leaderAgentId ? { leaderAgentId: team.leaderAgentId } : {}),
         maxConcurrency: team.maxConcurrency ?? DEFAULT_TEAM_CONCURRENCY,
         serializeWorkspaces: team.serializeWorkspaces ?? false,
         structure: team.members.some((m) => m.reportsTo) ? 'hierarchy' : 'parallel',
       })),
     });
   }
+  const parent = context?.channelId;
+  const callerRun = parent
+    ? runs
+        .list()
+        .find((run) => run.parentContextKey && run.appSessionId === webAppSessionId(parent))
+    : undefined;
+  if (action === 'create') {
+    if (!parent) throw new Error('現在の会話が必要です');
+    if (callerRun) throw new Error('子エージェントから設定を作成することはできません');
+    if (!flags.name?.trim() || !flags['members-json'])
+      throw new Error('--name と --members-json は必須です');
+    if (
+      flags['serialize-workspaces'] !== undefined &&
+      !['true', 'false'].includes(flags['serialize-workspaces'])
+    )
+      throw new Error('--serialize-workspaces は true または false で指定してください');
+    const team = catalog.saveTeam({
+      name: flags.name,
+      prompt: flags.prompt || '',
+      leadership: 'caller',
+      members: JSON.parse(flags['members-json']),
+      leaderAgentId: flags['leader-agent-id'],
+      maxConcurrency:
+        flags['max-concurrency'] === undefined ? undefined : Number(flags['max-concurrency']),
+      serializeWorkspaces: flags['serialize-workspaces'] === 'true',
+    });
+    return JSON.stringify({ team });
+  }
   const resolveTeam = () => {
     const key = (flags.team || '').trim();
+    const snapshot = callerRun?.delegationTeam;
+    if (snapshot && (snapshot.id === key || snapshot.name === key)) return snapshot;
     const byId = catalog.team(key);
     if (byId) return byId;
     const matches = catalog.teams().filter((team) => team.name === key);
@@ -213,9 +332,27 @@ export async function executeTeamCommand(
     if (!matches.length) throw new Error('Teamが見つかりません');
     return matches[0];
   };
+  if (action === 'delete') {
+    if (!parent) throw new Error('現在の会話が必要です');
+    if (callerRun) throw new Error('子エージェントから設定を削除することはできません');
+    const team = resolveTeam();
+    if (
+      runs
+        .list()
+        .some(
+          (run) => unfinished(run) && (run.teamId === team.id || run.delegationTeam?.id === team.id)
+        )
+    )
+      throw new Error('使用中のTeamです。実行の完了を待ってください');
+    removeRegisteredTeam(team.id, catalog);
+    return JSON.stringify({ ok: true, team });
+  }
   if (action === 'show') {
     const team = resolveTeam();
-    const agents = catalog.teamAgent(team.id)!.team!.agents;
+    const agents =
+      callerRun?.delegationTeam?.id === team.id
+        ? callerRun.delegationTeam.agents
+        : catalog.teamAgent(team.id)!.team!.agents;
     return JSON.stringify({
       ...team,
       maxConcurrency: team.maxConcurrency ?? DEFAULT_TEAM_CONCURRENCY,
@@ -226,7 +363,6 @@ export async function executeTeamCommand(
       })),
     });
   }
-  const parent = context?.channelId;
   if (!parent) throw new Error('現在の会話が必要です');
   if (action === 'status' || action === 'wait' || action === 'logs') {
     let run = runs.get(flags.id || '');
@@ -241,10 +377,13 @@ export async function executeTeamCommand(
       .list()
       .filter(
         (member) =>
-          member.parentContextKey === `web-chat:${run.appSessionId}` &&
+          (run.delegationTeam
+            ? member.delegationRootId === run.id && !!member.teamTurnId
+            : member.parentContextKey === `web-chat:${run.appSessionId}`) &&
           member.teamId === run.agentId!.slice('team:'.length)
       );
-    const snapshot = getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team;
+    const snapshot =
+      run.delegationTeam || getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team;
     if (action === 'logs') {
       const page = logPageOptions(flags);
       const selected = flags.member
@@ -277,35 +416,78 @@ export async function executeTeamCommand(
       })),
     });
   }
-  if (action !== 'run') throw new Error('action must be list, show, run, status, wait or logs');
+  if (action !== 'run')
+    throw new Error('action must be create, delete, list, show, run, status, wait or logs');
   if (!flags.task?.trim()) throw new Error('--task is required');
   if (
-    runs.list().some((run) => run.parentContextKey && run.appSessionId === webAppSessionId(parent))
+    callerRun &&
+    (!callerRun.teamDelegation ||
+      callerRun.teamDelegationClosed ||
+      callerRun.delegationRootId ||
+      !unfinished(callerRun))
   )
     throw new Error('子エージェントからの再委譲はできません');
   const team = resolveTeam();
+  if (callerRun) {
+    const policy = callerRun.teamDelegation!;
+    if (!policy.teamIds.includes(team.id)) throw new Error('このTeamへの委譲は許可されていません');
+    if (Date.now() >= policy.deadline) throw new Error('委譲の共通期限を過ぎています');
+    if (team.members.some((m) => policy.ancestorAgentIds.includes(m.agentId)))
+      throw new Error('リーダー自身または親への循環委譲はできません');
+    const previous = delegatedRuns(runs, callerRun.id);
+    if (previous.some(unfinished))
+      throw new Error('委譲先の作業が実行中です。結果を待ってください');
+  }
+  const snapshot =
+    callerRun?.delegationTeam?.id === team.id
+      ? callerRun.delegationTeam
+      : catalog.teamAgent(team.id)!.team!;
+  const startsLeader = !callerRun && !!team.leaderAgentId;
   const assignments =
-    team.leadership === 'caller'
+    !startsLeader && team.leadership === 'caller'
       ? validateTeamAssignments(
-          catalog.teamAgent(team.id)!.team!,
-          flags['assignments-json'] ? JSON.parse(flags['assignments-json']) : undefined
+          snapshot,
+          flags['assignments-json'] ? JSON.parse(flags['assignments-json']) : undefined,
+          !!callerRun
         )
       : undefined;
+  // Keep the leader's full grant intact; only this batch receives the selected snapshot.
+  const selectedIds = new Set(assignments?.map((assignment) => assignment.agentId));
+  const batchSnapshot = callerRun
+    ? {
+        ...snapshot,
+        leaderAgentId: undefined,
+        members: snapshot.members.filter((member) => selectedIds.has(member.agentId)),
+        agents: snapshot.agents.filter((agent) => selectedIds.has(agent.id)),
+      }
+    : undefined;
+  if (callerRun) {
+    const launched = delegatedRuns(runs, callerRun.id).reduce(
+      (n, run) => n + (run.delegatedMemberCount || 0),
+      0
+    );
+    if (launched + batchSnapshot!.members.length > callerRun.teamDelegation!.maxMemberRuns)
+      throw new Error('依頼全体の累計メンバー実行上限を超えます');
+  }
   const agentId = `team:${team.id}`;
   const session = getSessionEntry(getActiveSessionId(parent) || webAppSessionId(parent));
+  const ancestors = [team.leaderAgentId!, session?.selectedAgentId || DEFAULT_TEAM_AGENT_ID];
+  if (startsLeader && team.members.some((m) => ancestors.includes(m.agentId)))
+    throw new Error('リーダー自身または親への循環委譲はできません');
+  const grant = startsLeader ? teamGrant(flags, [team.id], ancestors) : undefined;
   if (team.leadership !== 'caller' && session?.selectedAgentId === agentId)
     throw new Error('自分以外のTeamを指定してください');
   const running = runs
     .list()
     .filter((run) => run.parentContextKey === parent && ['queued', 'running'].includes(run.status));
-  const reservation = JSON.stringify([parent, agentId]);
+  const reservation = JSON.stringify([parent, callerRun ? 'delegated-team' : agentId]);
   if (reservations.has(reservation) || running.some((run) => run.agentId === agentId))
     throw new Error('このTeamへの依頼は実行中です');
   const reserved = [...reservations].filter((key) => {
     const [owner, id] = JSON.parse(key);
     return owner === parent && !running.some((r) => r.agentId === id);
   }).length;
-  if (running.length + reserved >= delegationLimit())
+  if (!callerRun && delegationScopeCount(runs, parent, false) + reserved >= delegationLimit())
     throw new Error(`同時に依頼できる担当は${delegationLimit()}件までです。結果を待ってください`);
   reservations.add(reservation);
   try {
@@ -313,6 +495,12 @@ export async function executeTeamCommand(
       await start({
         task: flags.task,
         teamAssignments: assignments,
+        teamLeaderId: startsLeader ? team.leaderAgentId : undefined,
+        teamDelegation: grant,
+        delegationTeam: startsLeader ? snapshot : undefined,
+        teamSnapshot: batchSnapshot,
+        delegationRootId: callerRun?.id,
+        delegatedMemberCount: batchSnapshot?.members.length,
         agentId,
         parentContextKey: parent,
         parentPlatform: context?.platform,

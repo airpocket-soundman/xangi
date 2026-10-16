@@ -226,8 +226,11 @@ export class ProjectCatalog {
     };
   }
   removeAgent(id: string) {
-    if (this.teams().some((p) => p.members.some((m) => m.agentId === id)))
-      throw new WebProjectError('Teamで使用中のAgentです。先にメンバーから外してください', 409);
+    if (this.teams().some((p) => p.leaderAgentId === id || p.members.some((m) => m.agentId === id)))
+      throw new WebProjectError(
+        'Teamで使用中のAgentです。先にリーダー・メンバーの設定から外してください',
+        409
+      );
     this.persist({ ...this.state, agents: this.state.agents.filter((a) => a.id !== id) });
   }
   importStudio(input: Input) {

@@ -1,3 +1,4 @@
+import { CatalogCreateButton, CatalogRow, CatalogFormActions } from './CatalogControls';
 import { useEffect, useState, type FormEvent } from 'react';
 import { requestJson } from './api';
 import { jsonInit } from './chatPresentation';
@@ -308,14 +309,7 @@ export function AgentSettings({
           <p>担当ごとの指示、作業場所、使用するAIを設定します。</p>
         </div>
         {!agentFormOpen && (
-          <button
-            type="button"
-            className="project-view-new"
-            onClick={openNewAgentForm}
-            disabled={loading}
-          >
-            ＋ 新規エージェント
-          </button>
+          <CatalogCreateButton label="エージェント" onClick={openNewAgentForm} disabled={loading} />
         )}
       </div>
       {notice && (
@@ -333,6 +327,7 @@ export function AgentSettings({
       {agentFormOpen ? (
         <>
           <form className="project-form" onSubmit={(event) => void saveAgent(event)}>
+            <h3>{editingAgentId ? 'エージェントを編集' : '新しいエージェント'}</h3>
             {editingAgentId && (
               <fieldset disabled={savingChannel || savingAgent}>
                 <legend>作業チャンネル</legend>
@@ -595,75 +590,37 @@ export function AgentSettings({
               </fieldset>
               <p>どの会話からも使える設定です。変更は次の作業から反映されます。</p>
             </>
-            <div className="project-form-actions">
-              {editingAgentId && !editingDefault && (
-                <button
-                  type="button"
-                  className="danger"
-                  onClick={() => setAgentToDelete(editingAgentId)}
-                >
-                  エージェントを削除
-                </button>
-              )}
-              <button type="button" disabled={savingAgent} onClick={() => setAgentFormOpen(false)}>
-                キャンセル
-              </button>
-              {
-                <button
-                  type="submit"
-                  className="primary"
-                  disabled={
-                    savingAgent ||
-                    (editingDefault && (!defaultAI?.enabled || !agentBackend)) ||
-                    invalidOpenRouterEffort ||
-                    (agentBackend === 'openrouter' && loadingAgentModels)
-                  }
-                >
-                  {savingAgent ? '保存中…' : '保存'}
-                </button>
+            <CatalogFormActions
+              creating={!editingAgentId}
+              saving={savingAgent}
+              disabled={
+                (editingDefault && (!defaultAI?.enabled || !agentBackend)) ||
+                invalidOpenRouterEffort ||
+                (agentBackend === 'openrouter' && loadingAgentModels)
               }
-            </div>
+              onCancel={() => setAgentFormOpen(false)}
+            />
           </form>
         </>
       ) : (
         <nav className="project-view-list" aria-label="エージェント一覧">
           {agents.filter(catalogVisible).map((agent) => (
-            <div className="project-view-row agent-view-row" key={agent.id}>
-              <button
-                type="button"
-                className="project-view-main"
-                aria-label={`${agent.name}を編集`}
-                disabled={agent.id === 'xangi:default' && !defaultAI}
-                onClick={() => openAgentEditor(agent)}
-              >
-                <span className="project-view-icon" aria-hidden="true">
-                  ◇
-                </span>
-                <span className="project-view-copy">
-                  <strong title={agent.name}>
-                    {agent.name}
-                    {agent.id === 'xangi:default' && <small> · 既定</small>}
-                  </strong>
-                  <small>
-                    {[agent.role, agent.backend, agent.model].filter(Boolean).join(' · ') ||
-                      'xangiの既定設定'}
-                  </small>
-                  <small>作業チャンネル: {channelLabel(agent.workChannel)}</small>
-                </span>
-              </button>
-              {agent.id !== 'xangi:default' && (
-                <button
-                  type="button"
-                  className="project-view-edit agent-view-delete"
-                  aria-label={`${agent.name}を削除`}
-                  onClick={() => setAgentToDelete(agent.id)}
-                >
-                  削除
-                </button>
-              )}
-            </div>
+            <CatalogRow
+              key={agent.id}
+              name={agent.name}
+              disabled={agent.id === 'xangi:default' && !defaultAI}
+              onEdit={() => openAgentEditor(agent)}
+              onDelete={agent.id === 'xangi:default' ? undefined : () => setAgentToDelete(agent.id)}
+            >
+              {agent.id === 'xangi:default' && <small>既定</small>}
+              <small>
+                {[agent.role, agent.backend, agent.model].filter(Boolean).join(' · ') ||
+                  'xangiの既定設定'}
+              </small>
+              <small>作業チャンネル: {channelLabel(agent.workChannel)}</small>
+            </CatalogRow>
           ))}
-          {!agents.length && <p>新規エージェントから基本指示と使用モデルを登録してください。</p>}
+          {!agents.length && <p>「＋ 作成」から基本指示と使用モデルを登録してください。</p>}
         </nav>
       )}
       <ConfirmDialog

@@ -203,6 +203,26 @@ export class WorkspaceRegistry {
     });
   }
 
+  /** Rename metadata while preserving IDs, paths, bindings and saved sessions. */
+  async rename(workspaceId: string, name: string): Promise<WorkspaceEntry> {
+    return this.mutate(async () => {
+      const workspace = this.state.workspaces.find((entry) => entry.id === workspaceId);
+      if (!workspace) throw new Error('Workspace not found');
+      if (workspace.id === this.state.defaultWorkspaceId)
+        throw new Error('Default workspace cannot be renamed');
+      const normalizedName = normalizeName(name);
+      if (
+        this.state.workspaces.some(
+          (entry) => entry.id !== workspaceId && entry.name === normalizedName
+        )
+      )
+        throw new Error('Workspace name is already registered');
+      workspace.name = normalizedName;
+      await this.persist();
+      return this.toEntry(workspace);
+    });
+  }
+
   /**
    * Remove a workspace from the registry without touching its directory.
    * Callers must separately reject references owned by other stores, such as

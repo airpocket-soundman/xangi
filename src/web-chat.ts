@@ -1,3 +1,5 @@
+import { instanceCliCommand } from './instance-cli.js';
+import { runDelegatingLeader } from './team-delegation.js';
 import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
 import { SECRET_NOTICE, parseSecretCommand, isSecretSession } from './secret.js';
 import { checkAgentParents, parentDeliveryDue, parentWatchSettings } from './agent-parent-watch.js';
@@ -10,6 +12,7 @@ import {
   registerAgentSelection,
   removeRegisteredTeam,
   removeRegisteredAgent,
+  removeRegisteredWorkspace,
   resolveAgentBackend,
   sessionAgent,
 } from './agent-selection.js';
@@ -388,6 +391,8 @@ export function startWebChat(options: WebChatOptions) {
   const watchSettings = parentWatchSettings();
   const completionDeliveries = new Set<string>();
   const notifyAgentRunParent = (completed: AgentRun) => {
+    // The leader synchronously collects nested results; do not start a second leader turn.
+    if (completed.delegationRootId) return;
     const destinationInfo = completionDestination(completed);
     const parent = destinationInfo.parent;
     if (!parent || !options.scheduler || completionDeliveries.has(parent)) return;
@@ -514,20 +519,34 @@ export function startWebChat(options: WebChatOptions) {
     if (projectId && !webProjects.get(projectId))
       throw new AgentRunError('Projectが見つかりません', 404);
     const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
-    const execution = webProjects.execution(undefined, agentId);
+    const teamLeaderId = typeof body.teamLeaderId === 'string' ? body.teamLeaderId : undefined;
+    const execution = webProjects.execution(undefined, teamLeaderId || agentId);
+    if (execution && body.teamSnapshot)
+      execution.team = structuredClone(body.teamSnapshot) as NonNullable<typeof execution.team>;
+
     if (execution?.team?.leadership === 'caller')
       execution.team.assignments = validateTeamAssignments(execution.team, body.teamAssignments);
     // A dispatched Team already has assignments. Its caller instructions belong only
     // to the conversation that plans the batch, never to the member execution prompt.
     const instruction = execution?.team ? '' : String(execution?.prompt || body.instruction || '');
-    const task = String(body.task || '');
+    const delegatedTeam = body.delegationTeam as AgentRun['delegationTeam'];
+    const task =
+      String(body.task || '') +
+      (delegatedTeam
+        ? `
+
+You are the designated leader of Team ${delegatedTeam.name} (ID: ${delegatedTeam.id}). Plan the work, use team show/run/wait for this Team only, review member results, request revisions if needed, and produce the integrated answer. Do not start another leader.
+Shared instructions:
+${delegatedTeam.prompt}`
+        : '');
     const backend = String(
       (agentId ? execution?.backend || options.resolver.resolve().backend : body.backend) ||
         (body.parentContextKey
           ? options.resolver.resolve(String(body.parentContextKey)).backend
           : '')
     ).trim() as AgentBackend;
-    const defaults = agentId === DEFAULT_TEAM_AGENT_ID ? options.resolver.resolve() : undefined;
+    const defaults =
+      (teamLeaderId || agentId) === DEFAULT_TEAM_AGENT_ID ? options.resolver.resolve() : undefined;
     const modelValue = defaults ? defaults.model : agentId ? execution?.model : body.model;
     const effortValue = defaults ? defaults.effort : agentId ? execution?.effort : body.effort;
     const model = modelValue ? String(modelValue).trim() : undefined;
@@ -581,6 +600,10 @@ export function startWebChat(options: WebChatOptions) {
       agentId,
       teamId: execution?.team?.id,
       selfDelegation: body.selfDelegation === true,
+      teamDelegation: body.teamDelegation as AgentRun['teamDelegation'],
+      delegationRootId: body.delegationRootId as string | undefined,
+      delegatedMemberCount: body.delegatedMemberCount as number | undefined,
+      delegationTeam: delegatedTeam,
       parentContextKey: body.parentContextKey as string | undefined,
       parentPlatform: body.parentPlatform as AgentRun['parentPlatform'],
     });
@@ -615,7 +638,10 @@ export function startWebChat(options: WebChatOptions) {
           agentRuns,
           runOptions,
           (prompt, callbacks, nextOptions) =>
-            agentRunner.runStream(
+            runDelegatingLeader(
+              run,
+              agentRuns,
+              agentRunner,
               `[プラットフォーム: Web]\n${instruction ? instruction + '\n\n' : ''}${prompt}`,
               callbacks,
               nextOptions
@@ -659,6 +685,7 @@ export function startWebChat(options: WebChatOptions) {
     runs: agentRuns,
     start: startAgentRun,
     workspaces: workspaceRegistry,
+    workspaceSwitching: options.config?.features?.workspaceSwitching !== false,
   });
   const requestExtensionUpdate = options.extensionUpdateRequest ?? createExtensionUpdateRequest;
 
@@ -1636,6 +1663,7 @@ export function startWebChat(options: WebChatOptions) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
+          instanceCliCommand,
           uploadAccept: uploadAccept || null,
           uploadMaxBytes: uploadMaxBytes(),
           timeoutExtendEnabled: TIMEOUT_EXTEND_ENABLED,
@@ -2307,6 +2335,27 @@ export function startWebChat(options: WebChatOptions) {
     }
 
     const workspaceMatch = url.match(/^\/api\/workspaces\/([^/]+)$/);
+    if (workspaceMatch && req.method === 'PATCH') {
+      if (options.config?.features?.workspaceSwitching === false) {
+        sendJson(res, 403, { error: 'workspace switching is disabled' });
+        return;
+      }
+      try {
+        if (!workspaceRegistry) throw new Error('Workspace registry is unavailable');
+        const body = await readBody(req);
+        if (typeof body.name !== 'string' || Object.keys(body).some((key) => key !== 'name'))
+          throw new Error('表示名だけを変更できます');
+        const workspace = await workspaceRegistry.rename(
+          decodeURIComponent(workspaceMatch[1]),
+          body.name
+        );
+        sendJson(res, 200, { workspace });
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     if (workspaceMatch && req.method === 'DELETE') {
       if (options.config?.features?.workspaceSwitching === false) {
         sendJson(res, 403, { error: 'workspace switching is disabled' });
@@ -2315,35 +2364,17 @@ export function startWebChat(options: WebChatOptions) {
       try {
         if (!workspaceRegistry) throw new Error('Workspace registry is unavailable');
         const workspaceId = decodeURIComponent(workspaceMatch[1]);
-        const workspace = workspaceRegistry.getById(workspaceId);
-        if (!workspace) {
-          sendJson(res, 404, { error: 'Workspaceが見つかりません' });
-          return;
-        }
-        if (workspace.isDefault) {
-          sendJson(res, 409, { error: 'default Workspaceは登録解除できません' });
-          return;
-        }
-        const agent = webProjects
-          .teamAgents()
-          .find((candidate) => candidate.workspaceId === workspace.id);
-        if (agent) {
-          sendJson(res, 409, { error: `Workspaceはエージェント「${agent.name}」で使用中です` });
-          return;
-        }
-        const session = listAllSessions().find(
-          (candidate) => candidate.workspaceId === workspace.id
+        const removed = await removeRegisteredWorkspace(
+          workspaceId,
+          workspaceRegistry,
+          webProjects
         );
-        if (session) {
-          sendJson(res, 409, { error: 'Workspaceは既存の会話で使用中です' });
-          return;
-        }
-
-        const removed = await workspaceRegistry.unregister(workspace.id);
-        workspaceBrowsers.delete(workspace.id);
+        workspaceBrowsers.delete(workspaceId);
         sendJson(res, 200, { workspace: removed });
       } catch (error) {
-        sendJson(res, 409, { error: error instanceof Error ? error.message : String(error) });
+        sendJson(res, error instanceof WebProjectError ? error.status : 409, {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
       return;
     }

@@ -1257,7 +1257,7 @@ Agent指定時は、その担当のバックエンド・モデル・推論設定
 
 ### エージェントへの委譲
 
-`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、同一担当への重複実行、defaultへの問い合わせ以外の再委譲は拒否します。予約ID `xangi:default`（CLI別名 `default`）はインスタンス既定のAI設定・Workspaceで独立会話を開始し、その問い合わせ先からの再委譲は拒否します。HTTP Agent Runの任意projectIdはStudio成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
+`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、同一担当への重複実行、明示許可したTeam・defaultへの問い合わせ以外の再委譲は拒否します。予約ID `xangi:default`（CLI別名 `default`）はインスタンス既定のAI設定・Workspaceで独立会話を開始し、その問い合わせ先からの再委譲は拒否します。HTTP Agent Runの任意projectIdはStudio成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
 
 ### エージェントの実行設定
 
@@ -1325,7 +1325,7 @@ Slackの子Agentも通常応答と同じ処理中・完了ボタンを使いま�
 
 `xangi tool help team` で使い方を確認し、`xangi team list`、`xangi team show NAME_OR_ID` で編成を確認します。リーダーは必要な前提を整理してから `xangi team run NAME_OR_ID --task "共通背景・根拠・仮定" --assignments-json '[{"agentId":"ID","task":"独立して完結できる仕事"}]'` で全員に一括依頼します。必須情報が足りなければ起動前に質問します。担当の抜け・重複・空の仕事は起動前に拒否し、受理したメンバーは上限の範囲で並列開始します。
 
-受付IDで `xangi team status --id RUN_ID` / `wait --id RUN_ID`（最大25秒）を使います。再送せず同じIDを確認し、完了通知後は呼び出し元が結果をまとめます。進捗・部分結果・失敗はAgent Runへ保存します。停止は子へ伝え、待機中の担当は起動しません。結果は依頼元のみ取得でき、重複依頼・子からの再委譲・使用中の編成削除を拒否します。
+受付IDで `xangi team status --id RUN_ID` / `wait --id RUN_ID`（最大25秒）を使います。再送せず同じIDを確認し、完了通知後は呼び出し元が結果をまとめます。進捗・部分結果・失敗はAgent Runへ保存します。停止は子へ伝え、待機中の担当は起動しません。結果は依頼元のみ取得でき、重複依頼・許可のない子からの再委譲・使用中の編成削除を拒否します。
 
 `xangi agent logs --id RUN_ID` は単独Agentの行動ログを取得します。`xangi team logs --id RUN_ID` は同じ読み取り処理で各メンバーを集約します。保存ログは複製しません。依頼元の会話のみ取得でき、Teamでは `--member RUN_OR_AGENT_ID` で絞り込めます。ツール別回数、記録された検索語・URL、エラー・明示的な再試行、元ログのファイルと行番号を返します。`--offset N --limit N` はメンバーごとのイベントページ（既定20、最大100）で、集計は全体です。欠落・破損ログは警告を返します。入力のないタイミングログ、シェル内部の検索・取得、未記録の再試行は不明であり、検索結果に載ったURLを閲覧済みとみなしません。Grokはprovider session全体のnative履歴を補完に使います。1ファイル32 MiBを超えるログは読み込まず警告します。
 
@@ -1352,4 +1352,39 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 
 デフォルト担当 `xangi:default` の表示名と選択Workspaceはproject-catalog.jsonへ保存し、AI既定値は従来の全体BackendResolverと保存先を使います。設定UIはデフォルト担当の画面へ統合します。担当未指定の新規会話はチャンネルWorkspace指定を優先し、未指定ならデフォルト担当のWorkspaceを使います。既存会話のsnapshotは変更せず、自己呼び出し判定は固定IDで維持します。
 
-通常会話から自分と同じ担当への依頼も可能です。新しい独立会話として実行し、元の会話履歴は引き継ぎません。この自己依頼で起動された担当は、defaultへの問い合わせを含め再委譲できません。自己依頼の制限は実行情報に保存され、再起動後も維持されます。
+通常会話から自分と同じ担当への依頼も可能です。新しい独立会話として実行し、元の会話履歴は引き継ぎません。この自己依頼で起動された担当は、明示許可したTeamへの一段委譲を除き、defaultへの問い合わせを含め再委譲できません。自己依頼の制限は実行情報に保存され、再起動後も維持されます。
+
+
+### 設定画面でチームのリーダーを指定する
+
+設定 → チーム → 作成または編集の「リーダー（任意）」でAgentを選び、保存します。「指定なし（呼び出し元が担当）」が既定です。リーダーと作業メンバーは別のAgentにし、リーダーに選んだAgentはメンバー追加の候補から除外します。既存チームの動作は未指定のまま変わりません。解除して保存すると、次の依頼から呼び出し元が分担・統合を担当します。
+
+リーダー指定済みチームは `xangi team run TEAM_ID --task '依頼内容'` だけで呼べます。呼び出し元がメンバーごとの依頼や `--allow-teams-json` を渡す必要はありません。リーダーは自身のAI設定・指示・Workspaceで動き、そのチームのメンバーだけへ `team run --assignments-json` で作業を渡します。分担、結果の確認、修正依頼、統合はリーダーが担当します。指定なしのチームでは従来どおり全員分の `--assignments-json` が必要です。
+
+リーダーは各ラウンドの `--assignments-json` に必要なメンバーだけを1名以上指定できます。例えば制作担当4名の完了を待ち、次に審査担当1名だけを呼びます。指定しなかったメンバーは起動せず、累計起動数も選択人数だけ加算します。空配列・重複ID・チーム外ID・空の担当作業は拒否します。現在のラウンドが完了するまでは次を起動できません。リーダー未指定の通常の呼び出しは、従来どおり全員分の担当指定が必要です。明示的な `agent run --allow-teams-json` で委譲されたリーダーも部分選択できます。
+
+依頼時の編成・共通指示・メンバー設定を保存し、実行中のリーダーによる `team show` と次の作業ラウンドでも同じ構成を使用します。設定変更は次の依頼から適用します。親への `team status` / `logs` は配下メンバーの各ラウンドも返します。期限・累計起動数・停止連動は下記の一段委譲と共通です。リーダーを指定したAgentは、チームの設定から外すまで削除できません。
+
+### リーダーからTeamへの一段委譲
+
+親が登録済みのリーダーへ依頼する際、呼び出せるTeam IDを明示します。これは今回の依頼だけの許可で、Agentの恒久設定は変更しません。
+
+```bash
+xangi agent run LEADER_ID --task '調査・実装・レビューを進めて結果をまとめて' --allow-teams-json '["WORK_TEAM_ID","REVIEW_TEAM_ID"]' --delegation-max-members 32 --delegation-timeout-ms 3600000
+```
+
+リーダーは `team show` で編成を確認し、`team run` の `--assignments-json` で全員へ具体的な独立作業を渡します。同時に走らせるTeamは1件です。同じ実行IDで `team wait` を繰り返し、作業→レビュー→修正の各結果を取り込んで統合します。リーダーが先に応答を終えた場合も、実行基盤が未完了のTeamを待って結果を渡し、統合を続けさせます。子Teamの完了通知から別のリーダーターンは起動しません。
+
+許可外Team、リーダー自身・親の担当を含むTeam、担当メンバーからの再委譲（defaultへの問い合わせも含む）は拒否します。編成を後から変更した場合も、起動時に循環を再検査します。停止・失敗・共通期限で配下へ停止を伝え、待機担当は起動しません。終了した依頼の委譲権限は再利用できません。必要なら親から新しく依頼します。
+
+同時実行枠は元の会話で共有し、リーダーと配下の担当メンバーを数えます。Teamの集約用実行は追加枠に数えません。`AGENT_MAX_CONCURRENT_REQUESTS` は2以上が必要です。累計メンバー起動数は失敗したバッチも含め、既定64・指定範囲1〜256。共通期限は受付時から既定 `TIMEOUT_MS`（未設定なら60分）、指定範囲1秒〜10時間で、子や追加ラウンドごとにリセットしません。厳密な金額上限やストリーム途中のトークン予算停止は非対応です。これらの制限はxangi経由の依頼に適用し、任意シェルプロセスのサンドボックスにはなりません。
+
+### 設定一覧と対話からの作成
+
+設定画面のWorkspace・Agent・Teamは `CatalogControls.tsx` の作成ボタン・一覧行・フォーム操作を共用する。表示名の変更は `PATCH /api/workspaces/:id` → `WorkspaceRegistry.rename` で行い、ID・path・bindingを変えない。既定の改名と名前衝突を拒否し、永続化失敗時は既存のmutation queueで状態を復元する。
+
+対話の `workspace create` / `agent create --workspace-id` / `team create` はtool-server経由で `project-agent-command.ts` のlive registry/catalogを使う。別writerや設定JSONの直接編集は使わない。Workspaceは既存ディレクトリを登録し、Agent/Teamは画面と同じ正規化と参照検証で保存する。作成は実行を開始せず、子Agentからの設定作成は拒否する。複数設定の作成は個別保存であり、後続失敗時にも先行成功分は保持する。
+
+削除は `team delete` / 既存の `agent delete` / `workspace delete` からlive設定を更新する。Workspaceの使用中検査はWeb APIと共通の `removeRegisteredWorkspace` へ集約し、登録だけを解除してファイルを保持する。Teamは既存の `removeRegisteredTeam` を共有し、CLIでは未完了の実行も拒否する。
+
+設定作成相談では `/api/config` の `instanceCliCommand` を取得してコマンド例へ埋め込む。共通常駐案内も同じ `instance-cli.ts` のshell quote済み絶対パスを使い、PATH上の別checkoutを参照しない。

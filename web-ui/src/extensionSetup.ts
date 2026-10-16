@@ -1,3 +1,5 @@
+import { sessionPath } from './sessionPermalink';
+
 export const EXTENSION_SETUP_STORAGE_PREFIX = 'xangi-extension-setup:';
 
 export interface PendingExtensionSetup {
@@ -23,4 +25,13 @@ export function parsePendingExtensionSetup(value: string | null): PendingExtensi
 
 export function extensionConversationPrompt(prompt: string, displayMessage: string): string {
   return `<system-context>\n${prompt}\n</system-context>\n\n${displayMessage}`;
+}
+
+/** Hand off a prepared request to a normal chat, once, after navigation. */
+export function openSetupSession(result: PendingExtensionSetup & { sessionId: string }): void {
+  window.sessionStorage.setItem(
+    extensionSetupStorageKey(result.sessionId),
+    JSON.stringify({ prompt: result.prompt, displayMessage: result.displayMessage })
+  );
+  window.location.assign(sessionPath(result.sessionId));
 }

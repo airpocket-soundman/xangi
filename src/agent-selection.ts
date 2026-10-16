@@ -329,3 +329,19 @@ export function removeRegisteredTeam(id: string, catalog: ProjectCatalog): void 
   catalog.removeTeam(id);
   clearClosedSessionTeamSelections(id);
 }
+
+/** Shared UI/CLI guard. Unregister metadata only; never remove workspace files. */
+export async function removeRegisteredWorkspace(
+  id: string,
+  registry: WorkspaceRegistry,
+  catalog: ProjectCatalog
+) {
+  const workspace = registry.getById(id);
+  if (!workspace) throw new WebProjectError('Workspaceが見つかりません', 404);
+  if (workspace.isDefault) throw new WebProjectError('default Workspaceは登録解除できません', 409);
+  const agent = catalog.teamAgents().find((candidate) => candidate.workspaceId === id);
+  if (agent) throw new WebProjectError(`Workspaceはエージェント「${agent.name}」で使用中です`, 409);
+  if (listAllSessions().some((candidate) => candidate.workspaceId === id))
+    throw new WebProjectError('Workspaceは既存の会話で使用中です', 409);
+  return registry.unregister(id);
+}

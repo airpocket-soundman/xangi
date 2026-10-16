@@ -1,3 +1,4 @@
+import { runDelegatingLeader } from './team-delegation.js';
 import { randomUUID } from 'node:crypto';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
 import type { AgentRun, AgentRunStore } from './agent-runs.js';
@@ -122,7 +123,10 @@ export function submitAgentWork(
           deps.store,
           options,
           (prompt, callbacks, next) =>
-            deps.runner.runStream(
+            runDelegatingLeader(
+              current,
+              deps.store,
+              deps.runner,
               `${session.selectedAgentConfig?.prompt || ''}\n\n${!next.sessionId ? `[Original request]\n${current.task}\n\n` : ''}${prompt}`,
               callbacks,
               next

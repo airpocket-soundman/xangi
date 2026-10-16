@@ -2,7 +2,7 @@ import * as sessionTitle from '../src/session-title.js';
 import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
 import { runTeamTurn } from '../src/team-runner.js';
 import { initSettings, clearSettingsCache } from '../src/settings.js';
-import { executeProjectAgentCommand, executeTeamCommand } from '../src/project-agent-command.js';
+import { executeProjectAgentCommand, executeTeamCommand, executeWorkspaceCommand } from '../src/project-agent-command.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 import {
@@ -990,6 +990,57 @@ describe('web-chat HTTP API', () => {
     const final = (await (await fetch(`${baseUrl}/api/agents`)).json()).agents;
     expect(final.find((a:any) => a.id === agent.id).workChannel).toEqual({platform:'slack',channelId:'second'});
     await request(endpoint, {action:'reset'}, 'PUT');
+  });
+
+  it('runs a configured Team leader, dispatches only members, and integrates before notifying the parent', async () => {
+    const deliveries: string[] = [];
+    scheduler.registerAgentRunner('discord', async prompt => { deliveries.push(prompt); return 'delivered'; });
+    const provider = runner.runStream.bind(runner);
+    vi.spyOn(runner, 'runStream').mockImplementation((prompt, callbacks, options) => {
+      const snapshot = getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
+      return snapshot ? runTeamTurn(runner, snapshot, prompt, callbacks, options!) : provider(prompt, callbacks, options);
+    });
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const { agent: leader } = await (await post('/api/agents', {name:'Coordinator', prompt:'Coordinate carefully'})).json();
+    const { agent: worker } = await (await post('/api/agents', {name:'Worker'})).json();
+    const { agent: reviewer } = await (await post('/api/agents', {name:'Reviewer'})).json();
+    const { team } = await (await post('/api/teams', {name:'Led team', leaderAgentId:leader.id, members:[{agentId:worker.id},{agentId:reviewer.id}], prompt:'Check evidence'})).json();
+    const context = { channelId:'configured-parent', platform:'discord' as const };
+    const run = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Complete the project'},context));
+    const leaderKey = `web-chat:${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(leaderKey)).toBe(true));
+    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.id).toBe(leader.id);
+    expect(getSessionEntry(run.appSessionId)?.selectedAgentConfig?.team).toBeUndefined();
+    expect(runner.prompts.at(-1)).toContain('Coordinate carefully');
+    expect(runner.prompts.at(-1)).toContain('Check evidence');
+    const nested = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Do work','assignments-json':JSON.stringify([{agentId:worker.id,task:'Make result'}])}, {channelId:leaderKey,platform:'web'}));
+    await vi.waitFor(() => expect(runner.pending.size).toBe(2));
+    runner.release(leaderKey); // premature answer must not complete the Team
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(deliveries).toHaveLength(0);
+    const workerKey = [...runner.pending.keys()][0];
+    runner.nextResult = 'verified work result';
+    runner.release(workerKey);
+    await vi.waitFor(() => expect(runner.pending.has(leaderKey)).toBe(true));
+    expect(runner.prompts.at(-1)).toContain('verified work result');
+    expect(deliveries).toHaveLength(0);
+    const status = JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
+    expect(status.members).toHaveLength(1);
+    expect(status.members[0].agentId).toBe(worker.id);
+    expect(JSON.parse(await executeTeamCommand({action:'status',id:nested.id},{channelId:leaderKey})).status).toBe('succeeded');
+    const reviewRun = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Review completed work','assignments-json':JSON.stringify([{agentId:reviewer.id,task:'Review result'}])}, {channelId:leaderKey,platform:'web'}));
+    await vi.waitFor(() => expect(runner.pending.size).toBe(2));
+    const reviewKey = [...runner.pending.keys()].find(key => key !== leaderKey)!;
+    runner.nextResult = 'review passed';
+    runner.release(reviewKey);
+    await vi.waitFor(async () => expect(JSON.parse(await executeTeamCommand({action:'status',id:reviewRun.id},{channelId:leaderKey})).status).toBe('succeeded'));
+    const afterReview = JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
+    expect(afterReview.members.map((member: {agentId: string}) => member.agentId).sort()).toEqual([worker.id,reviewer.id].sort());
+    expect(deliveries).toHaveLength(0);
+    runner.nextResult = 'Integrated answer';
+    runner.release(leaderKey);
+    await vi.waitFor(() => expect(deliveries).toHaveLength(1));
+    expect(JSON.parse(await executeTeamCommand({action:'status',id:run.id},context)).result).toBe('Integrated answer');
   });
 
   it('dispatches a complete caller-led batch through the API concurrently and notifies the original leader once', async () => {
@@ -2051,6 +2102,39 @@ describe('web-chat HTTP API', () => {
       `${baseUrl}/api/workspaces/directories?path=${encodeURIComponent(join(testDir, 'not-a-directory.txt'))}`
     );
     expect(invalid.status).toBe(400);
+  });
+
+  it('shows conversation-created workspaces, agents and teams in the Settings APIs without running them', async () => {
+    const directory = join(testDir, 'dialogue-workspace');
+    mkdirSync(directory);
+    const context = { channelId: 'settings-dialogue' };
+    const { workspace } = JSON.parse(await executeWorkspaceCommand({ action: 'create', name: '資料制作', path: directory }, context));
+    const { agent } = JSON.parse(await executeProjectAgentCommand({ action: 'create', name: '執筆担当', 'workspace-id': workspace.id, prompt: '出典を示す' }, context));
+    const { team } = JSON.parse(await executeTeamCommand({ action: 'create', name: '資料チーム', 'members-json': JSON.stringify([{agentId: agent.id, role: '執筆'}]) }, context));
+    expect((await (await fetch(`${baseUrl}/api/workspaces`)).json()).workspaces).toContainEqual(workspace);
+    expect((await (await fetch(`${baseUrl}/api/agents`)).json()).agents).toEqual(expect.arrayContaining([expect.objectContaining(agent)]));
+    expect((await (await fetch(`${baseUrl}/api/teams`)).json()).teams).toContainEqual(team);
+    expect((await (await fetch(`${baseUrl}/api/agent-runs`)).json()).runs).toHaveLength(0);
+  });
+
+  it('renames workspace metadata through Settings and rejects path changes', async () => {
+    const directory = join(testDir, 'rename-workspace');
+    mkdirSync(directory);
+    const created = await fetch(`${baseUrl}/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Before', path: directory }),
+    });
+    const { workspace } = await created.json();
+    const patch = (id: string, body: object) => fetch(`${baseUrl}/api/workspaces/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    expect((await patch(workspace.id, { name: 'After' })).status).toBe(200);
+    const listed = await (await fetch(`${baseUrl}/api/workspaces`)).json();
+    expect(listed.workspaces).toContainEqual({ ...workspace, name: 'After' });
+    expect((await patch(workspace.id, { name: 'Changed', path: testDir })).status).toBe(400);
+    expect((await patch('default', { name: 'Changed' })).status).toBe(400);
+    const unchanged = await (await fetch(`${baseUrl}/api/workspaces`)).json();
+    expect(unchanged.workspaces).toContainEqual({ ...workspace, name: 'After' });
   });
 
   it('unregisters only unused workspaces and keeps their files', async () => {
@@ -3332,6 +3416,7 @@ process.stdin.on('end', () => process.exit(0));
     const config = (await (await fetch(`${baseUrl}/api/config`)).json()) as {
       allowedBackends?: string[];
       uploadMaxBytes?: number;
+      instanceCliCommand?: string;
       completionShowElapsed?: boolean;
     };
     const html = await (await fetch(baseUrl)).text();
@@ -3339,6 +3424,7 @@ process.stdin.on('end', () => process.exit(0));
 
     expect(config.allowedBackends).toEqual(['claude-code', 'codex']);
     expect(config.uploadMaxBytes).toBe(64 * 1024 * 1024);
+    expect(config.instanceCliCommand).toMatch(/^'.*\/bin\/xangi'$/);
     expect(config.completionShowElapsed).toBe(true);
     expect(html).toContain('<div id="root"></div>');
     expect(html).toContain('/app/assets/');

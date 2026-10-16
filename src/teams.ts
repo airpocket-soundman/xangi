@@ -12,6 +12,7 @@ export interface Team {
   prompt: string;
   members: TeamMember[];
   leadership?: 'caller' | 'fixed';
+  leaderAgentId?: string;
   maxConcurrency?: number;
   serializeWorkspaces?: boolean;
   createdAt: string;
@@ -46,6 +47,15 @@ export function normalizeTeam(input: Record<string, unknown>, agents: SharedAgen
   if (input.prompt !== undefined && typeof input.prompt !== 'string') fail('共通指示が不正です');
   const leadership = input.leadership ?? 'caller';
   if (leadership !== 'caller') return fail('リーダー設定が不正です');
+  if (input.leaderAgentId !== undefined && typeof input.leaderAgentId !== 'string')
+    fail('リーダー設定が不正です');
+  const leaderAgentId = input.leaderAgentId || undefined;
+  if (
+    leaderAgentId !== undefined &&
+    (typeof leaderAgentId !== 'string' ||
+      (leaderAgentId !== DEFAULT_TEAM_AGENT_ID && !agents.some((a) => a.id === leaderAgentId)))
+  )
+    fail('リーダーのAgentが見つかりません');
   const maxConcurrency =
     input.maxConcurrency === undefined ? DEFAULT_TEAM_CONCURRENCY : input.maxConcurrency;
   if (
@@ -81,6 +91,8 @@ export function normalizeTeam(input: Record<string, unknown>, agents: SharedAgen
   });
   if (leadership === 'caller' && members.some((m) => m.reportsTo))
     fail('呼び出し元がリーダーの場合、メンバーの報告先は指定しません');
+  if (leaderAgentId && members.some((m) => m.agentId === leaderAgentId))
+    fail('リーダーと作業メンバーは別のAgentを指定してください');
   const ids = new Set(members.map((m) => m.agentId));
   if (ids.size !== members.length) fail('同じAgentを重複して登録できません');
   return {
@@ -90,18 +102,21 @@ export function normalizeTeam(input: Record<string, unknown>, agents: SharedAgen
     leadership: leadership as 'caller' | 'fixed',
     maxConcurrency,
     serializeWorkspaces,
+    leaderAgentId: leaderAgentId as string | undefined,
   };
 }
 
 /** No extra leader session: the caller supplies complete independent assignments. */
 export function validateTeamAssignments(
   team: TeamSnapshot,
-  input: unknown
+  input: unknown,
+  allowSubset = false
 ): Array<{ agentId: string; task: string }> {
   if (
     !Array.isArray(input) ||
-    input.length !== team.members.length ||
-    new Set(input.map((a) => a?.agentId)).size !== team.members.length ||
+    input.length === 0 ||
+    (!allowSubset && input.length !== team.members.length) ||
+    new Set(input.map((a) => a?.agentId)).size !== input.length ||
     !input.every(
       (a) =>
         a &&
@@ -112,12 +127,16 @@ export function validateTeamAssignments(
     )
   )
     throw new WebProjectError(
-      '全メンバーへの独立した依頼を --assignments-json で指定してください。team showでIDを確認できます',
+      allowSubset
+        ? 'チーム内のメンバーへ重複・空欄のない依頼を --assignments-json で1件以上指定してください'
+        : '全メンバーへの独立した依頼を --assignments-json で指定してください。team showでIDを確認できます',
       400
     );
   return input.map((a) => ({ agentId: a.agentId, task: a.task.trim() }));
 }
 export function teamCallerInstructions(team: TeamSnapshot): string {
+  if (team.leaderAgentId)
+    return `Team to use: ${team.name} (ID: ${team.id}). This Team has a designated leader. Read xangi tool help team and use team run with --task containing the full request and necessary context. Do not supply member assignments or start another leader. The configured leader will plan, dispatch only this Team's members, review, and integrate their results. Wait for the Team result and relay it to the user.`;
   return `Team to use: ${team.name} (ID: ${team.id}). You are the leader; do not start another leader.
 ${team.prompt}
 Members: ${JSON.stringify(team.members)}

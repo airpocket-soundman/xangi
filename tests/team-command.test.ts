@@ -178,7 +178,7 @@ it('rejects missing context, unknown actions, blank tasks and self-delegation be
     executeTeamCommand({ action: 'run', team: team.id, task: 'work' }, undefined, deps)
   ).rejects.toThrow('現在の会話');
   await expect(call({ action: 'run', team: team.id, task: ' ' })).rejects.toThrow('task');
-  await expect(call({ action: 'delete', team: team.id })).rejects.toThrow('action must');
+  await expect(call({ action: 'unsupported-action', team: team.id })).rejects.toThrow('action must');
   expect(start).not.toHaveBeenCalled();
 });
 

@@ -1984,6 +1984,35 @@ Changing or clearing an Agent is rejected during processing and starts a new ses
 
 Bindings persist in `DATA_DIR/channel-agents.json`. Agent management shares Web Chat's catalog and requires its HTTP server. The CLI setting is `xangi tool runtime_settings --name agent --action status --platform discord --channel CHANNEL_ID`; use `--action set --value AGENT_ID` or `--action reset` to change it. A running AI cannot change its own Agent while busy; use a Slash Command or Web Settings.
 
+### Delete settings from conversation or CLI
+
+The existing `xangi agent delete AGENT_ID` command is joined by `xangi team delete NAME_OR_ID` and `xangi workspace delete WORKSPACE_ID`. Identify targets with `team list/show`, `agent list`, and `workspace list` before deletion; prefer IDs. Team names must match exactly and ambiguous names require an ID.
+
+Team deletion retains its Agents, Workspaces, and files. Workspace deletion only unregisters the directory; it never deletes files. The default Workspace and Workspaces referenced by Agents, conversations, or channel bindings cannot be removed. In-use Teams and Agents are also protected. Intentionally resolve references and remove only unwanted registrations in Team → Agent → Workspace order. Delegated workers cannot delete settings.
+
+### Create settings in conversation
+
+Consultation commands use the running server’s shell-quoted absolute CLI path, independent of other xangi versions on PATH. If the CLI cannot be obtained, the UI shows an error without starting a consultation.
+
+The consultation includes list/create commands and post-save verification steps. Before choosing a workspace, the AI is instructed to inspect instruction files (such as AGENTS.md) in the candidate and ancestor directories, symlink targets, and Git roots. Registration does not isolate inherited instructions. Independent work should use a location outside existing workspaces; intentional inheritance should be explained and confirmed. This is AI guidance, not an API-level ban or isolation mechanism.
+
+In Settings, choose “AIと相談して作成” in the Workspace, Agent, or Team list to open a new regular chat and automatically send a creation consultation, using the same handoff as extension setup. Discuss the purpose, name, workspace, and composition before creation. “＋ 作成” still opens the manual form.
+
+You can ask the AI, for example: “Register /absolute/path/to/docs as Writing, create a writer using it, and create a team with that writer and the default agent.” The AI checks existing settings and asks for missing names, paths or members. Saved settings appear in Settings. Creating a team does not run it.
+
+```bash
+xangi workspace list
+xangi workspace create --name Writing --path /absolute/path/to/docs
+xangi agent create --name Writer --workspace-id WORKSPACE_ID --prompt "Cite sources"
+xangi agent list
+xangi team create --name Documents --members-json '[{"agentId":"AGENT_ID","role":"Writing"},{"agentId":"xangi:default","role":"Review"}]' --prompt "Check sources"
+xangi team show Documents
+```
+
+Use the IDs returned by the preceding commands. An optional `--leader-agent-id ID` selects a separate leader; that agent cannot also be a member. `--max-concurrency` (default 16) and `--serialize-workspaces true|false` (default false) match the UI settings. These commands run inside an xangi conversation, through its live tool server. Delegated workers cannot create these settings. If a later creation fails, already saved items remain; reuse their IDs rather than creating duplicates.
+
+Workspace creation registers an existing directory and follows the configured allowed roots. It does not create, move or delete folders. In Settings, all three lists use “＋ 作成”, explicit edit actions and “キャンセル → 作成/保存” form actions. Workspace editing changes only its display name and preserves IDs, paths and bindings. “登録解除” removes only the registration, leaving files intact; default and in-use registrations remain protected. Agent work-channel changes are still saved immediately, separately from the form.
+
 ### Agent delegation
 
 The parent agent can register a worker after choosing an existing workspace directory. When concurrent edits could conflict, prepare a task-specific Git worktree and branch as needed, and make its `AGENTS.md` and required skills available there. Shared and nested workspaces are allowed; the AI chooses whether separation suits the task.
@@ -1996,7 +2025,7 @@ xangi agent create --name Developer --workspace /absolute/path/to/worktree --rol
 
 `xangi agent list` returns every agent registered on the connected instance. From any conversation, use `xangi agent run AGENT_ID --task "request and necessary context"`. There are no `--project` or `--project-name` options. Keep the run ID and continue other work or end the turn. Completion returns results to the original conversation; concurrent child results are delivered together. Use `status --id RUN_ID` for inspection and `wait --id RUN_ID` only for synchronous work. The running instance Tool Server and Web Chat are required.
 
-`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. Children may only consult default, with no further delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
+`run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. Without a Team grant, children may only consult default, with no further delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
 
 Project forms contain a name and shared instructions. Agent forms contain a name, workspace, basic instructions and AI settings. There are no participant or project default agent settings.
 
@@ -2008,7 +2037,7 @@ Settings → Agents lists the default agent with a default badge. Its editor con
 
 `xangi agent list` includes the reserved `xangi:default` target. Use `xangi agent run default --task "question and necessary background"` (or `run xangi:default`) to ask it. It uses the instance's default workspace and AI settings in a new conversation, not the caller's settings or an existing parent's conversation history. Results return through the existing completion delivery and `status` / `wait` commands. Answers are information, not user authorization.
 
-A delegated worker may consult default and retrieve its own answer. It must use `wait` to receive and incorporate the answer before completing its own task. The default consultation cannot delegate further; other nested delegation remains prohibited. Duplicate requests and the existing concurrency limit also apply. `inter_chat_ask` remains for other xangi instances and requires no changes for this feature.
+A delegated worker may consult default and retrieve its own answer. It must use `wait` to receive and incorporate the answer before completing its own task. The default consultation cannot delegate further; other nested delegation requires an explicit Team grant. Duplicate requests and the existing concurrency limit also apply. `inter_chat_ask` remains for other xangi instances and requires no changes for this feature.
 
 ### Agent execution settings
 
@@ -2080,7 +2109,7 @@ Discovery lists tools-capable models from the public API; listing does not guara
 
 ### Teams (member groups)
 
-Create Teams with members and shared instructions in Settings. The calling conversation always leads; fixed leaders, subleaders and reporting lines are no longer configurable.
+Create Teams with members and shared instructions in Settings or in conversation. The calling conversation leads unless an optional leader Agent is selected. Subleaders and reporting lines are not configurable.
 
 Agents have basic instructions describing expertise and standing behavior. Legacy Agent role text migrates into these instructions; identical copied Team assignments are cleared while distinct assignments are preserved. The optional Team-specific assignment is separate and is not copied from the Agent. Leave it blank for the caller to decide the current work.
 
@@ -2170,6 +2199,25 @@ Standalone Japanese requests also control secret mode: `シークレットにし
 
 Default and named agents share the model and advanced-settings form and save their name, workspace, and AI settings with one Save action. Named agents may inherit the default agent settings. If saving default AI settings fails, the form reports which fields were already saved and preserves input for retry.
 
-Ordinary conversations may request their own agent in a new independent session without inheriting conversation history. An agent started by a self-request cannot delegate further, including consultations with default. This restriction is persisted with the run and survives restarts.
+Ordinary conversations may request their own agent in a new independent session without inheriting conversation history. An agent started by a self-request cannot delegate further, including consultations with default, except for explicitly granted one-level Team requests. This restriction is persisted with the run and survives restarts.
 
 Shell commands in local-llm and OpenRouter automatically pass the current conversation ID, platform, and agent workspace to the xangi CLI. No manual conversation ID is needed for `xangi agent run`.
+
+
+### Optional Team leader in Settings
+
+In Settings → Teams → Create/Edit, select a registered Agent in the optional Leader field and save. The default is no designated leader: the caller plans and integrates the work. Leaders and members must be different Agents. Clear the selection and save to restore caller-led behavior for subsequent requests; existing Teams remain unchanged.
+
+For a Team with a configured leader, call `xangi team run TEAM_ID --task TEXT` without member assignments or an explicit grant. The leader uses its own AI settings, instructions and workspace. It may dispatch only that Team's members using `team run --assignments-json`, collect their results, request revisions and integrate the final answer. Caller-led Teams still require complete assignments.
+
+Membership, shared instructions and member settings are captured at request time; the leader's `team show` and subsequent rounds use that snapshot even if Settings changes. Parent `team status` / `logs` include member rounds. The same shared deadline, cumulative launch cap and cancellation behavior apply. An Agent selected as a leader cannot be deleted until it is removed from the Team configuration.
+
+Delegated leaders may list only the members needed for each round in `--assignments-json` (at least one). For example, finish four makers before dispatching only the reviewer. Omitted members do not run, and cumulative launch limits count selected members only. Empty lists, duplicate or outside-team IDs, and blank tasks are rejected. Wait for the current round before starting the next. Ordinary caller-led requests still require assignments for all members. This also applies to leaders granted Teams via `agent run --allow-teams-json`.
+
+### One-level Team delegation by a leader
+
+Dispatch a registered leader with `xangi agent run LEADER_ID --task TEXT --allow-teams-json '["TEAM_ID"]'`. The grant belongs to that request only. The leader reads `team show`, submits independent assignments with `team run --assignments-json`, and repeatedly uses `team wait` with the same run ID to collect and integrate results. Only one nested Team may run at a time; subsequent work/review/revision batches are allowed within the cumulative limit. If the leader returns while its Team is unfinished, execution waits and resumes the leader with the results. Nested completion does not trigger another leader turn.
+
+Unlisted Teams, parent/leader membership cycles, and further delegation by members (including default consultations) are rejected. Membership cycles are checked again at dispatch. Stop, failure and expiry cancel descendants and prevent queued members from starting. Closed grants cannot be reused; submit a new leader request instead.
+
+The originating conversation's `AGENT_MAX_CONCURRENT_REQUESTS` slots are shared by leaders and nested members; Team aggregation does not consume another slot. At least two slots are required. `--delegation-max-members` caps cumulative member launches, including failed batches (default 64, range 1–256). `--delegation-timeout-ms` sets one absolute deadline from acceptance (default `TIMEOUT_MS` or 3600000 ms, range 1000–36000000). Descendants and later rounds do not reset it. Monetary limits and midstream token-budget enforcement are not supported. These controls apply to xangi requests, not arbitrary shell subprocesses.

@@ -16,6 +16,7 @@ with sync_playwright() as pw:
             agents = [{'id': 'a1', 'name': 'レビュー担当', 'prompt': 'コードレビュー\n根拠を示す', 'backend': 'codex', 'model': 'test-model', 'workspaceId': 'review'}]
             agents += [{'id':'a2','name':'サブリーダー','role':'進行管理'},{'id':'a3','name':'実装担当','role':'実装'}]
             teams = []
+            workspaces = [{'id':'default','name':'default','path':'/workspace','isDefault':True}, {'id':'review','name':'レビュー用','path':'/review','isDefault':False}]
             sessions, calls, errors = [], [], []
             selected = ['']; selected_team = ['']; busy = [False]
             def snapshot():
@@ -27,6 +28,10 @@ with sync_playwright() as pw:
                 if path.endswith('/stream'):
                     r.fulfill(content_type='text/event-stream',body=': ready\n\n'); return
                 if path == '/api/config': data={'uploadAccept':None,'uploadMaxBytes':64000000,'allowedBackends':['codex']}
+                elif path == '/api/agents' and method == 'POST':
+                    a={**r.request.post_data_json,'id':'created-agent'}; agents.append(a); data={'agent':a}
+                elif path == '/api/agents/created-agent' and method == 'DELETE':
+                    agents[:]=[a for a in agents if a['id']!='created-agent'];data={'ok':True}
                 elif path == '/api/agents': data={'agents':agents}
                 elif path == '/api/agents/a1/channel' and method == 'PUT':
                     body=r.request.post_data_json
@@ -68,7 +73,13 @@ with sync_playwright() as pw:
                 elif path == '/api/runtime-settings/channels': data={'status':'available','channels':[{'id':'C1','name':'#test'}]}
                 elif path == '/api/startup-settings': data={'groups':[]}
                 elif path == '/api/connection-settings': data={'groups':[],'backends':[]}
-                elif path == '/api/workspaces': data={'workspaces':[]}
+                elif path == '/api/workspaces' and method == 'POST':
+                    w={**r.request.post_data_json,'id':'new-workspace','isDefault':False};workspaces.append(w);data={'workspace':w}
+                elif path == '/api/workspaces/new-workspace' and method == 'PATCH':
+                    w=next(w for w in workspaces if w['id']=='new-workspace');w.update(r.request.post_data_json);data={'workspace':w}
+                elif path == '/api/workspaces/new-workspace' and method == 'DELETE':
+                    workspaces[:]=[w for w in workspaces if w['id']!='new-workspace'];data={'ok':True}
+                elif path == '/api/workspaces': data={'workspaces':workspaces}
                 elif path.startswith('/api/'): data={}
                 else:
                     file=root/('index.html' if path in ['/', '/settings'] or path.startswith('/chat/') else path.removeprefix('/app/').lstrip('/'))
@@ -83,8 +94,40 @@ with sync_playwright() as pw:
             assert len(set(round(r['height'], 1) for r in rects)) == 1, rects
             if width >= 768: assert max(r['y'] for r in rects)-min(r['y'] for r in rects) < 1, rects
             page.screenshot(path=str(out/f'nav-{width}.png'))
+            workspace_panel=page.locator('#workspaces')
+            expect(workspace_panel.get_by_role('button',name='defaultを編集',exact=True)).to_be_disabled()
+            workspace_panel.get_by_role('button',name='ワークスペースを作成',exact=True).click()
+            workspace_panel.get_by_label('名前',exact=True).fill('資料用')
+            workspace_panel.get_by_label('ディレクトリの絶対パス').fill('/documents')
+            workspace_panel.get_by_role('button',name='作成',exact=True).click()
+            workspace_panel.get_by_role('button',name='資料用を編集',exact=True).click()
+            expect(workspace_panel.get_by_label('ディレクトリの絶対パス')).to_be_disabled()
+            workspace_panel.get_by_label('名前',exact=True).fill('資料制作')
+            workspace_panel.get_by_role('button',name='保存',exact=True).click()
+            page.reload()
+            workspace_panel.get_by_role('button',name='資料制作を編集',exact=True).click()
+            expect(workspace_panel.get_by_label('名前',exact=True)).to_have_value('資料制作')
+            workspace_panel.get_by_label('名前',exact=True).fill('キャンセルする変更')
+            workspace_panel.get_by_role('button',name='キャンセル',exact=True).click()
+            expect(workspace_panel.get_by_role('button',name='資料制作を編集',exact=True)).to_be_visible()
+            workspace_panel.screenshot(path=str(out/f'workspace-list-{width}.png'),animations='disabled')
+            assert workspace_panel.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
+            workspace_panel.get_by_role('button',name='資料制作を登録解除',exact=True).click()
+            page.get_by_role('dialog').get_by_role('button',name='キャンセル',exact=True).click()
+            expect(workspace_panel.get_by_text('資料制作',exact=True)).to_be_visible()
+            workspace_panel.get_by_role('button',name='資料制作を登録解除',exact=True).click()
+            page.get_by_role('dialog').get_by_role('button',name='登録解除',exact=True).click()
+            expect(workspace_panel.get_by_text('資料制作',exact=True)).to_have_count(0)
             links.nth(1).click()
             agent_panel=page.locator('#agents')
+            agent_panel.get_by_role('button',name='エージェントを作成',exact=True).click()
+            agent_panel.get_by_label('名前',exact=True).fill('追加担当')
+            agent_panel.get_by_label('基本指示',exact=True).fill('資料を調べる')
+            agent_panel.get_by_role('button',name='作成',exact=True).click()
+            expect(agent_panel.get_by_role('button',name='追加担当を編集',exact=True)).to_be_visible()
+            agent_panel.get_by_role('button',name='追加担当を削除',exact=True).click()
+            page.get_by_role('dialog').get_by_role('button',name='削除',exact=True).click()
+            expect(agent_panel.get_by_text('追加担当',exact=True)).to_have_count(0)
             agent_panel.get_by_role('button',name='レビュー担当を編集',exact=True).click()
             agent_panel.get_by_label('設定先チャンネル',exact=True).select_option('discord:C1')
             agent_panel.get_by_role('button',name='チャンネルを設定',exact=True).click()
@@ -103,7 +146,7 @@ with sync_playwright() as pw:
             expect(agent_panel.get_by_label('得意なことを一言')).to_have_count(0)
             expect(agent_panel.get_by_label('基本指示')).to_have_value('コードレビュー\n根拠を示す')
             agent_panel.get_by_label('基本指示').fill('根拠を示してレビューする')
-            agent_panel.get_by_role('button',name='更新',exact=True).click()
+            agent_panel.get_by_role('button',name='保存',exact=True).click()
             agent_panel.get_by_role('button',name='レビュー担当を編集',exact=True).click()
             expect(agent_panel.get_by_label('基本指示')).to_have_value('根拠を示してレビューする')
             agent_panel.screenshot(path=str(out/f'agent-editor-{width}.png'),animations='disabled')
@@ -112,6 +155,9 @@ with sync_playwright() as pw:
             expect(panel.get_by_text('チームはまだありません。',exact=False)).to_be_visible()
             panel.get_by_role('button',name='チームを作成',exact=True).click()
             panel.get_by_label('チーム名（必須）').fill('開発チーム')
+            expect(panel.get_by_role('combobox',name='リーダー（任意）',exact=True)).to_have_value('')
+            panel.get_by_role('combobox',name='リーダー（任意）',exact=True).select_option('a1')
+            expect(panel.get_by_label('メンバーを追加').locator('option[value="a1"]')).to_have_count(0)
             expect(panel.get_by_label('同時実行数',exact=True)).to_have_value('16')
             expect(panel.get_by_label('同じ作業場所では順番に実行する')).not_to_be_checked()
             panel.get_by_label('同時実行数',exact=True).fill('4')
@@ -125,19 +171,21 @@ with sync_playwright() as pw:
             expect(rows.nth(1).get_by_label('チーム内の担当（任意）')).to_have_value('')
             assert panel.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
             panel.screenshot(path=str(out/f'team-editor-{width}.png'),animations='disabled')
-            panel.get_by_role('button',name='チームを保存',exact=True).click()
+            panel.get_by_role('button',name='作成',exact=True).click()
             expect(panel.get_by_role('status')).to_contain_text('チームを保存')
+            assert teams[0]['leaderAgentId']=='a1'
             assert teams[0]['maxConcurrency']==4 and teams[0]['serializeWorkspaces'] is True
             assert teams[0]['members'][2]['role']==''
             assert teams[0]['members'][0]['agentId']=='xangi:default'
             page.reload()
             panel.get_by_role('button',name='開発チームを編集').click()
+            expect(panel.get_by_role('combobox',name='リーダー（任意）',exact=True)).to_have_value('a1')
             expect(panel.get_by_label('同時実行数',exact=True)).to_have_value('4')
             expect(panel.get_by_label('同じ作業場所では順番に実行する')).to_be_checked()
             expect(panel.get_by_label('チーム名（必須）')).to_have_value('開発チーム')
             expect(panel.locator('.team-member').nth(2).get_by_label('チーム内の担当（任意）')).to_have_value('')
             expect(panel.get_by_label('報告先')).to_have_count(0)
-            panel.get_by_role('button',name='チームを保存',exact=True).click()
+            panel.get_by_role('button',name='保存',exact=True).click()
             expect(panel.get_by_role('status')).to_contain_text('チームを保存')
             assert teams[0]['leadership']=='caller' and not any(m.get('reportsTo') for m in teams[0]['members'])
             card=page.locator('section[aria-labelledby="settings-channel-title"]')
@@ -164,12 +212,18 @@ with sync_playwright() as pw:
             expect(card.get_by_label('バックエンド')).to_be_enabled()
             panel.get_by_role('button',name='開発チームを編集').click()
             expect(panel.get_by_label('リーダー方式')).to_have_count(0)
-            panel.get_by_role('button',name='チームを保存',exact=True).click()
+            panel.get_by_role('button',name='保存',exact=True).click()
+            expect(panel.get_by_text('リーダー: レビュー担当',exact=False)).to_be_visible()
+            panel.get_by_role('button',name='開発チームを編集').click()
+            panel.get_by_role('combobox',name='リーダー（任意）',exact=True).select_option('')
+            panel.get_by_role('button',name='保存',exact=True).click()
+            page.reload()
             expect(panel.get_by_text('呼び出し元がリーダー',exact=False)).to_be_visible()
+            assert teams[0]['leaderAgentId']==''
             panel.get_by_role('button',name='開発チームを削除').click()
             page.get_by_role('dialog').get_by_role('button',name='削除',exact=True).click()
             expect(panel.get_by_text('チームはまだありません。',exact=False)).to_be_visible()
             assert not errors,errors
             context.close()
     finally: browser.close()
-print('PASS: Team作成・任意担当・編集/再読込・割当/解除・並列・削除・処理中拒否 (1280/768/414/375/320px)')
+print('PASS: Workspace作成/改名/取消/登録解除・Agent作成/削除・Team作成・任意担当・編集/再読込・割当/解除・並列・削除・処理中拒否 (1280/768/414/375/320px)')

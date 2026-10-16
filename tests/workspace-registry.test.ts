@@ -48,6 +48,24 @@ describe('WorkspaceRegistry', () => {
     await expect(registry.resolveById(registered.id)).resolves.toEqual(registered);
   });
 
+  it('renames a workspace without changing bindings or paths, persists it and rejects collisions', async () => {
+    const { dataDir, allowedRoot, defaultWorkspace } = await fixture();
+    const directory = join(allowedRoot, 'writing');
+    await mkdir(directory);
+    const options = { dataDir, defaultWorkspacePath: defaultWorkspace, allowedRoots: [allowedRoot] };
+    const registry = await WorkspaceRegistry.open(options);
+    const workspace = await registry.register('執筆', directory);
+    await registry.bind('discord', 'writing-channel', workspace.id);
+    expect(await registry.rename(workspace.id, '資料制作')).toEqual({ ...workspace, name: '資料制作' });
+    const reopened = await WorkspaceRegistry.open(options);
+    expect(await reopened.resolve('discord', 'writing-channel')).toEqual({ ...workspace, name: '資料制作' });
+    await expect(registry.rename(workspace.id, 'default')).rejects.toThrow('already registered');
+    await expect(registry.rename('default', 'other')).rejects.toThrow('Default workspace');
+    await expect(registry.rename(workspace.id, ' ')).rejects.toThrow('empty');
+    await expect(registry.rename('missing', 'other')).rejects.toThrow('not found');
+    expect(registry.getById(workspace.id)?.name).toBe('資料制作');
+  });
+
   it('atomically persists a deterministic default workspace entry', async () => {
     const { dataDir, allowedRoot, defaultWorkspace } = await fixture();
     const registry = await WorkspaceRegistry.open({

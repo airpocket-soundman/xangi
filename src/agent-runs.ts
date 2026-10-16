@@ -1,3 +1,5 @@
+import type { TeamSnapshot } from './teams.js';
+import type { TeamDelegationPolicy } from './team-delegation.js';
 import type { WorkThread } from './agent-work.js';
 import type { AgentWorkPresentation } from './agent-work-presentation.js';
 import { migrateTeamState } from './team-migration.js';
@@ -25,8 +27,13 @@ export interface AgentRun {
   teamId?: string;
   teamTurnId?: string;
   teamPhase?: string;
-  /** Self-requests cannot delegate further, including default consultations. */
+  /** Self-requests cannot consult default; an explicit Team grant is separate. */
   selfDelegation?: boolean;
+  teamDelegation?: TeamDelegationPolicy;
+  delegationRootId?: string;
+  teamDelegationClosed?: boolean;
+  delegatedMemberCount?: number;
+  delegationTeam?: TeamSnapshot;
   parentContextKey?: string;
   /** Platform of the parent conversation, used for completion delivery. */
   parentPlatform?: 'discord' | 'slack' | 'telegram' | 'web' | 'line';
@@ -78,8 +85,12 @@ export interface CreateAgentRunInput {
   teamId?: string;
   teamTurnId?: string;
   teamPhase?: string;
-  /** Self-requests cannot delegate further, including default consultations. */
+  /** Self-requests cannot consult default; an explicit Team grant is separate. */
   selfDelegation?: boolean;
+  teamDelegation?: TeamDelegationPolicy;
+  delegationRootId?: string;
+  delegatedMemberCount?: number;
+  delegationTeam?: TeamSnapshot;
   parentContextKey?: string;
   parentPlatform?: AgentRun['parentPlatform'];
   task: string;
@@ -135,9 +146,13 @@ export class AgentRunStore {
       teamTurnId: input.teamTurnId,
       teamPhase: input.teamPhase,
       selfDelegation: input.selfDelegation === true,
+      teamDelegation: input.teamDelegation && structuredClone(input.teamDelegation),
+      delegationRootId: input.delegationRootId,
+      delegatedMemberCount: input.delegatedMemberCount,
+      delegationTeam: input.delegationTeam && structuredClone(input.delegationTeam),
       parentContextKey: input.parentContextKey,
       parentPlatform: input.parentPlatform,
-      parentDeliveryTracked: Boolean(input.parentContextKey),
+      parentDeliveryTracked: Boolean(input.parentContextKey) && !input.delegationRootId,
       backend: input.backend,
       model: input.model,
       effort: input.effort,
@@ -156,7 +171,7 @@ export class AgentRunStore {
   markRunning(id: string): AgentRun {
     return this.update(id, (run) => {
       run.status = 'running';
-      run.parentDeliveryTracked = Boolean(run.parentContextKey);
+      run.parentDeliveryTracked = Boolean(run.parentContextKey) && !run.delegationRootId;
       run.workRevision = (run.workRevision || 0) + 1;
       run.startedAt = new Date().toISOString();
       delete run.error;
@@ -171,6 +186,12 @@ export class AgentRunStore {
       delete run.parentDeliveryError;
       delete run.parentDeliveryFallbackAttempted;
       delete run.parentProgressAt;
+    });
+  }
+
+  closeTeamDelegation(id: string) {
+    return this.update(id, (run) => {
+      run.teamDelegationClosed = true;
     });
   }
 

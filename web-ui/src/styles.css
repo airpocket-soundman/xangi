@@ -6764,3 +6764,90 @@ video.media-preview {
   line-height: 1.6;
   opacity: 0.85;
 }
+
+/* Shared settings catalog controls: same order and tap targets on all three screens. */
+.settings-card-heading:has(.catalog-create-actions) {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.settings-card-heading:has(.catalog-create-actions) > :first-child {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.catalog-create-actions {
+  flex: 0 0 auto;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.catalog-create-actions [role='alert'] {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.catalog-create {
+  flex-shrink: 0;
+  min-height: 44px;
+}
+.catalog-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.catalog-row-copy {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.catalog-row-copy small,
+.catalog-row-note {
+  color: var(--ink-secondary);
+}
+.catalog-row-actions {
+  display: flex;
+  gap: 8px;
+}
+.catalog-row-actions button,
+.catalog-form-actions button {
+  min-height: 44px;
+}
+.catalog-row-note {
+  flex-basis: 100%;
+}
+.catalog-form-actions {
+  margin-top: 16px;
+}
+@media (max-width: 480px) {
+  .catalog-row-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+.catalog-create,
+.catalog-row-actions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.catalog-row-actions button {
+  background: var(--surface);
+  color: var(--ink);
+}
+.catalog-row-actions button:not(:disabled):hover {
+  background: var(--surface-subtle);
+}
+.catalog-create:not(:disabled):hover {
+  filter: brightness(0.95);
+}
+
+.catalog-row-actions button.danger {
+  color: var(--danger);
+}
