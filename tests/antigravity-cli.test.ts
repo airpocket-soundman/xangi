@@ -411,6 +411,39 @@ describe('AntigravityRunner', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each([0, 1, null])(
+    'retries help after an early exit (%s) when descendants retain its pipes',
+    async (exitCode) => {
+      vi.useFakeTimers();
+      const { spawn } = await import('child_process');
+      const runner = new AntigravityRunner({ antigravityMode: 'auto' });
+      const promise = runner.run('hello', { channelId: 'early-exit' });
+      const first = await waitForProcess();
+      const kill = vi.spyOn(first, 'kill').mockImplementation(() => false);
+      first.exitCode = exitCode;
+      first.signalCode = exitCode === null ? 'SIGTERM' : null;
+      first.emit('exit', exitCode, first.signalCode);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(spawn).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(kill).not.toHaveBeenCalled();
+      expect(first.stdout.destroyed).toBe(true);
+      expect(first.stderr.destroyed).toBe(true);
+      first.emit('close', exitCode);
+      expect(runner.hasRunner('early-exit')).toBe(true);
+      let proc = await waitForProcess(2);
+      proc.stdout.emit('data', Buffer.from('--mode Set mode\n'));
+      proc.emit('close', 0);
+      await vi.advanceTimersByTimeAsync(0);
+      proc = await waitForProcess(3);
+      proc.stdout.emit('data', Buffer.from(success('answer')));
+      proc.emit('close', 0);
+      await expect(promise).resolves.toMatchObject({ result: 'answer' });
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
   it('waits for close after a successful exit to read remaining help output', async () => {
     const { spawn } = await import('child_process');
     const runner = new AntigravityRunner({ antigravityMode: 'plan' });

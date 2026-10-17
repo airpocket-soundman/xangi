@@ -1797,7 +1797,7 @@ Agy CLI 1.1.2から1.1.7までの先行実装も従来どおり互換対象で�
 
 Agy CLI 1.1.9以降はprint modeでもslash command・skillを展開します。xangiは各platformのcommand処理を正本にするため、`agy --help`を確認し、対応版には`--disable-slash-commands`を渡します。対応・未対応を確認できた結果はrunner内で保持します。help確認は5秒で打ち切り、timeout・起動失敗・異常終了時はフラグなしで今回の実行を続け、次回リクエストで再確認します。probe中にユーザーがStopした場合は今回の実行自体を中止し、実プロンプトを開始しません。実プロンプトをcapability確認のために再送することはありません。Agy側へ展開を委ねる場合は`ANTIGRAVITY_DISABLE_SLASH_COMMANDS=false`を設定します。
 
-help確認が5秒でtimeoutした場合はSIGTERMを送り、さらに1秒後にSIGKILLへ昇格します。親プロセスの終了を確認できれば、子孫がstdout/stderrを保持していても読み取りを破棄して確認を終了します。SIGKILL後も1秒以内に終了を確認できなければ、重複起動を避けるため再確認・実プロンプトとも開始せずエラーにします。
+help確認が5秒でtimeoutした場合はSIGTERMを送り、さらに1秒後にSIGKILLへ昇格します。親プロセスがタイムアウト前に終了し、子孫だけがパイプを保持している場合も、終了済みとして扱います。親プロセスの終了を確認できれば、子孫がstdout/stderrを保持していても読み取りを破棄して確認を終了します。SIGKILL後も1秒以内に終了を確認できなければ、重複起動を避けるため再確認・実プロンプトとも開始せずエラーにします。
 
 headless実行はMCP初期化完了後に`init`イベントを返します。`Streaming`ログの後、`init`前で長く待つ場合はAgyログとMCP serverの起動状態を確認してください。
 

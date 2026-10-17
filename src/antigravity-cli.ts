@@ -277,6 +277,7 @@ export class AntigravityRunner extends CliRunnerBase {
       let output = '';
       let proc: ReturnType<typeof spawn> | undefined;
       let probeTimedOut = false;
+      let probeExited = false;
       let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
       let finalDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -326,6 +327,12 @@ export class AntigravityRunner extends CliRunnerBase {
       const timer = setTimeout(() => {
         console.warn('[antigravity] agy --help capability probe timed out');
         probeTimedOut = true;
+        // exit can precede close indefinitely when descendants retain the pipes.
+        // The parent is already gone: discard incomplete help and allow a retry.
+        if (probeExited) {
+          finish('unknown', 'error');
+          return;
+        }
         // Bound shutdown even when a wrapper's descendants keep its pipes open.
         forceKillTimer = setTimeout(() => {
           finalDeadlineTimer = setTimeout(
@@ -384,6 +391,7 @@ export class AntigravityRunner extends CliRunnerBase {
       };
       spawned.on('close', handleCompletion);
       spawned.on('exit', (code) => {
+        probeExited = true;
         // Successful help needs fully drained output; interrupted help only needs exit.
         if (probeTimedOut || spawned.killed) handleCompletion(code);
       });
