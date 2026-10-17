@@ -64,6 +64,28 @@ describe('document attachments', () => {
       status: 404,
     });
   });
+  it('allows only declared files under configured shared upload roots', async () => {
+    // Keep this fixture outside os.tmpdir(), which is already an allowed root.
+    const shared = mkdtempSync(join(process.cwd(), '.attachment-test-'));
+    try {
+      const uploads = join(shared, 'web-uploads');
+      mkdirSync(uploads);
+      const file = join(uploads, 'photo.png');
+      writeFileSync(file, 'image');
+      const service = new DocumentAttachments(join(root, 'cache'), [uploads]);
+      expect((await service.source('session', file, [file], root)).size).toBe(5);
+      await expect(service.source('other', file, [], root)).rejects.toMatchObject({ status: 403 });
+      const outside = join(shared, 'outside.png');
+      writeFileSync(outside, 'private');
+      await expect(service.source('session', outside, [outside], root)).rejects.toMatchObject({ status: 404 });
+      const link = join(uploads, 'escape.png');
+      symlinkSync(outside, link);
+      await expect(service.source('session', link, [link], root)).rejects.toMatchObject({ status: 404 });
+    } finally {
+      rmSync(shared, { recursive: true, force: true });
+    }
+  });
+
   it('keeps unknown types downloadable and rejects invalid pages', async () => {
     const file = join(root, 'archive.bin');
     writeFileSync(file, 'binary');

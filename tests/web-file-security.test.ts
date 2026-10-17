@@ -2,10 +2,7 @@ import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
-import {
-  isRealFileWithin,
-  parseDisplayedUserAttachments,
-} from '../src/web-file-security.js';
+import { isRealFileWithin, parseDisplayedUserAttachments } from '../src/web-file-security.js';
 
 describe('web file security', () => {
   it('accepts files inside an allowed root and rejects paths outside it', () => {
@@ -32,16 +29,39 @@ describe('web file security', () => {
     expect(isRealFileWithin(root, link)).toBe(false);
   });
 
-  it.each(['Attachment', '添付ファイル'])('removes %s markers and keeps only valid unique files', (marker) => {
-    const root = mkdtempSync(join(tmpdir(), 'xangi-web-attachments-'));
-    const attachment = join(root, 'photo.png');
-    writeFileSync(attachment, 'image');
+  it.each(['Attachment', '添付ファイル'])(
+    'removes %s markers and keeps only valid unique files',
+    (marker) => {
+      const root = mkdtempSync(join(tmpdir(), 'xangi-web-attachments-'));
+      const attachment = join(root, 'photo.png');
+      writeFileSync(attachment, 'image');
+
+      const parsed = parseDisplayedUserAttachments(
+        `説明\n[${marker}]\n- ${attachment}\n- ${attachment}\n- /missing/file\n\n続き`,
+        [root]
+      );
+
+      expect(parsed).toEqual({ content: '説明\n\n続き', attachments: [attachment] });
+    }
+  );
+
+  it('accepts every valid same-line and bullet path and skips rejected ones', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-web-inline-attachments-'));
+    const first = join(root, 'first.png');
+    const second = join(root, 'second.png');
+    const afterMissing = join(root, 'ignored.png');
+    writeFileSync(first, 'first');
+    writeFileSync(second, 'second');
+    writeFileSync(afterMissing, 'ignored');
 
     const parsed = parseDisplayedUserAttachments(
-      `説明\n[${marker}]\n- ${attachment}\n- ${attachment}\n- /missing/file\n\n続き`,
+      `説明\n[Attachment] ${first}\n- ${second}\n- ${join(root, 'missing.png')}\n- ${afterMissing}\n続き`,
       [root]
     );
 
-    expect(parsed).toEqual({ content: '説明\n\n続き', attachments: [attachment] });
+    expect(parsed).toEqual({
+      content: '説明\n続き',
+      attachments: [first, second, afterMissing],
+    });
   });
 });

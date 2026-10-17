@@ -367,7 +367,10 @@ export function startWebChat(options: WebChatOptions) {
         : resolve(workspace.path, requestedPath),
     };
   };
-  const documentAttachments = new DocumentAttachments(join(dataDir, 'document-previews'));
+  const webUploadDir = join(workdir, 'tmp', 'web-uploads');
+  const documentAttachments = new DocumentAttachments(join(dataDir, 'document-previews'), [
+    webUploadDir,
+  ]);
   const webProjects = new ProjectCatalog(dataDir);
   const extensionFavorites = new ExtensionFavorites(join(dataDir, 'extension-favorites.json'));
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
@@ -3470,7 +3473,11 @@ ${delegatedTeam.prompt}`
         const entry = getSessionEntry(sessionId);
         if (!entry) throw new AttachmentError('会話が見つかりません。', 404);
         const messages = readSessionMessages(workdir, sessionId);
-        const roots = [entry.workspacePath || workdir, join(dataDir, 'media', 'attachments')];
+        const roots = [
+          entry.workspacePath || workdir,
+          webUploadDir,
+          join(dataDir, 'media', 'attachments'),
+        ];
         const declared = [
           ...new Set([
             ...attachmentPaths(messages),

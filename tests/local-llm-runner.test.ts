@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -274,6 +274,129 @@ describe('LocalLlmRunner mode', () => {
       ]);
     } finally {
       rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('LocalLlmRunner image attachments', () => {
+  it('adds images and keeps a non-image attachment in the message exactly once', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-image-message-'));
+    const imagePath = join(workdir, 'photo.png');
+    const documentPath = join(workdir, 'report.pdf');
+    writeFileSync(imagePath, 'image-bytes');
+    writeFileSync(documentPath, 'document');
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const internalRunner = runner as unknown as {
+      buildUserMessage(prompt: string): {
+        role: string;
+        content: string;
+        images?: Array<{ base64: string; mimeType: string }>;
+      };
+    };
+
+    try {
+      const message = internalRunner.buildUserMessage(
+        `確認して\n\n[Attachment]\n  - ${imagePath}\n  - ${documentPath}`
+      );
+      expect(message).toEqual({
+        role: 'user',
+        content: `確認して\n\n[Attachment]\n  - ${documentPath}`,
+        images: [{ base64: Buffer.from('image-bytes').toString('base64'), mimeType: 'image/png' }],
+      });
+      expect(message.content.split(documentPath)).toHaveLength(2);
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends a valid image after a missing file and preserves rejected attachment text', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-image-message-'));
+    const imagePath = join(workdir, 'photo.png');
+    const documentPath = join(workdir, 'missing.pdf');
+    writeFileSync(imagePath, 'image-bytes');
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const internalRunner = runner as unknown as {
+      buildUserMessage(prompt: string): {
+        role: string;
+        content: string;
+        images?: Array<{ base64: string; mimeType: string }>;
+      };
+    };
+
+    try {
+      const message = internalRunner.buildUserMessage(
+        `確認して\n\n[Attachment]\n  - ${documentPath}\n  - ${imagePath}`
+      );
+      expect(message).toEqual({
+        role: 'user',
+        content: `確認して\n\n[Attachment]\n  - ${documentPath}`,
+        images: [{ base64: Buffer.from('image-bytes').toString('base64'), mimeType: 'image/png' }],
+      });
+      expect(message.content.split(documentPath)).toHaveLength(2);
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('restores an attachment marker when image encoding fails', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-image-failure-'));
+    const imagePath = join(workdir, 'photo.png');
+    writeFileSync(imagePath, 'image-bytes');
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const internalRunner = runner as unknown as {
+      buildUserMessage(prompt: string): {
+        role: string;
+        content: string;
+        images?: Array<{ base64: string; mimeType: string }>;
+      };
+    };
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+      throw new Error('read failed');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const message = internalRunner.buildUserMessage(`画像を確認して\n[Attachment] ${imagePath}`);
+      expect(message).toEqual({
+        role: 'user',
+        content: `画像を確認して\n[Attachment] ${imagePath}`,
+      });
+    } finally {
+      read.mockRestore();
+      warn.mockRestore();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts Web uploads from the startup workspace when the runner uses another workspace', () => {
+    const startupWorkspace = mkdtempSync(join(tmpdir(), 'xangi-startup-workspace-'));
+    const runnerWorkdir = mkdtempSync(join(tmpdir(), 'xangi-project-workspace-'));
+    const uploadDir = join(startupWorkspace, 'tmp', 'web-uploads');
+    mkdirSync(uploadDir, { recursive: true });
+    const imagePath = join(uploadDir, 'photo.png');
+    writeFileSync(imagePath, 'image-bytes');
+    const originalWorkspacePath = process.env.WORKSPACE_PATH;
+    process.env.WORKSPACE_PATH = startupWorkspace;
+    const runner = new LocalLlmRunner({ workdir: runnerWorkdir, model: 'test' });
+    const internalRunner = runner as unknown as {
+      buildUserMessage(prompt: string): {
+        role: string;
+        content: string;
+        images?: Array<{ base64: string; mimeType: string }>;
+      };
+    };
+
+    try {
+      const message = internalRunner.buildUserMessage(`[Attachment] ${imagePath}`);
+      expect(message.content).toBe('');
+      expect(message.images).toEqual([
+        { base64: Buffer.from('image-bytes').toString('base64'), mimeType: 'image/png' },
+      ]);
+    } finally {
+      if (originalWorkspacePath === undefined) delete process.env.WORKSPACE_PATH;
+      else process.env.WORKSPACE_PATH = originalWorkspacePath;
+      rmSync(startupWorkspace, { recursive: true, force: true });
+      rmSync(runnerWorkdir, { recursive: true, force: true });
     }
   });
 });

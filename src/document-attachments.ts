@@ -95,7 +95,10 @@ export function attachmentPaths(messages: { role: string; content: unknown }[]):
 export class DocumentAttachments {
   private pending = new Map<string, Promise<void>>();
   private active = 0;
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    private sharedAttachmentRoots: string[] = []
+  ) {}
 
   async source(
     sessionId: string,
@@ -117,6 +120,7 @@ export class DocumentAttachments {
       workspace,
       tmpdir(),
       join(this.root, '..', 'media', 'attachments'),
+      ...this.sharedAttachmentRoots,
     ]);
     if (!source) {
       // A missing temporary original can be recovered from a previously viewed snapshot.

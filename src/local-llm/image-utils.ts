@@ -3,6 +3,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { parseAttachmentMarkers, type AttachmentMarkerLine } from '../attachment-markers.js';
 
 /** サポートする画像拡張子 */
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
@@ -54,39 +55,85 @@ export function encodeImageToBase64(filePath: string): string | null {
 }
 
 /**
- * プロンプトから「[Attachment]」（旧ラベルも対応）セクションのファイルパスを抽出
- * @returns { imagePaths: 画像ファイルパス[], otherPaths: 非画像ファイルパス[], cleanPrompt: 添付ファイルセクションを除去したプロンプト }
+ * プロンプトから「[Attachment]」（旧ラベルも対応）のファイルパスを抽出
+ * @returns { imagePaths: 画像ファイルパス[], otherPaths: 非画像ファイルパス[], cleanPrompt: 画像の添付行を除去したプロンプト }
  */
-export function extractAttachmentPaths(prompt: string): {
+export function extractAttachmentPaths(
+  prompt: string,
+  allowedRoots: string[]
+): {
   imagePaths: string[];
   otherPaths: string[];
   cleanPrompt: string;
 } {
   const imagePaths: string[] = [];
   const otherPaths: string[] = [];
+  const parsed = parseAttachmentMarkers(prompt, allowedRoots);
+  const lines = parsed.lines.map((line) => ({ ...line, removed: false }));
 
-  // Accept both the current English marker and legacy Japanese transcripts.
-  const attachmentMatch = prompt.match(/\n\n\[(?:Attachment|添付ファイル)\]\n([\s\S]*?)$/);
-  if (!attachmentMatch) {
-    return { imagePaths, otherPaths, cleanPrompt: prompt };
-  }
+  const addPath = (filePath: string): void => {
+    const target = isImageFile(filePath) ? imagePaths : otherPaths;
+    if (!target.includes(filePath)) target.push(filePath);
+  };
 
-  const fileListText = attachmentMatch[1];
-  const cleanPrompt = prompt.slice(0, attachmentMatch.index).trim();
-
-  // 各行からファイルパスを抽出（ "  - /path/to/file" 形式）
-  const lines = fileListText.split('\n');
-  for (const line of lines) {
-    const pathMatch = line.match(/^\s+-\s+(.+)$/);
-    if (pathMatch) {
-      const filePath = pathMatch[1].trim();
+  for (const marker of parsed.markers) {
+    for (const candidate of marker.acceptedCandidates) {
+      const filePath = candidate.realPath;
+      if (!filePath) continue;
+      addPath(filePath);
       if (isImageFile(filePath)) {
-        imagePaths.push(filePath);
-      } else {
-        otherPaths.push(filePath);
+        lines[candidate.lineIndex].removed = true;
       }
+    }
+    const remainingFiles = marker.candidates.some(
+      (candidate) => path.isAbsolute(candidate.path) && !lines[candidate.lineIndex].removed
+    );
+    const markerLine = lines[marker.markerLineIndex];
+    if (remainingFiles && markerLine.removed) {
+      // An inline image may share its marker with subsequent documents or rejected paths.
+      markerLine.raw = markerLine.raw.replace(/^(\[(?:Attachment|添付ファイル)\])[^\r\n]*/, '$1');
+      markerLine.removed = false;
+    } else if (marker.acceptedCandidates.length > 0 && !remainingFiles) {
+      markerLine.removed = true;
     }
   }
 
-  return { imagePaths, otherPaths, cleanPrompt };
+  if (imagePaths.length === 0) {
+    return { imagePaths, otherPaths, cleanPrompt: prompt };
+  }
+
+  collapseBlankLinesAcrossRemoval(lines);
+
+  return {
+    imagePaths,
+    otherPaths,
+    cleanPrompt: lines
+      .filter((line) => !line.removed)
+      .map((line) => line.raw)
+      .join('')
+      .trim(),
+  };
+}
+
+function collapseBlankLinesAcrossRemoval(
+  lines: Array<AttachmentMarkerLine & { removed: boolean }>
+): void {
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].removed) continue;
+
+    let end = index;
+    while (end + 1 < lines.length && lines[end + 1].removed) end += 1;
+
+    let previous = index - 1;
+    while (previous >= 0 && lines[previous].removed) previous -= 1;
+    if (previous >= 0 && /^[ \t]*$/.test(lines[previous].text)) {
+      let next = end + 1;
+      while (next < lines.length && !lines[next].removed && /^[ \t]*$/.test(lines[next].text)) {
+        lines[next].removed = true;
+        next += 1;
+      }
+    }
+
+    index = end;
+  }
 }
