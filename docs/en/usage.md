@@ -1196,7 +1196,7 @@ Workspace context (AGENTS.md, etc.) is always injected regardless of settings.
 
 ### Multimodal (Image Input)
 
-The Local LLM backend supports image input. When you send a message with an image attachment via Discord/Slack, the image content is passed to the LLM for analysis and description.
+The Local LLM backend supports image input. When you send a message with an image attachment via Discord/Slack/Web Chat, the image content is passed to the LLM for analysis and description.
 
 #### Supported Image Formats
 
@@ -1217,6 +1217,8 @@ If the endpoint URL contains port `11434` or `ollama`, Ollama format is used; ot
 ```
 
 Non-image files (PDF, text, etc.) are still passed as file paths to the prompt as before.
+
+Missing files or paths outside the allowed roots do not prevent later valid images in the attachment list from being sent. Unreadable and non-image attachments remain in the prompt, along with instructions following the attachments.
 
 #### Notes
 

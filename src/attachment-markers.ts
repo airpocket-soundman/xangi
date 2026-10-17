@@ -53,8 +53,9 @@ export function parseAttachmentMarkers(
 
     const acceptedCandidates: AttachmentMarkerCandidate[] = [];
     for (const item of candidates) {
-      if (!item.realPath) break;
-      acceptedCandidates.push(item);
+      // Ordinary bullet text ends the attachment list; an unavailable file does not.
+      if (!isAbsolute(item.path)) break;
+      if (item.realPath) acceptedCandidates.push(item);
     }
     markers.push({ markerLineIndex: lines[index].index, candidates, acceptedCandidates });
     index = nextIndex - 1;

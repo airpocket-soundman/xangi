@@ -62,19 +62,22 @@ describe('extractAttachmentPaths', () => {
     return filePath;
   };
 
-  it.each(['Attachment', '添付ファイル'])('supports %s markers without changing the message or paths', (marker) => {
-    const image = createAllowedFile('cat.jpg');
-    const document = createAllowedFile('document.pdf');
-    const result = extractAttachmentPaths(
-      `確認して\n\n[${marker}]\n  - ${image}\n  - ${document}`,
-      [allowedRoot]
-    );
-    expect(result).toEqual({
-      imagePaths: [image],
-      otherPaths: [document],
-      cleanPrompt: `確認して\n\n[${marker}]\n  - ${document}`,
-    });
-  });
+  it.each(['Attachment', '添付ファイル'])(
+    'supports %s markers without changing the message or paths',
+    (marker) => {
+      const image = createAllowedFile('cat.jpg');
+      const document = createAllowedFile('document.pdf');
+      const result = extractAttachmentPaths(
+        `確認して\n\n[${marker}]\n  - ${image}\n  - ${document}`,
+        [allowedRoot]
+      );
+      expect(result).toEqual({
+        imagePaths: [image],
+        otherPaths: [document],
+        cleanPrompt: `確認して\n\n[${marker}]\n  - ${document}`,
+      });
+    }
+  );
 
   it('should return empty arrays when no attachments', () => {
     const result = extractAttachmentPaths('Hello, world!', [allowedRoot]);
@@ -170,10 +173,9 @@ describe('extractAttachmentPaths', () => {
     const photo = createAllowedFile('photo.png');
     const document = createAllowedFile('report.pdf');
     expect(
-      extractAttachmentPaths(
-        `確認して\n\n[Attachment]\n  - ${photo}\n  - ${document}`,
-        [allowedRoot]
-      )
+      extractAttachmentPaths(`確認して\n\n[Attachment]\n  - ${photo}\n  - ${document}`, [
+        allowedRoot,
+      ])
     ).toEqual({
       imagePaths: [photo],
       otherPaths: [document],
@@ -192,7 +194,9 @@ describe('extractAttachmentPaths', () => {
 
   it('should extract a same-line attachment with the legacy marker', () => {
     const photo = createAllowedFile('photo.webp');
-    expect(extractAttachmentPaths(`画像を確認して\n[添付ファイル] ${photo}`, [allowedRoot])).toEqual({
+    expect(
+      extractAttachmentPaths(`画像を確認して\n[添付ファイル] ${photo}`, [allowedRoot])
+    ).toEqual({
       imagePaths: [photo],
       otherPaths: [],
       cleanPrompt: '画像を確認して',
@@ -251,8 +255,7 @@ describe('extractAttachmentPaths', () => {
 
   it('should preserve runs of blank lines outside the removed attachment', () => {
     const photo = createAllowedFile('photo.png');
-    const prompt =
-      `前の本文\n\n[Attachment] ${photo}\n\n後ろの本文\n\n\nコード例`;
+    const prompt = `前の本文\n\n[Attachment] ${photo}\n\n後ろの本文\n\n\nコード例`;
     expect(extractAttachmentPaths(prompt, [allowedRoot]).cleanPrompt).toBe(
       '前の本文\n\n後ろの本文\n\n\nコード例'
     );
@@ -330,6 +333,46 @@ describe('extractAttachmentPaths', () => {
       imagePaths: [],
       otherPaths: [],
       cleanPrompt: prompt,
+    });
+  });
+  it.each(['missing', 'outside'])('keeps valid images after a %s attachment', (kind) => {
+    const good = createAllowedFile('good.png');
+    const rejected =
+      kind === 'missing' ? join(allowedRoot, 'missing.png') : join(testDir, 'outside.png');
+    if (kind === 'outside') writeFileSync(rejected, 'outside');
+    const prompt = `確認して\n\n[Attachment]\n  - ${rejected}\n  - ${good}`;
+    expect(extractAttachmentPaths(prompt, [allowedRoot])).toEqual({
+      imagePaths: [good],
+      otherPaths: [],
+      cleanPrompt: `確認して\n\n[Attachment]\n  - ${rejected}`,
+    });
+  });
+
+  it('keeps an invalid inline attachment while extracting a later valid image', () => {
+    const good = createAllowedFile('good.png');
+    const missing = join(allowedRoot, 'missing.png');
+    const prompt = `[Attachment] ${missing}\n- ${good}`;
+    expect(extractAttachmentPaths(prompt, [allowedRoot])).toEqual({
+      imagePaths: [good],
+      otherPaths: [],
+      cleanPrompt: `[Attachment] ${missing}`,
+    });
+  });
+
+  it('does not extract a path after ordinary bullet text', () => {
+    const good = createAllowedFile('good.png');
+    const prompt = `[Attachment]\n- 項目1\n- ${good}`;
+    expect(extractAttachmentPaths(prompt, [allowedRoot]).imagePaths).toEqual([]);
+    expect(extractAttachmentPaths(prompt, [allowedRoot]).cleanPrompt).toBe(prompt);
+  });
+
+  it('preserves the marker for a document after an inline image', () => {
+    const good = createAllowedFile('good.png');
+    const doc = createAllowedFile('report.pdf');
+    expect(extractAttachmentPaths(`[Attachment] ${good}\n- ${doc}`, [allowedRoot])).toEqual({
+      imagePaths: [good],
+      otherPaths: [doc],
+      cleanPrompt: `[Attachment]\n- ${doc}`,
     });
   });
 });

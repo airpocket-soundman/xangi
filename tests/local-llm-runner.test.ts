@@ -309,6 +309,35 @@ describe('LocalLlmRunner image attachments', () => {
     }
   });
 
+  it('sends a valid image after a missing file and preserves rejected attachment text', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'xangi-image-message-'));
+    const imagePath = join(workdir, 'photo.png');
+    const documentPath = join(workdir, 'missing.pdf');
+    writeFileSync(imagePath, 'image-bytes');
+    const runner = new LocalLlmRunner({ workdir, model: 'test' });
+    const internalRunner = runner as unknown as {
+      buildUserMessage(prompt: string): {
+        role: string;
+        content: string;
+        images?: Array<{ base64: string; mimeType: string }>;
+      };
+    };
+
+    try {
+      const message = internalRunner.buildUserMessage(
+        `確認して\n\n[Attachment]\n  - ${documentPath}\n  - ${imagePath}`
+      );
+      expect(message).toEqual({
+        role: 'user',
+        content: `確認して\n\n[Attachment]\n  - ${documentPath}`,
+        images: [{ base64: Buffer.from('image-bytes').toString('base64'), mimeType: 'image/png' }],
+      });
+      expect(message.content.split(documentPath)).toHaveLength(2);
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
   it('restores an attachment marker when image encoding fails', () => {
     const workdir = mkdtempSync(join(tmpdir(), 'xangi-image-failure-'));
     const imagePath = join(workdir, 'photo.png');
@@ -327,9 +356,7 @@ describe('LocalLlmRunner image attachments', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
-      const message = internalRunner.buildUserMessage(
-        `画像を確認して\n[Attachment] ${imagePath}`
-      );
+      const message = internalRunner.buildUserMessage(`画像を確認して\n[Attachment] ${imagePath}`);
       expect(message).toEqual({
         role: 'user',
         content: `画像を確認して\n[Attachment] ${imagePath}`,

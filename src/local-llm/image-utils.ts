@@ -77,23 +77,28 @@ export function extractAttachmentPaths(
   };
 
   for (const marker of parsed.markers) {
-    let hasNonImage = false;
     for (const candidate of marker.acceptedCandidates) {
       const filePath = candidate.realPath;
       if (!filePath) continue;
       addPath(filePath);
       if (isImageFile(filePath)) {
         lines[candidate.lineIndex].removed = true;
-      } else {
-        hasNonImage = true;
       }
     }
-    if (marker.acceptedCandidates.length > 0 && !hasNonImage) {
-      lines[marker.markerLineIndex].removed = true;
+    const remainingFiles = marker.candidates.some(
+      (candidate) => path.isAbsolute(candidate.path) && !lines[candidate.lineIndex].removed
+    );
+    const markerLine = lines[marker.markerLineIndex];
+    if (remainingFiles && markerLine.removed) {
+      // An inline image may share its marker with subsequent documents or rejected paths.
+      markerLine.raw = markerLine.raw.replace(/^(\[(?:Attachment|添付ファイル)\])[^\r\n]*/, '$1');
+      markerLine.removed = false;
+    } else if (marker.acceptedCandidates.length > 0 && !remainingFiles) {
+      markerLine.removed = true;
     }
   }
 
-  if (!lines.some((line) => line.removed)) {
+  if (imagePaths.length === 0) {
     return { imagePaths, otherPaths, cleanPrompt: prompt };
   }
 
