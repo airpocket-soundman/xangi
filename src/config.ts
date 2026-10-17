@@ -48,6 +48,7 @@ export interface AgentConfig {
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  antigravityMode?: 'accept-edits' | 'auto' | 'plan';
   /** SKIP_PERMISSIONS=false時に使うGitHub Copilot CLI専用の制限モード。 */
   copilotPermissionMode?: 'read-only' | 'workspace-write';
   /** Copilot CLIのsession単位soft limit。CLI仕様により30以上。 */
@@ -324,6 +325,11 @@ export function loadConfig(): Config {
     timeoutMs: v.int('TIMEOUT_MS', DEFAULT_TIMEOUT_MS, { min: 1000 }),
     workdir: process.env.WORKSPACE_PATH || undefined,
     skipPermissions: process.env.SKIP_PERMISSIONS !== 'false', // デフォルトで有効（Discord/Slack/Web 連携の非対話実行で permission プロンプト待ちを避けるため）
+    antigravityMode: v.enumOf(
+      'ANTIGRAVITY_MODE',
+      ['accept-edits', 'auto', 'plan'] as const,
+      undefined
+    ),
     copilotPermissionMode: v.enumOf(
       'COPILOT_PERMISSION_MODE',
       ['read-only', 'workspace-write'] as const,

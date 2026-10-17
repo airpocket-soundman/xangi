@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { installExtensionBackendFixture } from './helpers/extension-backend.js';
 
 describe('config', () => {
@@ -30,6 +30,38 @@ describe('config', () => {
 
     const { loadConfig } = await import('../src/config.js');
     expect(() => loadConfig()).not.toThrow();
+  });
+
+  it.each([
+    [undefined, undefined],
+    ['  ', undefined],
+    [' ACCEPT-EDITS ', 'accept-edits'],
+    ['AUTO', 'auto'],
+    ['plan', 'plan'],
+  ])('normalizes ANTIGRAVITY_MODE at startup: %s', async (value, expected) => {
+    process.env.WEB_CHAT_ENABLED = 'true';
+    process.env.AGENT_BACKEND = 'codex';
+    if (value === undefined) delete process.env.ANTIGRAVITY_MODE;
+    else process.env.ANTIGRAVITY_MODE = value;
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig().agent.config.antigravityMode).toBe(expected);
+  });
+
+  it('warns about invalid Antigravity mode at startup even when using another backend', async () => {
+    process.env.WEB_CHAT_ENABLED = 'true';
+    process.env.AGENT_BACKEND = 'codex';
+    process.env.ANTIGRAVITY_MODE = 'automatic';
+    delete process.env.XANGI_CONFIG_STRICT;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { loadConfig } = await import('../src/config.js');
+      expect(loadConfig().agent.config.antigravityMode).toBeUndefined();
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('ANTIGRAVITY_MODE=automatic'));
+      process.env.XANGI_CONFIG_STRICT = 'true';
+      expect(() => loadConfig()).toThrow('ANTIGRAVITY_MODE=automatic');
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('should load Discord config when DISCORD_TOKEN is set', async () => {

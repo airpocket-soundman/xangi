@@ -112,6 +112,44 @@ describe('Monitor account usage', () => {
     });
   });
 
+  it('shows the Argon dedicated quota scope and plan while keeping shared groups distinct', () => {
+    expect(
+      usageGroupPresentation({
+        id: 'gemini-argon',
+        label: 'Gemini 4 Argon',
+        description: '専用枠',
+        planType: 'Google AI Pro',
+      })
+    ).toEqual({ title: 'Gemini 4 Argon', description: '専用枠 · Google AI Pro' });
+    const providers = displayUsageProviders([
+      {
+        id: 'antigravity',
+        label: 'Antigravity',
+        groups: [
+          { id: 'gemini', label: 'Gemini共通枠', windows: [] },
+          {
+            id: 'gemini-argon',
+            label: 'Gemini 4 Argon',
+            description: '専用枠',
+            windows: [
+              {
+                label: '週次',
+                usedPercent: 30,
+              },
+            ],
+          },
+          { id: 'third-party', label: 'Claude・GPT共通枠', windows: [] },
+        ],
+      },
+    ]);
+    expect(providers[0].groups.map((group) => usageGroupPresentation(group).title)).toEqual([
+      'Gemini共通枠',
+      'Gemini 4 Argon',
+      'Claude・GPT共通枠',
+    ]);
+    expect(providers[0].groups[1].windows).toHaveLength(1);
+  });
+
   it('omits the Spark-specific quota from Monitor', () => {
     expect(
       visibleUsageGroups([

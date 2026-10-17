@@ -69,6 +69,7 @@ export interface UsageWindow {
 interface UsageGroup {
   id: string;
   label: string;
+  description?: string;
   planType?: string;
   windows: UsageWindow[];
 }
@@ -222,7 +223,9 @@ export function formatEstimatedCost(value: number): string {
   });
 }
 
-export function usageGroupPresentation(group: Pick<UsageGroup, 'id' | 'label' | 'planType'>): {
+export function usageGroupPresentation(
+  group: Pick<UsageGroup, 'id' | 'label' | 'description' | 'planType'>
+): {
   title: string;
   description: string;
 } {
@@ -230,7 +233,10 @@ export function usageGroupPresentation(group: Pick<UsageGroup, 'id' | 'label' | 
   if (group.id === 'codex') {
     return { title: 'Codex共通枠', description: `${group.label}${plan}` };
   }
-  return { title: group.label, description: group.planType || '' };
+  return {
+    title: group.label,
+    description: [group.description, group.planType].filter(Boolean).join(' · '),
+  };
 }
 
 export function visibleUsageGroups(groups: UsageGroup[]): UsageGroup[] {

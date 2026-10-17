@@ -145,6 +145,8 @@ export class AntigravityRunner extends CliRunnerBase {
   private systemPrompt: string;
   private readonly printTimeout: string;
   private readonly disableSlashCommands: boolean;
+  private readonly executionMode?: BaseRunnerOptions['antigravityMode'];
+  private modeCapability?: boolean;
   private readonly reportedDiagnostics = new WeakSet<AntigravityStderrError>();
   private slashCommandCapability?: boolean;
   private readonly slashCommandCapabilityProbes = new Map<
@@ -165,6 +167,7 @@ export class AntigravityRunner extends CliRunnerBase {
     const printTimeoutMs = Math.max(1, Math.floor(this.timeoutMs - marginMs));
     this.printTimeout = process.env.ANTIGRAVITY_PRINT_TIMEOUT || `${printTimeoutMs / 1000}s`;
     this.disableSlashCommands = process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS !== 'false';
+    this.executionMode = options?.antigravityMode;
   }
 
   private async buildArgs(
@@ -178,6 +181,20 @@ export class AntigravityRunner extends CliRunnerBase {
 
     if (await this.supportsDisableSlashCommands(options?.channelId)) {
       args.push('--disable-slash-commands');
+    }
+
+    if (this.executionMode) {
+      if (this.modeCapability === undefined) {
+        throw new Error(
+          'Could not verify agy --mode support after two help attempts. Check agy --help and retry.'
+        );
+      }
+      if (!this.modeCapability) {
+        throw new Error(
+          'This agy version does not support --mode. Upgrade agy or unset ANTIGRAVITY_MODE.'
+        );
+      }
+      args.push('--mode', this.executionMode);
     }
 
     const skip = options?.skipPermissions ?? this.skipPermissions;
@@ -211,8 +228,10 @@ export class AntigravityRunner extends CliRunnerBase {
   }
 
   private async supportsDisableSlashCommands(channelId?: string): Promise<boolean> {
-    if (!this.disableSlashCommands) return false;
-    if (this.slashCommandCapability !== undefined) return this.slashCommandCapability;
+    if (!this.disableSlashCommands && !this.executionMode) return false;
+    if (this.slashCommandCapability !== undefined) {
+      return this.disableSlashCommands && this.slashCommandCapability;
+    }
 
     // Share only within the same channel. This preserves per-channel cancellation while ensuring
     // concurrent requests cannot overwrite each other's managed probe process.
@@ -235,21 +254,32 @@ export class AntigravityRunner extends CliRunnerBase {
     if (result === 'unsupported') this.slashCommandCapability = false;
     // A timeout, spawn failure, or non-zero exit is transient: omit the flag now and retry the
     // capability probe on the next request instead of poisoning this long-lived runner's cache.
-    return result === 'supported';
+    return this.disableSlashCommands && result === 'supported';
   }
 
   /**
-   * Agy 1.1.9 added print-mode slash expansion and its opt-out flag. Probe help instead of
-   * retrying a real prompt, so old binaries stay compatible without risking duplicate turns.
+   * Probe help for slash expansion and optional execution mode support instead of retrying
+   * a real prompt, so old binaries stay compatible without risking duplicate turns.
    */
-  private probeDisableSlashCommands(
+  private async probeDisableSlashCommands(
     channelId?: string
   ): Promise<SlashCommandCapabilityProbeResult> {
+    const result = await this.probeCliOptionsOnce(channelId);
+    if (result !== 'unknown' || !this.executionMode) return result;
+    console.warn('[antigravity] Retrying agy --help once to verify execution mode support');
+    return this.probeCliOptionsOnce(channelId);
+  }
+
+  private probeCliOptionsOnce(channelId?: string): Promise<SlashCommandCapabilityProbeResult> {
     return new Promise((resolve, reject) => {
       const env = this.buildEnv(channelId);
       let settled = false;
       let output = '';
       let proc: ReturnType<typeof spawn> | undefined;
+      let probeTimedOut = false;
+      let probeExited = false;
+      let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+      let finalDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
 
       const cleanup = (status: 'completed' | 'error') => {
         if (!proc) return;
@@ -267,6 +297,12 @@ export class AntigravityRunner extends CliRunnerBase {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        if (finalDeadlineTimer) clearTimeout(finalDeadlineTimer);
+        if (probeTimedOut || error) {
+          proc?.stdout?.destroy();
+          proc?.stderr?.destroy();
+        }
         cleanup(status);
         if (error) reject(error);
         else resolve(result);
@@ -281,7 +317,7 @@ export class AntigravityRunner extends CliRunnerBase {
       } catch (error) {
         settled = true;
         console.warn(
-          `[antigravity] Could not probe --disable-slash-commands; will retry on the next request: ${error instanceof Error ? error.message : String(error)}`
+          `[antigravity] Could not probe CLI options: ${error instanceof Error ? error.message : String(error)}`
         );
         resolve('unknown');
         return;
@@ -289,10 +325,29 @@ export class AntigravityRunner extends CliRunnerBase {
 
       const spawned = proc;
       const timer = setTimeout(() => {
-        console.warn(
-          '[antigravity] agy --help capability probe timed out; will retry on the next request'
-        );
-        finish('unknown', 'error');
+        console.warn('[antigravity] agy --help capability probe timed out');
+        probeTimedOut = true;
+        // exit can precede close indefinitely when descendants retain the pipes.
+        // The parent is already gone: discard incomplete help and allow a retry.
+        if (probeExited) {
+          finish('unknown', 'error');
+          return;
+        }
+        // Bound shutdown even when a wrapper's descendants keep its pipes open.
+        forceKillTimer = setTimeout(() => {
+          finalDeadlineTimer = setTimeout(
+            () =>
+              finish(
+                'unknown',
+                'error',
+                new Error('Antigravity CLI capability probe did not exit after SIGKILL')
+              ),
+            1_000
+          );
+          finalDeadlineTimer.unref?.();
+          spawned.kill('SIGKILL');
+        }, 1_000);
+        forceKillTimer.unref?.();
         spawned.kill();
       }, CAPABILITY_PROBE_TIMEOUT_MS);
       timer.unref?.();
@@ -306,39 +361,42 @@ export class AntigravityRunner extends CliRunnerBase {
       spawned.stderr?.on('data', (data) => {
         output += data.toString();
       });
-      spawned.on('close', (code) => {
+      const handleCompletion = (code: number | null) => {
         // ChildProcess close is asynchronous in production. Deferring also preserves that order
         // in tests whose mock kill emits close synchronously before cancel() clears ownership.
         queueMicrotask(() => {
           if (settled) return;
-          if (spawned.killed) {
-            finish('unknown', 'error', new Error('Antigravity CLI capability probe was cancelled'));
-            return;
-          }
           const stillOwned = channelId
             ? this.activeProcesses.get(channelId) === spawned
             : this.currentProcess === spawned;
-          if (!stillOwned) {
+          if (!stillOwned || (spawned.killed && !probeTimedOut)) {
             finish('unknown', 'error', new Error('Antigravity CLI capability probe was cancelled'));
             return;
           }
+          if (probeTimedOut) {
+            finish('unknown', 'error');
+            return;
+          }
           if (code === 0) {
+            this.modeCapability = /^[ \t]*(?:-\w,[ \t]*)?--mode(?:[ \t=]|$)/m.test(output);
             finish(
               output.includes('--disable-slash-commands') ? 'supported' : 'unsupported',
               'completed'
             );
             return;
           }
-          console.warn(
-            `[antigravity] agy --help exited with code ${code}; will retry the capability probe on the next request`
-          );
+          console.warn(`[antigravity] agy --help exited with code ${code}`);
           finish('unknown', 'error');
         });
+      };
+      spawned.on('close', handleCompletion);
+      spawned.on('exit', (code) => {
+        probeExited = true;
+        // Successful help needs fully drained output; interrupted help only needs exit.
+        if (probeTimedOut || spawned.killed) handleCompletion(code);
       });
       spawned.on('error', (error) => {
-        console.warn(
-          `[antigravity] Could not probe --disable-slash-commands; will retry on the next request: ${error.message}`
-        );
+        console.warn(`[antigravity] Could not probe CLI options: ${error.message}`);
         finish('unknown', 'error');
       });
     });

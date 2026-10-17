@@ -73,6 +73,18 @@ describe('EnvValidator', () => {
       expect(v.issues).toHaveLength(1);
       expect(v.issues[0].message).toContain('agent / chat');
     });
+
+    it('supports an unset default for optional enums', () => {
+      const allowed = ['accept-edits', 'auto', 'plan'] as const;
+      const unset = new EnvValidator({});
+      expect(unset.enumOf('ANTIGRAVITY_MODE', allowed, undefined)).toBeUndefined();
+      expect(unset.issues).toHaveLength(0);
+      const valid = new EnvValidator({ ANTIGRAVITY_MODE: ' AUTO ' });
+      expect(valid.enumOf('ANTIGRAVITY_MODE', allowed, undefined)).toBe('auto');
+      const invalid = new EnvValidator({ ANTIGRAVITY_MODE: 'automatic' });
+      expect(invalid.enumOf('ANTIGRAVITY_MODE', allowed, undefined)).toBeUndefined();
+      expect(invalid.issues[0].message).toContain('未設定として扱います');
+    });
   });
 
   describe('enumList', () => {
