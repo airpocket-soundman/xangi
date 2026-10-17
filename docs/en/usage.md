@@ -1220,6 +1220,8 @@ Non-image files (PDF, text, etc.) are still passed as file paths to the prompt a
 
 Missing files or paths outside the allowed roots do not prevent later valid images in the attachment list from being sent. Unreadable and non-image attachments remain in the prompt, along with instructions following the attachments.
 
+Images uploaded through Web Chat can be previewed and downloaded even when the conversation uses a different workspace. Only files attached to that conversation can be retrieved.
+
 #### Notes
 
 - A multimodal-capable model (e.g. `llava`, `llama3.2-vision`, etc.) is required

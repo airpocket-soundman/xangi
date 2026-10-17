@@ -3984,6 +3984,38 @@ process.stdin.on('end', () => process.exit(0));
     }
   });
 
+  it('previews startup Web uploads in an alternate workspace and rejects other sessions', async () => {
+    const alternate = join(testDir, 'alternate');
+    mkdirSync(alternate);
+    const sessionId = createWebSession({ workspacePath: alternate });
+    const form = new FormData();
+    const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    form.append('file', new Blob([bytes], { type: 'image/png' }), 'pixel.png');
+    const uploaded = await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form });
+    expect(uploaded.status).toBe(200);
+    const { files } = await uploaded.json();
+    const file = files[0].path;
+    logPrompt(testDir, sessionId, `画像を確認して\n[Attachment] ${file}`);
+    const params = new URLSearchParams({ sessionId, path: file });
+    for (let reload = 0; reload < 2; reload++) {
+      const detail = await (await fetch(`${baseUrl}/api/sessions/${sessionId}`)).json();
+      expect(detail.messages[0].attachments).toEqual([file]);
+      const info = await fetch(`${baseUrl}/api/session-attachment?${params}&mode=info`);
+      expect(info.status).toBe(200);
+      expect(await info.json()).toMatchObject({ kind: 'image' });
+      for (const mode of ['raw', 'download']) {
+        const response = await fetch(`${baseUrl}/api/session-attachment?${params}&mode=${mode}`);
+        expect(response.status).toBe(200);
+        expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+      }
+    }
+    const otherSession = createWebSession({ workspacePath: alternate });
+    for (const mode of ['info', 'raw', 'download']) {
+      const denied = await fetch(`${baseUrl}/api/session-attachment?${new URLSearchParams({ sessionId: otherSession, path: file, mode })}`);
+      expect(denied.status).toBe(403);
+    }
+  });
+
   it('serves only declared session documents and keeps downloads available', async () => {
     const sessionId = createWebSession();
     const file = join(testDir, 'attachment.txt');
