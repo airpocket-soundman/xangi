@@ -28,6 +28,7 @@ export interface UsageWindow {
 export interface AccountUsageGroup {
   id: string;
   label: string;
+  description?: string;
   planType?: string;
   windows: UsageWindow[];
 }
@@ -338,6 +339,32 @@ interface AgyUsagePayload {
   };
 }
 
+function antigravityQuotaGroup(
+  bucketId: string
+): Omit<AccountUsageGroup, 'windows' | 'planType'> | undefined {
+  switch (bucketId) {
+    case 'gemini-5h':
+    case 'gemini-weekly':
+      return { id: 'gemini', label: 'Gemini共通枠' };
+    case 'gemini-argon-wtu-weekly':
+      return { id: 'gemini-argon', label: 'Gemini 4 Argon', description: '専用枠' };
+    case '3p-5h':
+    case '3p-weekly':
+      return { id: 'third-party', label: 'Claude・GPT共通枠' };
+    default:
+      return undefined;
+  }
+}
+
+function sortAntigravityQuotaGroups(groups: AccountUsageGroup[]): AccountUsageGroup[] {
+  const order = ['gemini', 'gemini-argon', 'third-party'];
+  const rank = (id: string) => {
+    const index = order.indexOf(id);
+    return index < 0 ? order.length : index;
+  };
+  return groups.sort((left, right) => rank(left.id) - rank(right.id));
+}
+
 export function parseAgyUsageOutput(output: string): AccountUsageGroup[] {
   let parsed: unknown;
   try {
@@ -356,25 +383,24 @@ export function parseAgyUsageOutput(output: string): AccountUsageGroup[] {
     throw new Error('agy usage output contains no groups');
   }
 
-  const groups: AccountUsageGroup[] = [];
+  const grouped = new Map<string, AccountUsageGroup>();
+  const seenBuckets = new Set<string>();
 
   for (const group of rawGroups) {
     if (!group || typeof group !== 'object' || !Array.isArray(group.buckets)) continue;
     const groupName = typeof group.name === 'string' ? group.name : 'Unknown';
+    const description =
+      typeof group.description === 'string'
+        ? [...group.description.trim()].slice(0, 300).join('')
+        : '';
 
-    let groupId = groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    let groupLabel = groupName;
-    if (/gemini/i.test(groupName)) {
-      groupId = 'gemini';
-      groupLabel = 'Geminiモデル';
-    } else if (/claude|gpt|3p|third/i.test(groupName)) {
-      groupId = 'third-party';
-      groupLabel = 'サードパーティモデル';
-    }
-
-    const windows: UsageWindow[] = [];
+    const bucketIds = group.buckets.flatMap((bucket) =>
+      typeof bucket?.id === 'string' && bucket.id ? [bucket.id] : []
+    );
+    const fallbackId = `agy:${[...new Set(bucketIds)].sort().join(',') || groupName}`;
     for (const bucket of group.buckets) {
       if (
+        !bucket ||
         typeof bucket.remaining_fraction !== 'number' ||
         !Number.isFinite(bucket.remaining_fraction)
       ) {
@@ -384,6 +410,19 @@ export function parseAgyUsageOutput(output: string): AccountUsageGroup[] {
       const usedPercent = Number(Math.min(100, Math.max(0, (1 - fraction) * 100)).toFixed(6));
 
       const bucketId = typeof bucket.id === 'string' ? bucket.id : '';
+      if (bucketId && seenBuckets.has(bucketId)) continue;
+      if (bucketId) seenBuckets.add(bucketId);
+      // The live catalog can contain multiple Gemini groups. The bucket ID, not the
+      // model family in the display name or the plan name, defines which quota is shared.
+      const definition = antigravityQuotaGroup(bucketId) ?? {
+        id: fallbackId,
+        label: groupName,
+        ...(description ? { description } : {}),
+      };
+      const target: AccountUsageGroup = grouped.get(definition.id) ?? {
+        ...definition,
+        windows: [],
+      };
       const windowStr = typeof bucket.window === 'string' ? bucket.window : bucketId;
 
       let windowLabel = windowStr;
@@ -400,30 +439,27 @@ export function parseAgyUsageOutput(output: string): AccountUsageGroup[] {
       const resetMs = bucket.reset_time ? Date.parse(bucket.reset_time) : Number.NaN;
       const resetsAt = Number.isFinite(resetMs) ? resetMs / 1000 : undefined;
 
-      windows.push({
+      target.windows.push({
         label: windowLabel,
         usedPercent,
         windowDurationMins,
         resetsAt,
       });
-    }
-
-    if (windows.length > 0) {
-      windows.sort((a, b) => (a.windowDurationMins ?? 999_999) - (b.windowDurationMins ?? 999_999));
-      groups.push({
-        id: groupId,
-        label: groupLabel,
-        windows,
-      });
+      grouped.set(target.id, target);
     }
   }
 
+  const groups = [...grouped.values()];
   if (groups.length === 0) {
     throw new Error('No valid quota windows parsed from agy usage output');
   }
 
-  groups.sort((a, b) => (a.id === 'gemini' ? -1 : b.id === 'gemini' ? 1 : 0));
-  return groups;
+  for (const group of groups) {
+    group.windows.sort(
+      (left, right) => (left.windowDurationMins ?? 999_999) - (right.windowDurationMins ?? 999_999)
+    );
+  }
+  return sortAntigravityQuotaGroups(groups);
 }
 
 export function parseAntigravityStatus(
@@ -437,70 +473,26 @@ export function parseAntigravityStatus(
   estimatedCost?: number;
 } {
   const status = payload as AntigravityStatusPayload;
-  const knownQuotaBuckets: Record<
-    string,
-    {
-      groupId: string;
-      groupLabel: string;
-      windowLabel: string;
-      windowDurationMins: number;
-      order: number;
-    }
-  > = {
-    'gemini-5h': {
-      groupId: 'gemini',
-      groupLabel: 'Geminiモデル',
-      windowLabel: '5時間',
-      windowDurationMins: 300,
-      order: 0,
-    },
-    'gemini-weekly': {
-      groupId: 'gemini',
-      groupLabel: 'Geminiモデル',
-      windowLabel: '週次',
-      windowDurationMins: 10_080,
-      order: 1,
-    },
-    '3p-5h': {
-      groupId: 'third-party',
-      groupLabel: 'サードパーティモデル',
-      windowLabel: '5時間',
-      windowDurationMins: 300,
-      order: 0,
-    },
-    '3p-weekly': {
-      groupId: 'third-party',
-      groupLabel: 'サードパーティモデル',
-      windowLabel: '週次',
-      windowDurationMins: 10_080,
-      order: 1,
-    },
-  };
-  const grouped = new Map<
-    string,
-    Omit<AccountUsageGroup, 'windows'> & {
-      windows: Array<UsageWindow & { sortOrder: number }>;
-      sortOrder: number;
-    }
-  >();
+  const grouped = new Map<string, AccountUsageGroup>();
   const fallbackGroups: AccountUsageGroup[] = [];
   for (const [id, quota] of Object.entries(status?.quota ?? {})) {
-    if (typeof quota.remaining_fraction !== 'number') continue;
+    if (
+      !quota ||
+      typeof quota.remaining_fraction !== 'number' ||
+      !Number.isFinite(quota.remaining_fraction)
+    )
+      continue;
     const resetMs = quota.reset_time ? Date.parse(quota.reset_time) : Number.NaN;
     const expired = now !== undefined && Number.isFinite(resetMs) && resetMs <= now;
-    const known = knownQuotaBuckets[id];
+    const known = antigravityQuotaGroup(id);
+    const weekly = /(?:^|-)weekly(?:-|$)/i.test(id);
+    const fiveHour = /(?:^|-)5h(?:-|$)/i.test(id);
     const window = {
-      label: known?.windowLabel ?? (/(?:^|-)weekly(?:-|$)/i.test(id) ? '週次' : id),
+      label: weekly ? '週次' : known && fiveHour ? '5時間' : id,
       usedPercent: expired
         ? 0
         : Number(Math.min(100, Math.max(0, (1 - quota.remaining_fraction) * 100)).toFixed(6)),
-      windowDurationMins:
-        known?.windowDurationMins ??
-        (/(?:^|-)weekly(?:-|$)/i.test(id)
-          ? 10_080
-          : /(?:^|-)5h(?:-|$)/i.test(id)
-            ? 300
-            : undefined),
+      windowDurationMins: weekly ? 10_080 : fiveHour ? 300 : undefined,
       resetsAt: Number.isFinite(resetMs) && !expired ? resetMs / 1000 : undefined,
     };
     if (!known) {
@@ -512,27 +504,20 @@ export function parseAntigravityStatus(
       });
       continue;
     }
-    const group = grouped.get(known.groupId) ?? {
-      id: known.groupId,
-      label: known.groupLabel,
+    const group: AccountUsageGroup = grouped.get(known.id) ?? {
+      ...known,
       planType: status.plan_tier,
       windows: [],
-      sortOrder: known.groupId === 'gemini' ? 0 : 1,
     };
-    group.windows.push({ ...window, sortOrder: known.order });
-    grouped.set(known.groupId, group);
+    group.windows.push(window);
+    grouped.set(known.id, group);
   }
-  const groups = [
-    ...[...grouped.values()]
-      .sort((left, right) => left.sortOrder - right.sortOrder)
-      .map(({ sortOrder: _groupOrder, ...group }) => ({
-        ...group,
-        windows: [...group.windows]
-          .sort((left, right) => left.sortOrder - right.sortOrder)
-          .map(({ sortOrder: _windowOrder, ...window }) => window),
-      })),
-    ...fallbackGroups,
-  ];
+  const groups = sortAntigravityQuotaGroups([...grouped.values(), ...fallbackGroups]);
+  for (const group of groups) {
+    group.windows.sort(
+      (left, right) => (left.windowDurationMins ?? 999_999) - (right.windowDurationMins ?? 999_999)
+    );
+  }
   const contextWindow = status?.context_window?.context_window_size;
   const current = status?.context_window?.current_usage;
   const usedTokens =

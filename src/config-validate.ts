@@ -83,7 +83,9 @@ export class EnvValidator {
   }
 
   /** enum env（大文字小文字無視）。未設定なら def。許可外なら警告して def */
-  enumOf<T extends string>(key: string, allowed: readonly T[], def: T): T {
+  enumOf<T extends string>(key: string, allowed: readonly T[], def: T): T;
+  enumOf<T extends string>(key: string, allowed: readonly T[], def: undefined): T | undefined;
+  enumOf<T extends string>(key: string, allowed: readonly T[], def: T | undefined): T | undefined {
     const raw = this.raw(key);
     if (raw === undefined) return def;
     const lower = raw.toLowerCase();
@@ -92,7 +94,7 @@ export class EnvValidator {
     this.addIssue(
       key,
       raw,
-      `許可される値は ${allowed.join(' / ')} です。デフォルト '${def}' を使用します`
+      `許可される値は ${allowed.join(' / ')} です。${def === undefined ? '未設定として扱います' : `デフォルト '${def}' を使用します`}`
     );
     return def;
   }

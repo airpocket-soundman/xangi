@@ -58,12 +58,14 @@ describe('AntigravityRunner', () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     delete process.env.ANTIGRAVITY_PRINT_TIMEOUT;
+    delete process.env.ANTIGRAVITY_MODE;
     process.env.ANTIGRAVITY_DISABLE_SLASH_COMMANDS = 'false';
     const { resetMockProcesses } = await import('child_process');
     (resetMockProcesses as () => void)();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     process.env = originalEnv;
     for (const home of tempHomes.splice(0)) {
       rmSync(home, { recursive: true, force: true });
@@ -78,7 +80,9 @@ describe('AntigravityRunner', () => {
 
   it('sends secret diagnostic logs to the null device', async () => {
     const { args } = await getSpawnArgs(new AntigravityRunner({}), 'run', { secret: true });
-    expect(args).toEqual(expect.arrayContaining(['--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null']));
+    expect(args).toEqual(
+      expect.arrayContaining(['--log-file', process.platform === 'win32' ? 'NUL' : '/dev/null'])
+    );
   });
 
   async function waitForProcess(count = 1): Promise<any> {
@@ -205,6 +209,241 @@ describe('AntigravityRunner', () => {
     expect(calls[1][1]).not.toContain('--disable-slash-commands');
     expect(calls[2][1]).not.toContain('--disable-slash-commands');
   });
+
+  it.each(['accept-edits', 'auto', 'plan'] as const)(
+    'passes explicitly configured %s mode after probing help',
+    async (mode) => {
+      const { spawn } = await import('child_process');
+      const runner = new AntigravityRunner({ antigravityMode: mode });
+      let promise = runner.run('hello');
+      let proc = await waitForProcess();
+      proc.stdout.emit('data', Buffer.from('--mode Set agent execution mode\n'));
+      proc.emit('close', 0);
+      proc = await waitForProcess(2);
+      proc.stdout.emit('data', Buffer.from(success('answer', 'conv-mode')));
+      proc.emit('close', 0);
+      await promise;
+
+      promise = runner.runStream('next', {}, { skipPermissions: true });
+      proc = await waitForProcess(3);
+      proc.stdout.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify({
+            event: 'result',
+            result: { status: 'SUCCESS', response: 'next answer' },
+          })}\n`
+        )
+      );
+      proc.emit('close', 0);
+      await promise;
+
+      const calls = (spawn as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(3);
+      expect(calls[0][1]).toEqual(['--help']);
+      for (const call of calls.slice(1)) {
+        expect(call[1]).toEqual(expect.arrayContaining(['--mode', mode]));
+        expect(call[1]).not.toContain('--disable-slash-commands');
+      }
+      expect(calls[1][1]).not.toContain('--dangerously-skip-permissions');
+      expect(calls[2][1]).toContain('--dangerously-skip-permissions');
+    }
+  );
+
+  it('rejects an unsupported mode before running a real prompt on old Agy', async () => {
+    const { spawn } = await import('child_process');
+    const promise = new AntigravityRunner({ antigravityMode: 'accept-edits' }).run('do not run');
+    const rejected = expect(promise).rejects.toThrow('does not support --mode');
+    const proc = await waitForProcess();
+    proc.stdout.emit('data', Buffer.from('--model Select model\n'));
+    proc.emit('close', 0);
+    await rejected;
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it.each(['run', 'stream'] as const)(
+    'retries help once within the same %s request',
+    async (mode) => {
+      const { spawn } = await import('child_process');
+      const runner = new AntigravityRunner({ antigravityMode: 'auto' });
+      const onError = vi.fn();
+      const promise = mode === 'run' ? runner.run('hello') : runner.runStream('hello', { onError });
+      let proc = await waitForProcess();
+      proc.emit('close', 1);
+      proc = await waitForProcess(2);
+      proc.stdout.emit('data', Buffer.from('--mode Set mode\n'));
+      proc.emit('close', 0);
+      proc = await waitForProcess(3);
+      const result = { status: 'SUCCESS', response: 'recovered' };
+      proc.stdout.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify(
+            mode === 'run'
+              ? result
+              : {
+                  event: 'result',
+                  result,
+                }
+          )}\n`
+        )
+      );
+      proc.emit('close', 0);
+      await expect(promise).resolves.toMatchObject({ result: 'recovered' });
+      const calls = (spawn as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.slice(0, 2).map((call) => call[1])).toEqual([['--help'], ['--help']]);
+      expect(calls.filter((call) => call[1].includes('-p'))).toHaveLength(1);
+      expect(onError).not.toHaveBeenCalled();
+    }
+  );
+
+  it('fails after two help attempts and rechecks on the next request', async () => {
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({ antigravityMode: 'auto' });
+    const first = runner.run('first');
+    const rejected = expect(first).rejects.toThrow('after two help attempts');
+    let proc = await waitForProcess();
+    proc.emit('error', new Error('temporary spawn failure'));
+    proc = await waitForProcess(2);
+    proc.emit('close', 1);
+    await rejected;
+    expect(spawn).toHaveBeenCalledTimes(2);
+
+    const second = runner.run('second');
+    proc = await waitForProcess(3);
+    proc.stdout.emit('data', Buffer.from('--mode Set mode\n'));
+    proc.emit('close', 0);
+    proc = await waitForProcess(4);
+    proc.stdout.emit('data', Buffer.from(success('recovered')));
+    proc.emit('close', 0);
+    await expect(second).resolves.toMatchObject({ result: 'recovered' });
+  });
+
+  it('uses normalized runner options instead of reading unvalidated mode environment', () => {
+    process.env.ANTIGRAVITY_MODE = 'automatic';
+    expect(() => new AntigravityRunner({})).not.toThrow();
+  });
+
+  it.each([
+    ['  --mode Set agent mode\n', true],
+    ['  -m, --mode Set agent mode\n', true],
+    ['  --mode=auto Set agent mode\n', true],
+    ['  --model Select model\n', false],
+    ['  --mode-other A different flag\n', false],
+    ['  --other Use --mode with a newer CLI\n', false],
+  ] as const)('detects mode only on an exact option definition: %s', async (help, supported) => {
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({ antigravityMode: 'auto' });
+    const promise = runner.run('hello');
+    const rejected = supported
+      ? undefined
+      : expect(promise).rejects.toThrow('does not support --mode');
+    let proc = await waitForProcess();
+    proc.stdout.emit('data', Buffer.from(help));
+    proc.emit('close', 0);
+    if (!supported) {
+      await rejected;
+      expect(spawn).toHaveBeenCalledOnce();
+      return;
+    }
+    proc = await waitForProcess(2);
+    proc.stdout.emit('data', Buffer.from(success('answer')));
+    proc.emit('close', 0);
+    await promise;
+    expect((spawn as ReturnType<typeof vi.fn>).mock.calls[1][1]).toEqual(
+      expect.arrayContaining(['--mode', 'auto'])
+    );
+  });
+
+  it('retries timed-out help on exit even when descendants keep the pipes open', async () => {
+    vi.useFakeTimers();
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({ antigravityMode: 'auto' });
+    const promise = runner.run('hello', { channelId: 'mode-timeout' });
+    let proc = await waitForProcess();
+    vi.spyOn(proc, 'kill').mockImplementation(() => {
+      proc.killed = true;
+      return true;
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(runner.hasRunner('mode-timeout')).toBe(true);
+    const timedOutProcess = proc;
+    proc.signalCode = 'SIGTERM';
+    proc.emit('exit', null, 'SIGTERM');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(timedOutProcess.stdout.destroyed).toBe(true);
+    expect(timedOutProcess.stderr.destroyed).toBe(true);
+    proc = await waitForProcess(2);
+    // A late close from the old process must not clear the retry's ownership.
+    timedOutProcess.emit('close', null);
+    expect(runner.hasRunner('mode-timeout')).toBe(true);
+    proc.stdout.emit('data', Buffer.from('--mode Set mode\n'));
+    proc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(0);
+    proc = await waitForProcess(3);
+    proc.stdout.emit('data', Buffer.from(success('answer')));
+    proc.emit('close', 0);
+    await expect(promise).resolves.toMatchObject({ result: 'answer' });
+  });
+
+  it('bounds shutdown without retrying when neither exit nor close is emitted', async () => {
+    vi.useFakeTimers();
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({ antigravityMode: 'plan' });
+    const promise = runner.run('hello');
+    const rejected = expect(promise).rejects.toThrow('did not exit after SIGKILL');
+    {
+      const proc = await waitForProcess();
+      const kill = vi.spyOn(proc, 'kill').mockImplementation(() => {
+        proc.killed = true;
+        return true;
+      });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(kill).toHaveBeenCalledWith('SIGKILL');
+      expect(proc.stdout.destroyed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(proc.stdout.destroyed).toBe(true);
+      expect(proc.stderr.destroyed).toBe(true);
+    }
+    await rejected;
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('waits for close after a successful exit to read remaining help output', async () => {
+    const { spawn } = await import('child_process');
+    const runner = new AntigravityRunner({ antigravityMode: 'plan' });
+    const promise = runner.run('hello');
+    let proc = await waitForProcess();
+    proc.emit('exit', 0);
+    await Promise.resolve();
+    expect(spawn).toHaveBeenCalledOnce();
+    proc.stdout.emit('data', Buffer.from('--mode Set mode\n'));
+    proc.emit('close', 0);
+    proc = await waitForProcess(2);
+    proc.stdout.emit('data', Buffer.from(success('answer')));
+    proc.emit('close', 0);
+    await expect(promise).resolves.toMatchObject({ result: 'answer' });
+  });
+
+  it.each([1, 2])(
+    'does not retry or start a prompt after cancellation during help attempt %s',
+    async (attempt) => {
+      const { spawn } = await import('child_process');
+      const runner = new AntigravityRunner({ antigravityMode: 'auto' });
+      const promise = runner.run('hello', { channelId: 'mode-cancel' });
+      const rejected = expect(promise).rejects.toThrow('capability probe was cancelled');
+      const first = await waitForProcess();
+      if (attempt === 2) {
+        first.emit('close', 1);
+        await waitForProcess(2);
+      }
+      expect(runner.cancel('mode-cancel')).toBe(true);
+      await rejected;
+      expect(spawn).toHaveBeenCalledTimes(attempt);
+    }
+  );
 
   it('retries the slash capability probe on the next request after a transient failure', async () => {
     const { spawn } = await import('child_process');

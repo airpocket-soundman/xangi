@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -124,7 +124,7 @@ describe('usage monitor parsers', () => {
       groups: [
         {
           id: 'gemini',
-          label: 'Geminiモデル',
+          label: 'Gemini共通枠',
           planType: 'Pro',
           windows: [
             {
@@ -143,7 +143,7 @@ describe('usage monitor parsers', () => {
         },
         {
           id: 'third-party',
-          label: 'サードパーティモデル',
+          label: 'Claude・GPT共通枠',
           planType: 'Pro',
           windows: [
             {
@@ -745,7 +745,7 @@ describe('usage monitor parsers', () => {
     expect(groups).toEqual([
       {
         id: 'gemini',
-        label: 'Geminiモデル',
+        label: 'Gemini共通枠',
         windows: [
           {
             label: '5時間',
@@ -763,7 +763,7 @@ describe('usage monitor parsers', () => {
       },
       {
         id: 'third-party',
-        label: 'サードパーティモデル',
+        label: 'Claude・GPT共通枠',
         windows: [
           {
             label: '5時間',
@@ -788,6 +788,138 @@ describe('usage monitor parsers', () => {
     expect(() =>
       parseAgyUsageOutput(JSON.stringify({ status: 'SUCCESS', command: { data: { groups: [] } } }))
     ).toThrow(/no groups/);
+  });
+
+  async function argonUsageFixture() {
+    // Captured with Agy 1.4.0; usage fractions are replaced with deterministic values.
+    return JSON.parse(
+      await readFile(new URL('./fixtures/antigravity-usage-1.4.0.json', import.meta.url), 'utf8')
+    );
+  }
+
+  it('separates Argon from shared Gemini quota using real 1.4.0 bucket IDs', async () => {
+    const groups = parseAgyUsageOutput(JSON.stringify(await argonUsageFixture()));
+
+    expect(groups.map(({ id, label }) => ({ id, label }))).toEqual([
+      { id: 'gemini', label: 'Gemini共通枠' },
+      { id: 'gemini-argon', label: 'Gemini 4 Argon' },
+      { id: 'third-party', label: 'Claude・GPT共通枠' },
+    ]);
+    expect(new Set(groups.map((group) => group.id)).size).toBe(groups.length);
+    expect(groups[1]).toEqual({
+      id: 'gemini-argon',
+      label: 'Gemini 4 Argon',
+      description: '専用枠',
+      windows: [
+        {
+          label: '週次',
+          usedPercent: 30,
+          windowDurationMins: 10_080,
+          resetsAt: Date.parse('2026-10-24T04:40:11Z') / 1000,
+        },
+      ],
+    });
+  });
+
+  it('identifies quotas by bucket IDs even when all live group names say Gemini', async () => {
+    const fixture = await argonUsageFixture();
+    for (const group of fixture.command.data.groups) group.name = 'Gemini Models';
+    const groups = parseAgyUsageOutput(JSON.stringify(fixture));
+    expect(groups.map((group) => group.id)).toEqual(['gemini', 'gemini-argon', 'third-party']);
+  });
+
+  it('keeps unknown Gemini quota groups distinct instead of treating them as shared quota', async () => {
+    const fixture = await argonUsageFixture();
+    fixture.command.data.groups.push({
+      name: 'Gemini Future',
+      description: 'Separate future quota',
+      buckets: [{ id: 'gemini-future-weekly', window: 'weekly', remaining_fraction: 0.6 }],
+    });
+    const groups = parseAgyUsageOutput(JSON.stringify(fixture));
+    expect(new Set(groups.map((group) => group.id)).size).toBe(4);
+    expect(groups.at(-1)).toMatchObject({
+      label: 'Gemini Future',
+      description: 'Separate future quota',
+      windows: [{ label: '週次', usedPercent: 40 }],
+    });
+  });
+
+  it.each([undefined, null, 42, true, { text: 'not a string' }, ['not a string'], '   '])(
+    'ignores non-text and empty descriptions for unknown quotas: %j',
+    (description) => {
+      const groups = parseAgyUsageOutput(
+        JSON.stringify({
+          status: 'SUCCESS',
+          command: {
+            data: {
+              groups: [
+                {
+                  name: 'Future quota',
+                  description,
+                  buckets: [{ id: 'future-weekly', window: 'weekly', remaining_fraction: 0.5 }],
+                },
+              ],
+            },
+          },
+        })
+      );
+      expect(groups[0]).not.toHaveProperty('description');
+      expect(groups[0].windows[0].usedPercent).toBe(50);
+    }
+  );
+
+  it('trims and bounds unknown quota descriptions without splitting Unicode characters', () => {
+    const parseDescription = (description: string) =>
+      parseAgyUsageOutput(
+        JSON.stringify({
+          status: 'SUCCESS',
+          command: {
+            data: {
+              groups: [
+                {
+                  name: 'Future quota',
+                  description,
+                  buckets: [{ id: 'future-weekly', remaining_fraction: 1 }],
+                },
+              ],
+            },
+          },
+        })
+      )[0].description;
+    expect(parseDescription('  future quota details\n')).toBe('future quota details');
+    expect(parseDescription(`  ${'a'.repeat(299)}😀trailing text  `)).toBe(`${'a'.repeat(299)}😀`);
+  });
+
+  it('uses the same Argon quota identity and windows for live and statusline data', async () => {
+    const fixture = await argonUsageFixture();
+    const quota = Object.fromEntries(
+      fixture.command.data.groups.flatMap((group: { buckets: { id: string }[] }) =>
+        group.buckets.map((bucket) => [bucket.id, bucket])
+      )
+    );
+    const snapshot = parseAntigravityStatus({ plan_tier: 'Google AI Pro', quota });
+    expect(snapshot.groups.map(({ planType: _plan, ...group }) => group)).toEqual(
+      parseAgyUsageOutput(JSON.stringify(fixture))
+    );
+  });
+
+  it('does not invent an Argon bucket for Ultra or catalogs reporting only shared Gemini quota', async () => {
+    const fixture = await argonUsageFixture();
+    fixture.command.data.groups = fixture.command.data.groups.filter(
+      (group: { name: string }) => group.name !== 'Gemini 4 Argon'
+    );
+    fixture.command.data.groups[0].description =
+      'Models within this group: Gemini Flash, Gemini Pro, Gemini 4 Argon';
+    expect(parseAgyUsageOutput(JSON.stringify(fixture)).map((group) => group.id)).toEqual([
+      'gemini',
+      'third-party',
+    ]);
+    expect(
+      parseAntigravityStatus({
+        plan_tier: 'Google AI Ultra',
+        quota: { 'gemini-weekly': { remaining_fraction: 0.5 } },
+      }).groups
+    ).toMatchObject([{ id: 'gemini', label: 'Gemini共通枠' }]);
   });
 
   it('reads Antigravity usage with live probe, single-flighting, and caching', async () => {
@@ -858,6 +990,10 @@ describe('usage monitor parsers', () => {
               remaining_fraction: 0.85,
               reset_time: new Date(Date.now() + 3600 * 1000).toISOString(),
             },
+            'gemini-argon-wtu-weekly': {
+              remaining_fraction: 0.7,
+              reset_time: new Date(Date.now() + 86400 * 1000).toISOString(),
+            },
           },
         }),
         'utf8'
@@ -868,6 +1004,12 @@ describe('usage monitor parsers', () => {
       expect(result.sourceType).toBe('snapshot');
       expect(result.sourceUpdatedAt).toBeDefined();
       expect(result.groups[0]?.windows[0]?.usedPercent).toBe(15);
+      expect(result.groups[1]).toMatchObject({
+        id: 'gemini-argon',
+        label: 'Gemini 4 Argon',
+        description: '専用枠',
+        windows: [{ label: '週次', usedPercent: 30 }],
+      });
     } finally {
       if (previousDataDir !== undefined) {
         process.env.DATA_DIR = previousDataDir;

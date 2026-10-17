@@ -1783,6 +1783,8 @@ Agy 1.1.27以降のJSON / stream-json最終結果に`denied_actions`がある場
 
 statuslineの`conversation_title`は、`conversation_id`が一致する最新のAntigravityセッションへ補助情報として保存し、Monitor詳細の「AI側の会話名」に表示します。xangiのタイトルは上書きしません。反映は利用量取得時に行い、既存のstatusline設定をそのまま使用できます。
 
+Monitorの利用量は `agy --print /usage --output-format json` から取得し、失敗時はstatuslineの保存値へフォールバックします。どちらも表示名ではなく枠IDで「Gemini共通枠」「Gemini 4 Argon」「Claude・GPT共通枠」を識別します。Agy 1.4.0の実出力で確認したArgonの `gemini-argon-wtu-weekly` は「専用枠」として週次使用率とリセット日時を表示し、5時間枠は補いません。公式説明ではProのArgonは別枠、Ultraでは大きなGemini枠に含まれます。プラン名から枠を推定せず、公式データに返った枠だけを表示します。未知の枠も消さずに残します。
+
 1.1.27で追加された一時的なモデル相談`/model <name> <prompt>`は、対話CLI向けです。1.1.27の実機では`agy -p '/model <name> <prompt>' --output-format json`が`/model takes no arguments`（終了コード2）となるため、xangiのヘッドレス経路では未対応です。`--disable-slash-commands`の既定動作は維持します。
 
 Antigravity CLI backend は Google Antigravity CLI の `agy` コマンドを使用します。インストールは `curl -fsSL https://antigravity.google/cli/install.sh | bash`、認証は `agy` の初回起動フローに従います。
@@ -1795,7 +1797,11 @@ Agy CLI 1.1.2から1.1.7までの先行実装も従来どおり互換対象で�
 
 Agy CLI 1.1.9以降はprint modeでもslash command・skillを展開します。xangiは各platformのcommand処理を正本にするため、`agy --help`を確認し、対応版には`--disable-slash-commands`を渡します。対応・未対応を確認できた結果はrunner内で保持します。help確認は5秒で打ち切り、timeout・起動失敗・異常終了時はフラグなしで今回の実行を続け、次回リクエストで再確認します。probe中にユーザーがStopした場合は今回の実行自体を中止し、実プロンプトを開始しません。実プロンプトをcapability確認のために再送することはありません。Agy側へ展開を委ねる場合は`ANTIGRAVITY_DISABLE_SLASH_COMMANDS=false`を設定します。
 
+help確認が5秒でtimeoutした場合はSIGTERMを送り、さらに1秒後にSIGKILLへ昇格します。親プロセスの終了を確認できれば、子孫がstdout/stderrを保持していても読み取りを破棄して確認を終了します。SIGKILL後も1秒以内に終了を確認できなければ、重複起動を避けるため再確認・実プロンプトとも開始せずエラーにします。
+
 headless実行はMCP初期化完了後に`init`イベントを返します。`Streaming`ログの後、`init`前で長く待つ場合はAgyログとMCP serverの起動状態を確認してください。
+
+`ANTIGRAVITY_MODE=accept-edits|auto|plan` でAgyの実行モードを明示できます。未指定時はAgyの設定を引き継ぎます。設定はバックエンドによらず起動時に検証・正規化し、不正値は警告して未指定扱いにします。`XANGI_CONFIG_STRICT=true` なら起動時にエラーにします。既存のhelp確認で `--mode` の対応も調べ、一時的な失敗では同じリクエスト内でhelpだけを1回再確認します。各確認は5秒で打ち切り、終了しないhelpプロセスは停止してから再試行します。未対応が確定した場合、2回とも確認に失敗した場合、Stopされた場合は実プロンプトを開始しません。実プロンプトを再送することはありません。Agy 1.3.2以降の `--dangerously-skip-permissions` はツールの承認だけを省略し、計画を自動承認しません。無人実行で計画レビューを避けたい場合は `ANTIGRAVITY_MODE=accept-edits` を選びます。`auto` は追加承認が必要な場合があり、`plan` はArtifact Review設定に従います。`auto` のツール審査を利用する場合は `SKIP_PERMISSIONS=false` も設定してください。`true` のままならモードによらず従来どおりツール承認を省略します。
 
 Agy が成功終了しても stdout が空の場合、stderr に出力された timeout・quota・認証などの詳細をエラーとして表示します。
 

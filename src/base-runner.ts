@@ -15,6 +15,7 @@ export interface BaseRunnerOptions {
   timeoutMs?: number;
   workdir?: string;
   skipPermissions?: boolean;
+  antigravityMode?: 'accept-edits' | 'auto' | 'plan';
   copilotPermissionMode?: 'read-only' | 'workspace-write';
   copilotMaxAiCredits?: number;
   platform?: ChatPlatform;
