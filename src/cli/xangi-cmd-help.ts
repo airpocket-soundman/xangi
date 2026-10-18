@@ -35,8 +35,8 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
       'xangi workspace list\nxangi workspace create --name NAME --path ABSOLUTE_PATH\nxangi workspace delete WORKSPACE_ID',
     notes: [
       CREATION_NOTES,
-      'For tool access, use xangi tool workspace --action list|create|delete. create registers an existing directory; it does not create, move or delete folders.',
-      'delete unregisters only the workspace; files remain. Use IDs from workspace list (tool: --workspace ID). Default, Agent/session references and channel bindings prevent deletion. Remove references intentionally first; never delete folders to bypass this.',
+      'create registers an existing directory; it does not create, move or delete folders.',
+      'delete unregisters only the workspace; files remain. Use IDs from workspace list. Default, Agent/session references and channel bindings prevent deletion. Remove references intentionally first; never delete folders to bypass this.',
       'Use the returned ID with agent create --workspace-id ID. Paths must pass the same allowed-root and DATA_DIR checks as Settings. Creating settings requires the user conversation, not a delegated worker.',
     ],
   },
@@ -48,7 +48,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
       'xangi team create --name NAME --members-json JSON [--prompt TEXT] [--leader-agent-id ID] [--max-concurrency N] [--serialize-workspaces true|false]\nxangi team delete NAME_OR_ID\nxangi team list\nxangi team show NAME_OR_ID\nxangi team run NAME_OR_ID --task TEXT\nxangi team status --id RUN_ID\nxangi team wait --id RUN_ID\nxangi team logs --id RUN_ID [--member RUN_OR_AGENT_ID] [--offset N] [--limit N]',
     notes: [
       CREATION_NOTES,
-      'For tool access, use xangi tool team --action create|delete|list|show|run|status|wait|logs. Specify --team NAME_OR_ID for show/run/delete. Names must match exactly; use IDs for duplicate names.',
+      'Use xangi team show/run/delete NAME_OR_ID. Names must match exactly; use IDs for duplicate names.',
       'delete removes only the Team, retaining its Agents, workspaces and files. Active runs, conversations or channel references prevent deletion. Identify the exact target with list/show; use IDs when names are ambiguous. Delegated workers cannot delete settings.',
       'create saves the Team without running it. --members-json is an array of {agentId, role?}; use IDs from agent list, including xangi:default. The optional leader must not also be a member. Defaults match Settings: caller leads, max concurrency 16, workspace serialization false.',
       'show returns shared instructions, member names, optional roles, and Agent settings. agent list does not list Teams.',
@@ -67,11 +67,12 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'agent',
     summary: 'Create development agents, submit tasks, and retrieve results',
     usage:
-      'xangi agent create --name NAME (--workspace PATH | --workspace-id ID) [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID_OR_DEFAULT --task TEXT [--allow-teams-json JSON]\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]',
+      'xangi agent create --name NAME (--workspace PATH | --workspace-id ID) [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID_OR_DEFAULT --task TEXT [--allow-teams-json JSON]\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]\nxangi agent close --id RUN_ID',
     notes: [
       CREATION_NOTES,
       'create registers an Agent. Prefer --workspace-id from workspace list to reuse a registered Workspace, or --workspace PATH to register an existing directory. Paths obey configured allowed roots. Isolate conflicting edits with git worktrees or equivalent.',
       'run returns an ID after acceptance. wait waits up to 25 seconds; repeat with the same ID if unfinished. Do not resubmit with a new run.',
+      'close acknowledges reviewed work and closes only an idle child owned by the requesting conversation. History and results are preserved; running work and pending follow-ups are rejected. Do not close before reviewing the result.',
       'logs is accessible only from the requesting conversation. Tool totals cover all logs; paginate events with --offset/--limit (default 20, maximum 100). Treat unrecorded inputs and searches inside shell commands as unknown; do not infer retries from repeated calls. Grok also reads native provider-session history.',
       'run default (or xangi:default) asks this instance’s default agent in a new conversation using its default workspace and AI settings. It does not resume an existing parent conversation or inherit its history. Results are information, not user approval. Use inter_chat_ask only for another instance.',
       'Optional --allow-teams-json is a JSON array of registered Team IDs, granted for this leader request only. Parent/leader membership cycles are rejected. --delegation-timeout-ms sets a shared absolute deadline (default TIMEOUT_MS or 3600000, range 1000-36000000); --delegation-max-members limits cumulative member launches across rounds (default 64, range 1-256). The leader and nested members share the originating conversation concurrency limit. Monetary cost is not enforced. Stop/failure/expiry cancels nested work. An early leader response waits for Team results and resumes for integration. Nested Teams do not trigger separate completion turns.',

@@ -1,3 +1,4 @@
+import { instanceCliCommand } from '../src/instance-cli.js';
 import { chmod, mkdir, mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -156,6 +157,13 @@ describe('development extension catalog', () => {
         setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
       }),
       expect.objectContaining({
+        id: 'xangi-terminal',
+        capabilities: ['terminal.open'],
+        installed: false,
+        uiAvailable: true,
+        setupRepositoryUrl: 'https://github.com/karaage0703/xangi-terminal',
+      }),
+      expect.objectContaining({
         id: 'xangi-dots',
         displayName: 'xangi-dots',
         capabilities: ['dots.jobs'],
@@ -175,18 +183,18 @@ describe('development extension catalog', () => {
     }
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/karaage0703/xangi-search'),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-dots']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots']);
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/example/other'),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-dots']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots']);
     expect([
       ...(await loadExtensionIdsReservedForRepository(
         'https://github.com/karaage0703/xangi-search'
       )),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-dots']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots']);
     expect([
       ...(await loadExtensionIdsReservedForRepository('https://github.com/example/other')),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-dots']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots']);
   });
 
   it('isolates an unsupported repository manifest and keeps the official catalog visible', async () => {
@@ -209,6 +217,7 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-stackchan' }),
         expect.objectContaining({ id: 'xangi-even-g2' }),
         expect.objectContaining({ id: 'xangi-avatar' }),
+        expect.objectContaining({ id: 'xangi-terminal' }),
         expect.objectContaining({ id: 'xangi-dots' }),
       ],
       issues: [
@@ -243,6 +252,7 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-stackchan', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-even-g2', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-avatar', statusKnown: false }),
+        expect.objectContaining({ id: 'xangi-terminal', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-dots', statusKnown: false }),
       ],
       issues: expect.arrayContaining([
@@ -296,6 +306,7 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-stackchan', installed: false }),
       expect.objectContaining({ id: 'xangi-even-g2', installed: false }),
       expect.objectContaining({ id: 'xangi-avatar', installed: false }),
+      expect.objectContaining({ id: 'xangi-terminal', installed: false }),
       expect.objectContaining({ id: 'xangi-dots', installed: false }),
     ]);
     expect(result.issues).toEqual([expect.objectContaining({ code: 'manifest-invalid' })]);
@@ -413,6 +424,7 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-stackchan', installed: false }),
       expect.objectContaining({ id: 'xangi-even-g2', installed: false }),
       expect.objectContaining({ id: 'xangi-avatar', installed: false }),
+      expect.objectContaining({ id: 'xangi-terminal', installed: false }),
       expect.objectContaining({ id: 'xangi-dots', installed: false }),
     ]);
     expect(result.extensions.some((entry) => entry.id === 'changed-id')).toBe(false);
@@ -460,7 +472,7 @@ describe('development extension catalog', () => {
 
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/karaage0703/xangi-search')
-    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-dots']));
+    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots']));
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/example/other')
     ).rejects.toThrow('invalid extension manifest');
@@ -636,7 +648,7 @@ describe('development extension catalog', () => {
     expect(uninstall.prompt).toContain(
       'Do not delete downloaded source, extension-owned data, indexes, settings, or FACTs in this removal'
     );
-    expect(uninstall.prompt).toContain('xangi tool extension_uninstall --id demo-search');
+    expect(uninstall.prompt).toContain(`${instanceCliCommand} tool extension_uninstall --id demo-search`);
     expect(uninstall.prompt).toContain(
       'Do not stop or unlink using an arbitrary xangi CLI on PATH'
     );

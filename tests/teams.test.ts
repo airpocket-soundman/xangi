@@ -648,3 +648,12 @@ it('persists an optional leader, protects it from deletion, and clears it withou
   expect(f.catalog.team(f.team.id)?.members).toEqual(f.members);
   f.catalog.removeAgent(leader.id);
 });
+
+it('uses the current CLI in caller and designated-leader instructions', async () => {
+  const { instanceCliCommand } = await import('../src/instance-cli.js');
+  const { teamCallerInstructions } = await import('../src/teams.js');
+  const f = await setup();
+  for (const leaderAgentId of [undefined, f.agents[0].id]) {
+    expect(teamCallerInstructions({ ...f.team, leaderAgentId })).toContain(`${instanceCliCommand} team --help`);
+  }
+});

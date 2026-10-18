@@ -54,7 +54,6 @@ async function main() {
   const config = loadConfig();
   const workdir = realpathSync(resolve(config.agent.config.workdir || process.cwd()));
   config.agent.config.workdir = workdir;
-  await startAutostartExtensions({ workspace: config.agent.config.workdir });
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
   const discordTurnCoordinator = new DiscordTurnCoordinator();
   const destinationLabelResolverRef: {
@@ -112,7 +111,7 @@ async function main() {
 
   // バックエンドリゾルバー & 動的ランナーマネージャーを作成
   const resolver = new BackendResolver(config);
-  const agentRunner = new DynamicRunnerManager(config, resolver);
+  const agentRunner = new DynamicRunnerManager(config, resolver, { deferDefaultRunner: true });
   const backendName = getBackendDisplayName(config.agent.backend);
   console.log(
     `[xangi] Using ${backendName} as agent backend (platform: ${config.agent.platform ?? 'all'})`
@@ -243,7 +242,7 @@ async function main() {
   // イベントトリガー（POST /api/trigger）は scheduler の agentRunner 経路を再利用
   const { startToolServer } = await import('./tool-server.js');
   const { EventTrigger, loadTriggerConfig } = await import('./event-trigger.js');
-  startToolServer({
+  await startToolServer({
     eventTrigger: new EventTrigger(loadTriggerConfig(), scheduler, { dataDir }),
     backendResolver: resolver,
     config,
@@ -407,6 +406,10 @@ async function main() {
   // Discord/Slackは同時に接続する。一方が再試行中でも他方とWebは利用できる。
   // スケジューラのstartup taskは全ての有効platformのready後に開始する。
   await Promise.all(platformStartupTasks);
+
+  // Extensions inherit the listening tool server URL and may immediately send triggers.
+  await startAutostartExtensions({ workspace: config.agent.config.workdir });
+  agentRunner.initializeDefaultRunner();
 
   // スケジューラの全ジョブを開始
   scheduler.startAll(config.scheduler);

@@ -1037,7 +1037,7 @@ Managed extension status reports `running`, `healthy`, and `ready` separately. `
 
 Every managed child receives the parent xangi `XANGI_EXTENSION_INSTANCE_ID`. When Web Chat is enabled it also receives `XANGI_EXTENSION_HOST_URL`, and when event delivery is enabled it receives `XANGI_EXTENSION_EVENTS_URL`. Event-consuming extensions can therefore connect to the current instance without guessing its port or bind host. URLs for unavailable endpoints are omitted. These values are parent-owned runtime context, not user-configurable `.env` settings.
 
-xangi-search, xangi-stackchan, xangi-even-g2, xangi-avatar, and xangi-dots are visible in the official catalog on a first run. Listing the entry does not fetch or execute its repository; after Add is selected, xangi pins and validates the public repository and starts a dedicated setup conversation. Users may still enter any public GitHub repository URL or configure trusted local development manifests.
+xangi-search, xangi-stackchan, xangi-even-g2, xangi-avatar, xangi-terminal, and xangi-dots are visible in the official catalog on a first run. Listing the entry does not fetch or execute its repository; after Add is selected, xangi pins and validates the public repository and starts a dedicated setup conversation. Users may still enter any public GitHub repository URL or configure trusted local development manifests.
 
 An extension linked earlier through the CLI or deployment tooling still shows Setup while it is available. Selecting it opens the dedicated conversation from the repository setup document without stopping or reinstalling the extension. When the setup document contains a setting, workspace change, or optional feature that requires approval, the LLM presents the material difference, impact, and choices instead of deferring them to a generic recommendation or future request. It does not make the change before approval or report setup as complete while a choice remains pending. After setup, status, and doctor checks succeed, the LLM reads the extension README and relevant signals from the current workspace README, AGENTS.md, and top-level directory structure. It then proposes two or three uses matched to the user's goals and existing workflow. Each proposal includes why it fits, the first request or action to try, and the expected result. Recommendations alone do not modify the workspace or settings, and automation, external sending, or scheduled execution still requires separate confirmation.
 
@@ -2231,3 +2231,16 @@ Dispatch a registered leader with `xangi agent run LEADER_ID --task TEXT --allow
 Unlisted Teams, parent/leader membership cycles, and further delegation by members (including default consultations) are rejected. Membership cycles are checked again at dispatch. Stop, failure and expiry cancel descendants and prevent queued members from starting. Closed grants cannot be reused; submit a new leader request instead.
 
 The originating conversation's `AGENT_MAX_CONCURRENT_REQUESTS` slots are shared by leaders and nested members; Team aggregation does not consume another slot. At least two slots are required. `--delegation-max-members` caps cumulative member launches, including failed batches (default 64, range 1–256). `--delegation-timeout-ms` sets one absolute deadline from acceptance (default `TIMEOUT_MS` or 3600000 ms, range 1000–36000000). Descendants and later rounds do not reset it. Monetary limits and midstream token-budget enforcement are not supported. These controls apply to xangi requests, not arbitrary shell subprocesses.
+
+After reviewing and accepting a child result, the parent uses `xangi agent close --id RUN_ID`. History and results are preserved. Keep the session open for follow-up work or if the parent stops before review. Running work, pending follow-ups, and requests owned by another conversation cannot be closed.
+Monitor labels idle, open child sessions as awaiting result review (or failed, awaiting review) instead of ordinary input waiting.
+
+### Avoiding initialization resource contention
+
+Participating manifests may declare `"startup": {"exclusiveGroup": "gpu", "timeoutSeconds": 120}`. Override it per extension record in `extensions.json` (resolved from `XANGI_EXTENSIONS_FILE`, DATA_DIR, or the normal installation location). Relinking and updating preserve overrides.
+
+- `"startup": null` disables grouping, for example for CPU-only operation.
+- `"startup": {"exclusiveGroup": "gpu:1", "timeoutSeconds": 180}` assigns a different group. This label does not select hardware; configure the extension's actual device separately.
+- Omit `startup` to use the manifest default.
+
+Only assign groups to extensions implementing health startup states. Older extensions with no completion signal time out. Configuration applies to subsequent start requests, not initialization already in progress. After timeout, inspect status for the owning extension, wait for it to finish or explicitly stop it, then request start again for blocked extensions. There is no automatic retry.

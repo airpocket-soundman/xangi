@@ -196,6 +196,20 @@ exit 0
     return { dir, logFile };
   }
 
+  it.each(['workspace', 'agent', 'team'])('uses one management entrypoint for %s', async (name) => {
+    const result = await runCli([name, 'list'], { XANGI_TOOL_SERVER: serverUrl });
+    expect(result.code).toBe(0);
+    expect(requests.at(-1)?.body).toMatchObject({ command: name, flags: { action: 'list' } });
+    const count = requests.length;
+    const duplicate = await runCli(['tool', name, '--action', 'list'], { XANGI_TOOL_SERVER: serverUrl });
+    expect(duplicate.code).toBe(1);
+    expect(duplicate.stderr).toContain(`Use xangi ${name} <action>`);
+    expect(requests).toHaveLength(count);
+    const help = await runCli([name, '--help'], { XANGI_TOOL_SERVER: serverUrl });
+    expect(help.code).toBe(0);
+    expect(requests.at(-1)?.body).toMatchObject({ command: 'help', flags: { topic: name } });
+  });
+
   it('documents managed install and update commands in help', async () => {
     const result = await runCli(['help']);
 

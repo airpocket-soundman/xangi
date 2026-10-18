@@ -41,6 +41,11 @@ export interface ExtensionUpdatePreparation {
   args: string[];
 }
 
+export interface ExtensionStartup {
+  exclusiveGroup: string;
+  timeoutSeconds: number;
+}
+
 export interface ExtensionManifest {
   schemaVersion: 2;
   id: string;
@@ -50,6 +55,7 @@ export interface ExtensionManifest {
   version: string;
   entrypoint: string;
   runtime: ExtensionRuntime;
+  startup?: ExtensionStartup;
   setup?: {
     instructions: string;
   };
@@ -69,6 +75,8 @@ export interface LinkedExtension {
   manifestPath: string;
   enabled: boolean;
   autostart: boolean;
+  /** null disables the manifest startup group for this installation. */
+  startup?: ExtensionStartup | null;
 }
 
 interface ExtensionStore {
@@ -173,6 +181,26 @@ function effectiveDataDir(): string | undefined {
   if (process.env.DATA_DIR) return resolve(process.env.DATA_DIR);
   if (process.env.WORKSPACE_PATH) return join(resolve(process.env.WORKSPACE_PATH), '.xangi');
   return undefined;
+}
+
+function parseStartup(value: unknown): ExtensionStartup {
+  if (
+    !isRecord(value) ||
+    typeof value.exclusiveGroup !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,63}$/.test(value.exclusiveGroup)
+  ) {
+    throw new Error('startup.exclusiveGroup must be a resource group name');
+  }
+  const timeoutSeconds = value.timeoutSeconds ?? 120;
+  if (
+    typeof timeoutSeconds !== 'number' ||
+    !Number.isFinite(timeoutSeconds) ||
+    timeoutSeconds < 1 ||
+    timeoutSeconds > 3600
+  ) {
+    throw new Error('startup.timeoutSeconds must be between 1 and 3600');
+  }
+  return { exclusiveGroup: value.exclusiveGroup, timeoutSeconds };
 }
 
 export function parseExtensionManifest(value: unknown): ExtensionManifest {
@@ -341,6 +369,7 @@ export function parseExtensionManifest(value: unknown): ExtensionManifest {
     version,
     entrypoint,
     runtime: { kind: 'managed-http' },
+    ...(value.startup !== undefined ? { startup: parseStartup(value.startup) } : {}),
     ...(parsedSetup ? { setup: parsedSetup } : {}),
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
     ...(parsedUi ? { ui: parsedUi } : {}),
@@ -379,7 +408,12 @@ function parseStore(value: unknown): ExtensionStore {
     ) {
       throw new Error('invalid linked extension');
     }
-    return extension as unknown as LinkedExtension;
+    return {
+      ...extension,
+      ...(extension.startup !== undefined && extension.startup !== null
+        ? { startup: parseStartup(extension.startup) }
+        : {}),
+    } as unknown as LinkedExtension;
   });
   if (new Set(extensions.map((item) => item.id)).size !== extensions.length) {
     throw new Error('linked extension ids must be unique');
@@ -454,6 +488,10 @@ export async function linkExtension(
     manifestPath: canonical,
     enabled: true,
     autostart: options.autostart ?? true,
+    ...(() => {
+      const previous = store.extensions.find((item) => item.id === manifest.id);
+      return previous?.startup !== undefined ? { startup: previous.startup } : {};
+    })(),
   };
   store.extensions = [...store.extensions.filter((item) => item.id !== manifest.id), linked];
   await writeExtensionStore(store, configPath);
@@ -483,17 +521,116 @@ async function linkedManifest(linked: LinkedExtension): Promise<ExtensionManifes
   return manifest;
 }
 
+// Resource names are instance-local coordination labels, not GPU device selectors.
+const startupQueues = new Map<string, Promise<unknown>>();
+const startupOwners = new Map<string, string>();
+const startupMessages = new Map<string, string>();
+const startupPending = new Map<string, Promise<ExtensionActionResult>>();
+const startupGeneration = new Map<string, number>();
+
+function initializationFinished(status: ExtensionActionResult): boolean {
+  if (status.running === false) return true;
+  const health = status.health;
+  if (!isRecord(health) || !isRecord(health.startup)) return false;
+  return health.startup.state === 'complete' || health.startup.state === 'failed';
+}
+
+function startupPolicy(linked: LinkedExtension, manifest: ExtensionManifest) {
+  return linked.startup === undefined ? manifest.startup : linked.startup;
+}
+
+async function startWithStartupGroup(
+  linked: LinkedExtension,
+  manifest: ExtensionManifest,
+  options: { workspace?: string; timeoutMs?: number }
+): Promise<ExtensionActionResult> {
+  const pending = startupPending.get(linked.id);
+  if (pending) return pending;
+  const policy = startupPolicy(linked, manifest);
+  if (!policy) {
+    startupMessages.delete(linked.id);
+    return startManagedExtension(linked, manifest, options);
+  }
+  const group = policy.exclusiveGroup;
+  const generation = startupGeneration.get(linked.id) ?? 0;
+  const previous = startupQueues.get(group) ?? Promise.resolve();
+  startupMessages.set(linked.id, `waiting for startup group ${group}`);
+  const task = previous
+    .catch(() => {})
+    .then(async () => {
+      if ((startupGeneration.get(linked.id) ?? 0) !== generation) {
+        return { id: linked.id, ok: false, running: false, detail: 'startup cancelled' };
+      }
+      const owner = startupOwners.get(group);
+      if (owner) {
+        const status = await managedExtensionStatus(owner, undefined, false, false);
+        if (!initializationFinished(status)) {
+          const detail = `startup group ${group} blocked by ${owner}; initialization has not finished`;
+          startupMessages.set(linked.id, detail);
+          return {
+            id: linked.id,
+            ok: false,
+            running: managedRuntimes.has(linked.id),
+            ready: false,
+            detail,
+          };
+        }
+        startupOwners.delete(group);
+        startupMessages.delete(owner);
+      }
+      startupOwners.set(group, linked.id);
+      startupMessages.set(linked.id, `initializing startup group ${group}`);
+      try {
+        let status = await startManagedExtension(linked, manifest, options);
+        if ((startupGeneration.get(linked.id) ?? 0) !== generation) {
+          return await stopManagedExtension(linked.id);
+        }
+        const deadline = Date.now() + policy.timeoutSeconds * 1000;
+        while (!initializationFinished(status)) {
+          if (Date.now() >= deadline) {
+            const detail = `startup group ${group} timed out initializing ${linked.id}; group remains blocked`;
+            startupMessages.set(linked.id, detail);
+            return { ...status, ok: false, detail };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          status = await managedExtensionStatus(linked.id, undefined, false, false);
+        }
+        startupOwners.delete(group);
+        startupMessages.delete(linked.id);
+        const failed =
+          isRecord(status.health) &&
+          isRecord(status.health.startup) &&
+          status.health.startup.state === 'failed';
+        return { ...status, ...(failed ? { ok: false } : {}), changed: true };
+      } catch (error) {
+        // Retain ownership if a child may still be initializing after a failed start.
+        if (!managedRuntimes.has(linked.id)) startupOwners.delete(group);
+        startupMessages.delete(linked.id);
+        throw error;
+      }
+    });
+  startupQueues.set(group, task);
+  startupPending.set(linked.id, task);
+  try {
+    return await task;
+  } finally {
+    if (startupQueues.get(group) === task) startupQueues.delete(group);
+    if (startupPending.get(linked.id) === task) startupPending.delete(linked.id);
+  }
+}
+
 export async function runExtensionAction(
   linked: LinkedExtension,
   action: ExtensionAction,
   options: { workspace?: string; timeoutMs?: number } = {}
 ): Promise<ExtensionActionResult> {
   const manifest = await linkedManifest(linked);
-  if (action === 'start') return startManagedExtension(linked, manifest, options);
+  if (action === 'start') return startWithStartupGroup(linked, manifest, options);
   if (action === 'stop') return stopManagedExtension(linked.id);
   if (action === 'restart') {
     await stopManagedExtension(linked.id);
-    return startManagedExtension(linked, manifest, options);
+    await startupPending.get(linked.id);
+    return startWithStartupGroup(linked, manifest, options);
   }
   if (action === 'status' || action === 'doctor') {
     return managedExtensionStatus(
@@ -697,7 +834,7 @@ async function startManagedExtension(
   // A valid readiness message establishes the managed runtime. Health is an
   // observable state that may recover after a slow cold start, not a reason to
   // tear down an otherwise valid child process.
-  const status = await managedExtensionStatus(linked.id, workspace);
+  const status = await managedExtensionStatus(linked.id, workspace, false, false);
   await observeStartupChildExit(child, status.healthy === true ? 0 : 100);
   if (
     status.running !== true ||
@@ -763,6 +900,8 @@ async function terminateFailedStart(child: ReturnType<typeof spawn>): Promise<vo
 }
 
 async function stopManagedExtension(id: string): Promise<ExtensionActionResult> {
+  startupGeneration.set(id, (startupGeneration.get(id) ?? 0) + 1);
+  startupMessages.delete(id);
   const runtime = managedRuntimes.get(id);
   if (!runtime) {
     return {
@@ -775,11 +914,12 @@ async function stopManagedExtension(id: string): Promise<ExtensionActionResult> 
       changed: false,
     };
   }
-  managedRuntimes.delete(id);
   runtime.child.stdin?.end();
   if (!(await waitForExit(runtime.child, 1_000))) runtime.child.kill('SIGTERM');
   if (!(await waitForExit(runtime.child, 1_000))) runtime.child.kill('SIGKILL');
-  await waitForExit(runtime.child, 500);
+  const exited = await waitForExit(runtime.child, 500);
+  if (!exited) throw new Error(`${id} did not exit; startup group remains reserved`);
+  if (managedRuntimes.get(id) === runtime) managedRuntimes.delete(id);
   return {
     schemaVersion: 2,
     id,
@@ -794,9 +934,20 @@ async function stopManagedExtension(id: string): Promise<ExtensionActionResult> 
 async function managedExtensionStatus(
   id: string,
   expectedWorkspace?: string,
-  requireReady = false
+  requireReady = false,
+  includeStartupMessage = true
 ): Promise<ExtensionActionResult> {
   const runtime = managedRuntimes.get(id);
+  if (includeStartupMessage && startupMessages.has(id)) {
+    return {
+      schemaVersion: 2,
+      id,
+      ok: false,
+      running: Boolean(runtime),
+      ready: false,
+      detail: startupMessages.get(id),
+    };
+  }
   if (!runtime || runtime.child.exitCode !== null) {
     return { schemaVersion: 2, id, ok: false, running: false, healthy: false, ready: false };
   }
@@ -848,7 +999,10 @@ async function managedExtensionStatus(
 }
 
 export async function stopManagedExtensions(): Promise<void> {
-  await Promise.all([...managedRuntimes.keys()].map((id) => stopManagedExtension(id)));
+  const ids = new Set([...managedRuntimes.keys(), ...startupPending.keys()]);
+  await Promise.all([...ids].map((id) => stopManagedExtension(id)));
+  await Promise.allSettled([...startupPending.values()]);
+  startupMessages.clear();
 }
 
 export interface ResolvedExtensionCapability {
@@ -891,28 +1045,39 @@ export async function startAutostartExtensions(
       `[extensions] migrated ${migrated} instance-owned extension${migrated === 1 ? '' : 's'} to ${defaultExtensionsFile()}`
     );
   }
+  const grouped: Promise<void>[] = [];
   for (const linked of await listExtensions()) {
     if (!linked.enabled || !linked.autostart) continue;
-    try {
-      const status = await runExtensionAction(linked, 'start', {
-        workspace: options.workspace,
-        timeoutMs: 30_000,
-      });
-      if (status.ready === true) {
-        console.log(`[extensions] ${linked.id} is ready`);
-      } else if (status.running === true) {
+    const launch = async () => {
+      try {
+        const status = await runExtensionAction(linked, 'start', {
+          workspace: options.workspace,
+          timeoutMs: 30_000,
+        });
+        if (status.ready === true) console.log(`[extensions] ${linked.id} is ready`);
+        else if (status.running === true) {
+          console.warn(
+            `[extensions] ${linked.id} started but is not ready${status.detail ? `: ${status.detail}` : ''}`
+          );
+        } else {
+          console.warn(
+            `[extensions] ${linked.id} failed to stay running after startup${status.detail ? `: ${status.detail}` : ''}`
+          );
+        }
+      } catch (error) {
         console.warn(
-          `[extensions] ${linked.id} started but is not ready${status.detail ? `: ${status.detail}` : ''}`
+          `[extensions] ${linked.id} failed to start: ${error instanceof Error ? error.message : String(error)}`
         );
-      } else {
-        console.warn(`[extensions] ${linked.id} failed to stay running after startup`);
       }
+    };
+    try {
+      if (startupPolicy(linked, await linkedManifest(linked))) grouped.push(launch());
+      else await launch();
     } catch (error) {
-      console.warn(
-        `[extensions] ${linked.id} failed to start: ${error instanceof Error ? error.message : String(error)}`
-      );
+      console.warn(`[extensions] ${linked.id} invalid startup configuration: ${String(error)}`);
     }
   }
+  await Promise.all(grouped);
 }
 
 export function resolveCapabilityBaseUrl(capabilityId: string): string | undefined {

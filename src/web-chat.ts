@@ -961,6 +961,7 @@ ${delegatedTeam.prompt}`
     const offset = Math.max(0, Math.floor(query.offset ?? 0));
     const normalizedQuery = (query.q || '').trim().toLowerCase();
 
+    const runBySession = new Map(agentRuns.list().map((run) => [run.appSessionId, run]));
     const allManaged = listAllSessions();
     const managedIds = new Set(allManaged.map((session) => session.id));
     const managed = allManaged.map((s) => {
@@ -1019,6 +1020,7 @@ ${delegatedTeam.prompt}`
         isActive,
         isCurrent: isCurrentSession,
         lifecycle,
+        agentRunStatus: runBySession.get(s.id)?.status,
         closedAt: s.closedAt,
         closeReason: s.closeReason,
         sessionMode:

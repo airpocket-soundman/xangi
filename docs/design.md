@@ -314,6 +314,8 @@ BackendResolverの優先順位:
 
 xangiがAI CLIに注入するシステムプロンプトを管理：
 
+- xangi操作の案内は `instance-cli.ts` で実行中の設置先から求めた、シェル引用済みの絶対CLIパスを使う。help・skillの短縮表記も同じCLIで実行するよう指示し、ログインシェルのPATHや別インスタンスのCLIに依存しない。 拡張更新・削除とTeamの個別案内も同じ値を使う。履歴表示・Local LLMの救済判定では、この引用済みCLIと完全一致する先頭部分だけを検査用に正規化する。実行文字列は変更せず、救済対象の読み取り操作制限とシェル構文の拒否を維持する。
+
 - **チャットプラットフォーム情報** — Discord/Slack経由の会話であることを伝える短い固定テキスト
 - **XANGI_COMMANDS** — 常駐promptには長時間処理・自己再起動・`MEDIA:`・platform固有IDなど、実行時に必要な契約だけを注入
   - コマンドのusageは `xangi tool help <topic|command>` のmetadataを正本とし、必要な時だけ取得
@@ -1388,3 +1390,20 @@ xangi agent run LEADER_ID --task '調査・実装・レビューを進めて結�
 削除は `team delete` / 既存の `agent delete` / `workspace delete` からlive設定を更新する。Workspaceの使用中検査はWeb APIと共通の `removeRegisteredWorkspace` へ集約し、登録だけを解除してファイルを保持する。Teamは既存の `removeRegisteredTeam` を共有し、CLIでは未完了の実行も拒否する。
 
 設定作成相談では `/api/config` の `instanceCliCommand` を取得してコマンド例へ埋め込む。共通常駐案内も同じ `instance-cli.ts` のshell quote済み絶対パスを使い、PATH上の別checkoutを参照しない。
+
+管理拡張のautostartは、Tool Serverのlisten完了と有効platformの初期化後に行います。子プロセスは実際の待受ポートから設定された `XANGI_TOOL_SERVER` を継承し、起動直後から `xangi tool` を利用できます。優先ポートが使用中の場合も自動割当先の確定を待ちます。Tool Serverの起動に失敗した場合は拡張を起動せず、起動処理を失敗させます。
+既定AIバックエンドの初期化も拡張起動後まで遅延し、初期化中に受けた実行は完了を待ちます。拡張型バックエンドの起動順を維持し、起動直後の通知を失敗させないためです。
+
+### 管理CLIの形式
+
+Workspace・Agent・Teamの管理は `xangi workspace|agent|team <action>`、ヘルプは各 `--help` に統一する。重複する `xangi tool workspace|agent|team` は実行せず、正しい入口を案内する。内部のTool Server通信・Local LLM用ハンドラーは共通処理として維持する。
+
+子の実行完了と親による結果確認は分離します。親の明示的な `agent close` は依頼元会話を照合し、agent-work共通のidle判定（実行・再開・追加入力）を通してセッションのみ終了します。結果の取得だけでは自動終了しません。
+
+### 拡張の初期化グループ
+
+manifestの任意項目 `startup: { exclusiveGroup: "gpu", timeoutSeconds: 120 }` は、同じxangiプロセス内で同じグループの初期化を直列化する。グループ名は調整用ラベルであり、CUDAのデバイス選択やマシン全体のロックではない。指定なしは従来の起動動作を維持する。autostartはグループ付き起動を並行に進め、別グループ・指定なしの拡張を待たせない。手動start/restartも同じ制御を通る。
+
+HTTP受付の `event: ready` と初期化完了を区別する。参加する拡張はhealthに `startup: { state: "initializing" | "complete" | "failed" }` を返す。complete/failedは初期化処理が終了し、同じリソースを使う次の初期化を開始できることを保証する。機器未接続等で `ready: false` でもcompleteを返せる。failedを報告した後に独自の初期化再試行を始めてはいけない。再初期化はホスト経由のrestartで行う。未知・欠落状態、HTTPエラーは終了と見なさない。
+
+タイムアウト（既定120秒、1〜3600秒）はHTTP受付確立後から計測する。health取得には最大2秒を使う。時間切れでは子プロセスを強制終了せず、そのグループの予約を保持し、後続の起動をblockedとして返す。他グループは進行する。再度startを要求すると、前のプロセスの終了または初期化完了を再確認する。待機中の停止・ホスト終了は未開始の起動を取り消す。起動後の推論メモリや総容量の制限は扱わない。

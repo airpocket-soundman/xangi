@@ -530,6 +530,9 @@ export async function run(argv = process.argv): Promise<void> {
     return;
   }
   if (argv[2] === 'tool') {
+    if (['workspace', 'agent', 'team'].includes(argv[3])) {
+      throw new Error(`Use xangi ${argv[3]} <action> instead. See xangi ${argv[3]} --help.`);
+    }
     console.log(await runToolCommand(argv.slice(3)));
     return;
   }

@@ -1,3 +1,4 @@
+import { instanceCliCommand } from './instance-cli.js';
 import { WebProjectError, normalizeName, normalizePrompt } from './web-projects.js';
 import type { SharedAgent } from './project-catalog.js';
 
@@ -136,12 +137,12 @@ export function validateTeamAssignments(
 }
 export function teamCallerInstructions(team: TeamSnapshot): string {
   if (team.leaderAgentId)
-    return `Team to use: ${team.name} (ID: ${team.id}). This Team has a designated leader. Read xangi tool help team and use team run with --task containing the full request and necessary context. Do not supply member assignments or start another leader. The configured leader will plan, dispatch only this Team's members, review, and integrate their results. Wait for the Team result and relay it to the user.`;
+    return `Team to use: ${team.name} (ID: ${team.id}). This Team has a designated leader. Read ${instanceCliCommand} team --help and use team run with --task containing the full request and necessary context. Do not supply member assignments or start another leader. The configured leader will plan, dispatch only this Team's members, review, and integrate their results. Wait for the Team result and relay it to the user.`;
   return `Team to use: ${team.name} (ID: ${team.id}). You are the leader; do not start another leader.
 ${team.prompt}
 Members: ${JSON.stringify(team.members)}
 Check prerequisites in the conversation and reference material. If required information is missing, ask the user and do not start the Team yet.
-Read xangi tool help team, then use team run to dispatch independent tasks to all members together. Pass shared context, evidence, and assumptions in --task, and use --assignments-json with [{"agentId":"ID","task":"a concrete self-contained assignment for this member"}] . Do not make assignments depend on waiting for sibling results.
+Read ${instanceCliCommand} team --help, then use team run to dispatch independent tasks to all members together. Pass shared context, evidence, and assumptions in --task, and use --assignments-json with [{"agentId":"ID","task":"a concrete self-contained assignment for this member"}] . Do not make assignments depend on waiting for sibling results.
 After dispatch, wait for completion notifications, review the results, and provide the final answer yourself. Do not restart the same investigation in response to a completion notification.`;
 }
 

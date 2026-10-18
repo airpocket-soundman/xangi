@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { XANGI_CMD_HELP_ENTRIES, formatXangiCmdHelp } from '../src/cli/xangi-cmd-help.js';
 
 describe('xangi tool help', () => {
+  it.each(['workspace', 'agent', 'team'])('管理helpは正規形式だけを案内する: %s', (name) => {
+    const help = formatXangiCmdHelp(name);
+    expect(help).toContain(`xangi ${name} `);
+    expect(help).not.toContain(`xangi tool ${name}`);
+    expect(help).not.toContain('--action');
+  });
+
   it('コマンド名を重複させない', () => {
     const names = XANGI_CMD_HELP_ENTRIES.map((entry) => entry.name);
     expect(new Set(names).size).toBe(names.length);

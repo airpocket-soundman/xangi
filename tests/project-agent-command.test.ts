@@ -5,7 +5,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { ProjectCatalog } from '../src/project-catalog.js';
 import { AgentRunStore } from '../src/agent-runs.js';
 import { executeProjectAgentCommand } from '../src/project-agent-command.js';
-import { initSessions, createWebSession } from '../src/sessions.js';
+import { initSessions, createWebSession, getSessionLifecycle } from '../src/sessions.js';
 import { WorkspaceRegistry } from '../src/workspace-registry.js';
 
 let root: string;
@@ -264,4 +264,29 @@ it.each(['default', 'xangi:default', 'named'])('allows ordinary self-request %s 
   }
   runs.markSucceeded(run.id, { result: 'hello!', sessionId: 'provider' });
   expect(await call({ action: 'wait', id: run.id }, context)).toMatchObject({ result: 'hello!' });
+});
+
+it('only the requesting parent closes an idle child after reviewing its result', async () => {
+  const { reviewer, call, runs } = setup();
+  const run = await call({ action: 'run', agent: reviewer.id, task: 'review' });
+  await expect(call({ action: 'close', id: run.id })).rejects.toThrow('実行中');
+  runs.markSucceeded(run.id, { result: 'reviewed', sessionId: 'provider' });
+  await expect(call({ action: 'close', id: run.id }, 'other-parent')).rejects.toThrow('見つかりません');
+  runs.update(run.id, r => { r.pendingWorkInputs = [{ id: 'm', text: 'more' }]; });
+  await expect(call({ action: 'close', id: run.id })).rejects.toThrow('実行中');
+  runs.update(run.id, r => { r.pendingWorkInputs = []; });
+  expect(await call({ action: 'close', id: run.id })).toMatchObject({ ok: true, lifecycle: 'closed' });
+  expect(getSessionLifecycle(run.appSessionId)).toBe('closed');
+  expect((await call({ action: 'status', id: run.id })).result).toBe('reviewed');
+  expect(await call({ action: 'close', id: run.id })).toMatchObject({ ok: true });
+});
+
+it('allows a worker to close its own default consultation, but never itself', async () => {
+  const { reviewer, call, runs } = setup();
+  const child = await call({ action: 'run', agent: reviewer.id, task: 'review' });
+  const childContext = `web-chat:${child.appSessionId}`;
+  const question = await call({ action: 'run', agent: 'default', task: 'question' }, childContext);
+  runs.markFailed(question.id, new Error('unavailable'));
+  expect(await call({ action: 'close', id: question.id }, childContext)).toMatchObject({ ok: true });
+  await expect(call({ action: 'close', id: child.id }, childContext)).rejects.toThrow('見つかりません');
 });

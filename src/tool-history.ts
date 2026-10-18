@@ -1,3 +1,4 @@
+import { normalizeInstanceCliCommand } from './instance-cli.js';
 import { isGitHubAppEnabled } from './github-auth.js';
 import { capToolLines } from './stream-session.js';
 import type { TurnHistoryEntry } from './activity-store.js';
@@ -100,7 +101,7 @@ export function formatTurnHistoryDisclosure(history: TurnHistoryEntry[]): string
 }
 
 export function formatInternalContextCommand(command: string): string | null {
-  const normalized = command.replace(/\s+/g, ' ');
+  const normalized = normalizeInstanceCliCommand(command).replace(/\s+/g, ' ');
 
   if (/(^|["'\s])(?:xangi tool|xangi-cmd) discord_(?:history|message)\b/.test(normalized)) {
     return '🔧 Discord履歴確認';

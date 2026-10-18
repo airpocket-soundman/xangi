@@ -1,3 +1,4 @@
+import { normalizeInstanceCliCommand } from '../instance-cli.js';
 // 一部のローカル LLM は tool_choice='none' を指定しても、
 // 「tool 呼びたい気持ち」を special token ナシの擬似テキストで hallucinate する drift がある。
 // 例: `<|channel>thought\ncall:fn{args}<channel|>` や bare `call:fn{args}`。
@@ -273,7 +274,7 @@ const SAFE_XANGI_SUBCOMMANDS = new Set([
   'help',
 ]);
 
-const SHELL_METACHAR_PATTERN = /[|&;`$<>]/;
+const SHELL_METACHAR_PATTERN = /[|&;`$<>\r\n]/;
 
 export interface SafetyCheck {
   safe: boolean;
@@ -286,7 +287,7 @@ export function isSafeForRescue(name: string, args: Record<string, unknown>): Sa
   }
 
   if (name === 'exec' || name === 'bash') {
-    const cmd = String(args.command ?? args.script ?? args.code ?? '');
+    const cmd = normalizeInstanceCliCommand(String(args.command ?? args.script ?? args.code ?? ''));
     if (!cmd) return { safe: false, reason: 'empty command' };
     if (SHELL_METACHAR_PATTERN.test(cmd)) {
       return {
@@ -295,7 +296,7 @@ export function isSafeForRescue(name: string, args: Record<string, unknown>): Sa
           'shell metacharacters (pipe/redirect/&&/;/$()/backtick) detected — not safe to rescue',
       };
     }
-    const match = cmd.match(/^(?:xangi\s+tool|xangi-cmd)\s+([a-z_]+)/);
+    const match = cmd.match(/^(?:xangi\s+tool|xangi-cmd)\s+([a-z_]+)(?=\s|$)/);
     if (match && SAFE_XANGI_SUBCOMMANDS.has(match[1])) {
       if (match[1] === 'models' && /(?:^|\s)--use(?:\s|$)/.test(cmd)) {
         return { safe: false, reason: 'models --use changes the next-turn model' };

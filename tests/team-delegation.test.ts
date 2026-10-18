@@ -1,3 +1,4 @@
+import { instanceCliCommand } from '../src/instance-cli.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -158,6 +159,7 @@ it('waits for unfinished children and resumes the leader with their actual resul
   try {
     expect((await pending).result).toBe('Integrated');
     expect(runner.runStream).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runner.runStream).mock.calls[0][0]).toContain(`${instanceCliCommand} team --help`);
     expect(vi.mocked(runner.runStream).mock.calls[1][0]).toContain('actual figure');
     expect(f.runs.get(leader.id)?.teamDelegationClosed).toBe(true);
   } finally {

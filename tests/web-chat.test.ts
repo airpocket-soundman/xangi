@@ -1,3 +1,4 @@
+import { instanceCliCommand } from '../src/instance-cli.js';
 import * as sessionTitle from '../src/session-title.js';
 import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
 import { runTeamTurn } from '../src/team-runner.js';
@@ -430,7 +431,7 @@ describe('web-chat HTTP API', () => {
       extensionUpdateRequest: async (id) => ({
         id,
         displayName: 'Demo Extension',
-        prompt: `Update ${id} with xangi tool extension_update --id ${id} --to ${'b'.repeat(40)}`,
+        prompt: `Update ${id} with ${instanceCliCommand} tool extension_update --id ${id} --to ${'b'.repeat(40)}`,
         displayMessage: 'Demo Extension の更新を確認します。',
         info: {
           id,
@@ -1401,6 +1402,16 @@ describe('web-chat HTTP API', () => {
       workdir: realpathSync(testDir),
     });
     expect(existsSync(join(testDir, '.xangi', 'agent-runs.json'))).toBe(true);
+    const listed = await (await fetch(`${baseUrl}/api/sessions?limit=200`)).json();
+    expect(listed.sessions.find((s: { id: string }) => s.id === created.run.appSessionId)).toMatchObject({ agentRunStatus: 'succeeded', lifecycle: 'open' });
+    const closed = await fetch(`${baseUrl}/api/sessions/${created.run.appSessionId}/close`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    expect(closed.status).toBe(200);
+    expect(await closed.json()).toMatchObject({ ok: true, lifecycle: 'closed' });
+    const preserved = await (await fetch(`${baseUrl}/api/agent-runs/${created.run.id}`)).json();
+    expect(preserved.run.result).toBe('ok');
+
   });
 
   it('records a backend error result as a failed Agent Run', async () => {
@@ -2267,6 +2278,14 @@ describe('web-chat HTTP API', () => {
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
         }),
         expect.objectContaining({
+          id: 'xangi-terminal',
+          displayName: 'xangi-terminal',
+          capabilities: ['terminal.open'],
+          installed: false,
+          uiAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-terminal',
+        }),
+        expect.objectContaining({
           id: 'xangi-dots',
           displayName: 'xangi-dots',
           capabilities: ['dots.jobs'],
@@ -2321,6 +2340,7 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-stackchan' }),
         expect.objectContaining({ id: 'xangi-even-g2' }),
         expect.objectContaining({ id: 'xangi-avatar' }),
+        expect.objectContaining({ id: 'xangi-terminal' }),
         expect.objectContaining({ id: 'xangi-dots' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
@@ -2363,7 +2383,7 @@ describe('web-chat HTTP API', () => {
       prompt: string;
       displayMessage: string;
     };
-    expect(update.prompt).toContain('xangi tool extension_update');
+    expect(update.prompt).toContain(`${instanceCliCommand} tool extension_update`);
     expect(update.displayMessage).toBe('Demo Extension の更新を確認します。');
     expect(getSessionEntry(update.sessionId)).toMatchObject({
       platform: 'web',
@@ -2465,7 +2485,7 @@ process.stdin.on('end', () => server.close());
     expect(uninstall.prompt).toContain(join(extensionDir, 'XANGI_SETUP.md'));
     expect(uninstall.prompt).toContain('Do not change the workspace, stop the extension, or unlink it before the user chooses');
     expect(uninstall.prompt).toContain('hooks, skills, extension-specific AGENTS.md rules');
-    expect(uninstall.prompt).toContain('xangi tool extension_uninstall --id demo-extension');
+    expect(uninstall.prompt).toContain(`${instanceCliCommand} tool extension_uninstall --id demo-extension`);
     expect(uninstall.displayMessage).toBe('Demo Extension の削除準備を開始します。');
     expect(getSessionEntry(uninstall.sessionId)).toMatchObject({
       platform: 'web',
