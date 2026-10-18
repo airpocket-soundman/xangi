@@ -777,3 +777,26 @@ describe('drift rescue scenario (decision tree)', () => {
     expect(feedback).toContain('xangi-cmd discord_history');
   });
 });
+
+describe('instance CLI rescue', () => {
+  it('accepts this instance read-only commands but retains unsafe-command rejection', async () => {
+    const { instanceCliCommand } = await import('../src/instance-cli.js');
+    expect(
+      isSafeForRescue('exec', { command: `${instanceCliCommand} tool discord_history` }).safe
+    ).toBe(true);
+    for (const suffix of [
+      'tool extension_update',
+      'tool models --use other',
+      'tool help; touch /tmp/no',
+      'tool help\ntouch /tmp/no',
+      'tool help | cat',
+      'tool help$(id)',
+      'tool help-invalid',
+    ]) {
+      expect(isSafeForRescue('exec', { command: `${instanceCliCommand} ${suffix}` }).safe).toBe(
+        false
+      );
+    }
+    expect(isSafeForRescue('exec', { command: "'/other/bin/xangi' tool help" }).safe).toBe(false);
+  });
+});

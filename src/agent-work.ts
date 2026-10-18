@@ -62,7 +62,11 @@ export function agentWorkBusy(agentId: string) {
 
 /** Close only idle work; queued follow-ups and final delivery still own the session. */
 export function closeAgentWork(platform: string, threadId: string): 'closed' | 'busy' | 'missing' {
-  const run = findAgentWork(platform, threadId);
+  return closeAgentRun(findAgentWork(platform, threadId));
+}
+
+/** Shared idle guard for parent acknowledgement and work-thread close. */
+export function closeAgentRun(run: AgentRun | undefined): 'closed' | 'busy' | 'missing' {
   if (!run || !getSessionEntry(run.appSessionId)) return 'missing';
   if (
     ['queued', 'running'].includes(run.status) ||

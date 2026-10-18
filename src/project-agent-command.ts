@@ -1,3 +1,4 @@
+import { closeAgentRun } from './agent-work.js';
 import {
   delegationScopeCount,
   delegatedRuns,
@@ -114,7 +115,7 @@ export async function executeProjectAgentCommand(
   // A worker may consult the default agent once, but cannot create a delegation chain.
   if (
     callerRun &&
-    !['list', 'status', 'wait', 'logs'].includes(action) &&
+    !['list', 'status', 'wait', 'logs', 'close'].includes(action) &&
     !(
       !callerRun.selfDelegation &&
       !callerRun.delegationRootId &&
@@ -185,6 +186,20 @@ export async function executeProjectAgentCommand(
     });
     return JSON.stringify({ agent, workspace });
   }
+  if (action === 'close') {
+    const run = runs.get(flags.id || '');
+    if (!run || run.parentContextKey !== parent) throw new Error('この会話の依頼が見つかりません');
+    const result = closeAgentRun(run);
+    if (result === 'busy')
+      throw new Error('実行中または追加指示待ちの子セッションは終了できません');
+    if (result === 'missing') throw new Error('子セッションが見つかりません');
+    return JSON.stringify({
+      ok: true,
+      id: run.id,
+      appSessionId: run.appSessionId,
+      lifecycle: 'closed',
+    });
+  }
   if (action === 'wait' || action === 'status' || action === 'logs') {
     let run = runs.get(flags.id || '');
     if (!run || run.parentContextKey !== parent) throw new Error('この会話の依頼が見つかりません');
@@ -198,7 +213,7 @@ export async function executeProjectAgentCommand(
     return JSON.stringify(run);
   }
   if (action !== 'run')
-    throw new Error('action must be create, list, delete, run, status, wait or logs');
+    throw new Error('action must be create, list, delete, run, status, wait, logs or close');
   if (!flags.task?.trim()) throw new Error('--task is required');
   const target =
     agentId === DEFAULT_TEAM_AGENT_ID ? catalog.defaultAgent() : catalog.agent(agentId || '');

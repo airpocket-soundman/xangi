@@ -1,3 +1,4 @@
+import { instanceCliCommand } from '../src/instance-cli.js';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -126,7 +127,7 @@ describe('repository-managed extension updates', () => {
       updateAvailable: true,
     });
     expect(request.prompt).toContain(
-      `xangi tool extension_update --id demo-extension --to ${'b'.repeat(40)}`
+      `${instanceCliCommand} tool extension_update --id demo-extension --to ${'b'.repeat(40)}`
     );
     expect(request.prompt).toContain(`extension root: ${dirname(setup.linked.manifestPath)}`);
     expect(request.prompt).toContain(

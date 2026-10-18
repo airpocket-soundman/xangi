@@ -1384,3 +1384,20 @@ Conversational `workspace create`, `agent create --workspace-id` and `team creat
 Deletion uses `team delete`, the existing `agent delete`, and `workspace delete` against live settings. Web API and CLI share `removeRegisteredWorkspace` for reference checks and metadata-only removal. Team deletion shares `removeRegisteredTeam`; the CLI also rejects unfinished runs.
 
 Settings consultations obtain `instanceCliCommand` from `/api/config`. Both consultation examples and common agent instructions use the shell-quoted absolute path from `instance-cli.ts`, avoiding other checkouts on PATH.
+
+Managed extensions autostart after the Tool Server is listening and enabled platforms have initialized. Children inherit `XANGI_TOOL_SERVER` for the actual listening port, including fallback from an occupied preferred port, so they can invoke `xangi tool` immediately. A Tool Server startup failure rejects startup before extensions are launched.
+Default agent initialization is deferred until extensions have started. Incoming runs wait for that initialization, preserving extension-backed defaults and immediate startup notifications.
+
+### Management CLI syntax
+
+Use `xangi workspace|agent|team <action>` and the corresponding `--help` for management. The duplicate `xangi tool workspace|agent|team` forms are rejected with guidance to the canonical entrypoint. Internal Tool Server dispatch and Local LLM handlers remain shared implementation details.
+
+Child execution completion and parent acceptance are separate. Explicit `agent close` verifies the requesting conversation and uses the shared agent-work idle guard (execution, resume, queued inputs) before closing the session. Fetching a result does not close it.
+
+### Extension initialization groups
+
+Optional manifest `startup: { exclusiveGroup: "gpu", timeoutSeconds: 120 }` serializes initialization within one xangi process. Group names are coordination labels, not device selectors or machine-wide locks. Extensions without this field keep their existing behavior. Autostart schedules grouped launches independently of other groups and ungrouped extensions. Manual start/restart uses the same coordinator.
+
+HTTP `event: ready` only establishes the endpoint. Participating extensions must report health `startup: { state: "initializing" | "complete" | "failed" }`. A terminal state guarantees that initialization has stopped using the exclusive startup resource. It is independent of overall `ready`, which may remain false for disconnected devices. Extensions must not retry initialization internally after reporting a terminal state; reinitialize through the host restart operation. Missing/unknown states or health errors do not release the group.
+
+The timeout defaults to 120 seconds (range 1–3600), measured after endpoint startup, with health probes taking up to 2 seconds. Timeout retains the child and group reservation; following launches report blocked. Other groups proceed. A new start request checks whether the owner exited or finished initialization before proceeding. Stop and host shutdown cancel queued starts. This does not limit steady-state inference memory or total memory use.

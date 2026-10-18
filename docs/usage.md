@@ -1053,7 +1053,7 @@ managed extensionの状態は`running`、`healthy`、`ready`を別々に表示�
 
 managed extensionの子processには親xangiの`XANGI_EXTENSION_INSTANCE_ID`が渡ります。Web Chat有効時は`XANGI_EXTENSION_HOST_URL`、イベント配信も有効なら`XANGI_EXTENSION_EVENTS_URL`も渡るため、イベント購読型extensionはportやbind hostを推測せず現在のinstanceへ接続できます。無効なendpointのURLは渡しません。これらは親が所有するruntime contextであり、利用者が`.env`で設定する項目ではありません。
 
-初回起動時も公式catalogのxangi-search、xangi-stackchan、xangi-even-g2、xangi-avatar、xangi-dotsが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
+初回起動時も公式catalogのxangi-search、xangi-stackchan、xangi-even-g2、xangi-avatar、xangi-terminal、xangi-dotsが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
 
 CLIや配備作業で先にlinkされたextensionには、利用可能な状態でも「セットアップ」が表示されます。選ぶとextensionを停止・再導入せず、repository内のsetup文書を使う専用会話を開きます。setup文書に承認待ちの設定・workspace変更・任意機能がある場合、LLMはそれをgenericな活用案や次回依頼へ先送りせず、重要な差分・影響・選択肢を具体的に提示します。返答待ちの項目は変更せず、未決の間はsetup完了と報告しません。setup、status、doctorの確認に成功した後は、LLMがextensionのREADMEと現在のworkspaceにあるREADME・AGENTS.md・上位directory構成を参照し、利用者の目的や既存workflowに合う活用案を2〜3件提示します。各案には適合理由、最初に依頼する文または操作、得られる結果を含めます。活用案の提示だけではworkspaceや設定を変更せず、自動化・外部送信・定期実行は別途確認してから実行します。
 
@@ -2317,3 +2317,16 @@ xangi agent run LEADER_ID --task '調査・実装・レビューを進めて結�
 許可外Team、リーダー自身・親の担当を含むTeam、担当メンバーからの再委譲（defaultへの問い合わせも含む）は拒否します。編成を後から変更した場合も、起動時に循環を再検査します。停止・失敗・共通期限で配下へ停止を伝え、待機担当は起動しません。終了した依頼の委譲権限は再利用できません。必要なら親から新しく依頼します。
 
 同時実行枠は元の会話で共有し、リーダーと配下の担当メンバーを数えます。Teamの集約用実行は追加枠に数えません。`AGENT_MAX_CONCURRENT_REQUESTS` は2以上が必要です。累計メンバー起動数は失敗したバッチも含め、既定64・指定範囲1〜256。共通期限は受付時から既定 `TIMEOUT_MS`（未設定なら60分）、指定範囲1秒〜10時間で、子や追加ラウンドごとにリセットしません。厳密な金額上限やストリーム途中のトークン予算停止は非対応です。これらの制限はxangi経由の依頼に適用し、任意シェルプロセスのサンドボックスにはなりません。
+
+親は子の結果を確認・採用後に `xangi agent close --id RUN_ID` でセッションを終了します。履歴と結果は保持されます。追加作業が必要なら終了せず、親が停止した場合も確認待ちのまま残します。実行中・追加指示待ち・別会話の依頼は終了できません。
+モニターでは、応答済みで未終了の子を「結果確認待ち」、失敗した子を「失敗・確認待ち」と表示します。
+
+### 初期化時のリソース競合を避ける
+
+対応する拡張のmanifestには、例えば `"startup": {"exclusiveGroup": "gpu", "timeoutSeconds": 120}` を指定する。利用者は `XANGI_EXTENSIONS_FILE`（指定なしならDATA_DIR等から決まる `extensions.json`）の対象拡張レコードで `startup` を上書きできる。再linkや更新でも上書き設定を保持する。
+
+- CPU運用等で不要なら `"startup": null`。
+- 別GPUなら `"startup": {"exclusiveGroup": "gpu:1", "timeoutSeconds": 180}`。このラベルはGPUを選択しないので、モデル側のデバイス設定も別途そろえる。
+- `startup` を省略するとmanifestの既定値を使う。
+
+グループの指定は、healthのstartup状態を報告できる拡張にだけ行う。旧拡張へ指定すると完了が分からずタイムアウトする。設定変更は次の起動要求から有効で、すでに開始した初期化を移動しない。タイムアウト後はstatusの理由と所有元拡張を確認し、所有元の初期化完了を待つか明示的に停止してから、blockedになった拡張へstartを再要求する。自動再試行は行わない。

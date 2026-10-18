@@ -1,3 +1,4 @@
+import { instanceCliCommand } from './instance-cli.js';
 import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -209,7 +210,7 @@ export async function createExtensionUpdateRequest(
       `setup document: ${inspection.setupDocument ?? 'not declared'}`,
       '',
       'The user explicitly selected Update in the Extensions screen. First briefly explain the current version and target commit.',
-      `Then, without arbitrary git or shell update operations, run xangi tool extension_update --id ${id} --to ${info.targetCommitSha}.`,
+      `Then, without arbitrary git or shell update operations, run ${instanceCliCommand} tool extension_update --id ${id} --to ${info.targetCommitSha}.`,
       'If the tool stops for changes to permissions, capabilities, entrypoints, agent backends, UI mappings, or update preparation commands, show the diff and ask the user. Retry with --accept-manifest-changes true only after explicit approval.',
       'If the tool fails, include rollback results in the report. On success, briefly report the version, commit, and doctor results.',
       '',

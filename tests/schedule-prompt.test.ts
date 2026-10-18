@@ -1,3 +1,4 @@
+import { instanceCliCommand } from '../src/instance-cli.js';
 import { describe, expect, it } from 'vitest';
 import { buildXangiCommands } from '../src/prompts/xangi-commands.js';
 
@@ -6,7 +7,7 @@ describe('schedule discovery in agent prompts', () => {
     'provides schedule help and result verification for %s',
     (platform) => {
       const prompt = buildXangiCommands(platform);
-      expect(prompt).toContain('xangi tool help schedule_add');
+      expect(prompt).toContain(`${instanceCliCommand} tool help schedule_add`);
       expect(prompt).toContain('Verify the result before confirming registration');
       expect(prompt).toContain('report the actual error on failure');
     }

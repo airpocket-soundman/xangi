@@ -80,14 +80,32 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private readonly userPromptSubmitHooks: ReloadingUserPromptSubmitHookRunner | null;
 
   /** デフォルトのランナー（.env設定ベース） */
-  private defaultRunner: AgentRunner;
+  private initializedDefaultRunner?: AgentRunner;
+  private markDefaultRunnerReady!: () => void;
+  private readonly defaultRunnerReady = new Promise<void>((resolve) => {
+    this.markDefaultRunnerReady = resolve;
+  });
+
+  private get defaultRunner(): AgentRunner {
+    if (!this.initializedDefaultRunner) throw new Error('Agent backends are still starting');
+    return this.initializedDefaultRunner;
+  }
+
+  private set defaultRunner(runner: AgentRunner) {
+    this.initializedDefaultRunner = runner;
+    this.markDefaultRunnerReady();
+  }
 
   /** チャンネル別に生成したランナー（デフォルトと異なるバックエンドの場合） */
   private channelRunners = new Map<string, { runner: AgentRunner; key: string }>();
   private activeRunnerUses = new Map<AgentRunner, number>();
   private retiredRunners = new Set<AgentRunner>();
 
-  constructor(config: Config, resolver: BackendResolver) {
+  constructor(
+    config: Config,
+    resolver: BackendResolver,
+    options: { deferDefaultRunner?: boolean } = {}
+  ) {
     super();
     this.config = config;
     this.resolver = resolver;
@@ -95,16 +113,20 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     this.workdir = config.agent.config.workdir || process.cwd();
     this.userPromptSubmitHooks = createReloadingUserPromptSubmitHookRunner(this.workdir);
 
-    // デフォルトランナーを作成
+    if (!options.deferDefaultRunner) this.initializeDefaultRunner();
+  }
+
+  /** Initialize after managed agent backends are available during host startup. */
+  initializeDefaultRunner(): void {
+    if (this.initializedDefaultRunner) return;
     this.defaultRunner = this.createRunnerFor(
       this.resolver.getDefault(),
       this.platform,
       this.workdir
     );
     this.attachTimeoutBubble(this.defaultRunner);
-
     console.log(
-      `[dynamic-runner] Initialized with default backend: ${getBackendDisplayName(config.agent.backend)}`
+      `[dynamic-runner] Initialized with default backend: ${getBackendDisplayName(this.config.agent.backend)}`
     );
   }
 
@@ -252,6 +274,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * リクエストを実行
    */
   async run(prompt: string, options?: RunOptions): Promise<RunResult> {
+    if (!this.initializedDefaultRunner) await this.defaultRunnerReady;
     const control = handleSecretCommand(options);
     if (control) {
       if (options?.channelId) this.destroy(options.channelId);
@@ -296,6 +319,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
+    if (!this.initializedDefaultRunner) await this.defaultRunnerReady;
     const control = handleSecretCommand(options);
     if (control) {
       if (options?.channelId) this.destroy(options.channelId);
@@ -666,7 +690,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
         return channelEntry.runner.cancel(channelId) || delegated;
       }
     }
-    return (this.defaultRunner.cancel?.(channelId) ?? false) || delegated;
+    return (this.initializedDefaultRunner?.cancel?.(channelId) ?? false) || delegated;
   }
 
   /**
@@ -680,7 +704,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     this.destroyChannelRunner(channelId);
 
     // デフォルトランナーにもdestroy（RunnerManagerのプール内エントリ削除）
-    const defaultDestroyed = this.defaultRunner.destroy?.(channelId) ?? false;
+    const defaultDestroyed = this.initializedDefaultRunner?.destroy?.(channelId) ?? false;
 
     return hadChannelRunner || defaultDestroyed;
   }
@@ -694,7 +718,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     if (channelEntry) {
       return channelEntry.runner.hasRunner?.(channelId) ?? false;
     }
-    return this.defaultRunner.hasRunner?.(channelId) ?? false;
+    return this.initializedDefaultRunner?.hasRunner?.(channelId) ?? false;
   }
 
   /**
@@ -707,7 +731,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     if (channelEntry?.runner.getTimeoutState) {
       return channelEntry.runner.getTimeoutState(channelId);
     }
-    return this.defaultRunner.getTimeoutState?.(channelId) ?? { active: false };
+    return this.initializedDefaultRunner?.getTimeoutState?.(channelId) ?? { active: false };
   }
 
   /**
@@ -722,7 +746,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       return channelEntry.runner.extendTimeout(channelId, additionalMs);
     }
     return (
-      this.defaultRunner.extendTimeout?.(channelId, additionalMs) ?? {
+      this.initializedDefaultRunner?.extendTimeout?.(channelId, additionalMs) ?? {
         ok: false,
         reason: 'unsupported',
       }
@@ -736,7 +760,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   switchBackend(channelId: string): void {
     deleteSession(channelId);
     this.destroyChannelRunner(channelId);
-    this.defaultRunner.destroy?.(channelId);
+    this.initializedDefaultRunner?.destroy?.(channelId);
     console.log(`[dynamic-runner] Backend switched for channel ${channelId}`);
   }
 
@@ -801,7 +825,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       defaultBackend: getBackendDisplayName(this.config.agent.backend),
       channelRunners: channelInfo,
       defaultRunnerStatus:
-        'getStatus' in this.defaultRunner
+        this.initializedDefaultRunner && 'getStatus' in this.initializedDefaultRunner
           ? (this.defaultRunner as RunnerManager).getStatus()
           : undefined,
     };
@@ -811,6 +835,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    * 全ランナーをシャットダウン
    */
   shutdown(): void {
+    this.markDefaultRunnerReady();
     for (const [channelId, entry] of this.channelRunners.entries()) {
       entry.runner.destroy?.(channelId);
       this.shutdownRunner(entry.runner);
@@ -818,7 +843,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     for (const runner of this.retiredRunners) this.shutdownRunner(runner);
     this.retiredRunners.clear();
     this.channelRunners.clear();
-    this.shutdownRunner(this.defaultRunner);
+    if (this.initializedDefaultRunner) this.shutdownRunner(this.initializedDefaultRunner);
   }
 }
 

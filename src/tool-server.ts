@@ -366,7 +366,7 @@ export function startToolServer(options?: {
   webStatusCommand?: typeof webStatusCmd;
   extensionUpdateCommand?: typeof updateExtension;
   extensionUninstallCommand?: typeof finalizeDevelopmentExtensionUninstall;
-}): void {
+}): Promise<void> {
   eventTrigger = options?.eventTrigger ?? null;
   backendResolver = options?.backendResolver ?? null;
   runtimeConfig = options?.config ?? null;
@@ -509,29 +509,33 @@ export function startToolServer(options?: {
   const preferred = resolvePreferredToolServerPort();
   let fellBack = false;
 
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if ((err.code === 'EADDRINUSE' || err.code === 'EACCES') && preferred !== 0 && !fellBack) {
-      fellBack = true;
-      console.warn(
-        `[tool-server] Port ${preferred} unavailable (${err.code}), falling back to auto-assign`
-      );
-      server?.listen(0, '0.0.0.0');
-      return;
-    }
-    console.error('[tool-server] Server error:', err);
+  return new Promise<void>((resolve, reject) => {
+    server!.on('error', (err: NodeJS.ErrnoException) => {
+      if ((err.code === 'EADDRINUSE' || err.code === 'EACCES') && preferred !== 0 && !fellBack) {
+        fellBack = true;
+        console.warn(
+          `[tool-server] Port ${preferred} unavailable (${err.code}), falling back to auto-assign`
+        );
+        server?.listen(0, '0.0.0.0');
+        return;
+      }
+      console.error('[tool-server] Server error:', err);
+      reject(err);
+    });
+
+    server!.on('listening', () => {
+      const addr = server!.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const serverUrl = `http://127.0.0.1:${port}`;
+      process.env.XANGI_TOOL_SERVER = serverUrl;
+      persistToolServerPort(port);
+
+      console.log(`[tool-server] Listening on http://0.0.0.0:${port}`);
+      resolve();
+    });
+
+    server!.listen(preferred, '0.0.0.0');
   });
-
-  server.on('listening', () => {
-    const addr = server!.address();
-    const port = typeof addr === 'object' && addr ? addr.port : 0;
-    const serverUrl = `http://127.0.0.1:${port}`;
-    process.env.XANGI_TOOL_SERVER = serverUrl;
-    persistToolServerPort(port);
-
-    console.log(`[tool-server] Listening on http://0.0.0.0:${port}`);
-  });
-
-  server.listen(preferred, '0.0.0.0');
 }
 
 /**

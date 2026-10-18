@@ -19,6 +19,7 @@ import {
   matchesFilter,
   monitorTimeRange,
   monitorLane,
+  stateLabel,
   revealMonitorDetail,
   sessionMatchesActivityThread,
   sessionLine,
@@ -651,4 +652,12 @@ describe('Monitor session details', () => {
       threadId: '123.456',
     });
   });
+});
+
+it('distinguishes completed child results awaiting review from active work and closed sessions', () => {
+  const child: MonitorSession = { id: 'child', lifecycle: 'open', agentRunStatus: 'succeeded', isActive: false };
+  expect(stateLabel(child)).toBe('結果確認待ち');
+  expect(stateLabel({ ...child, agentRunStatus: 'failed' })).toBe('失敗・確認待ち');
+  expect(stateLabel({ ...child, lifecycle: 'closed' })).toBe('完了');
+  expect(stateLabel({ ...child, isActive: true })).not.toBe('結果確認待ち');
 });

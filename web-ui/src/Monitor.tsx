@@ -96,6 +96,7 @@ export interface MonitorSession {
   isActive?: boolean;
   isCurrent?: boolean;
   lifecycle?: 'open' | 'closed';
+  agentRunStatus?: 'queued' | 'running' | 'succeeded' | 'failed';
   sessionMode?: 'stateful' | 'stateless';
   closedAt?: string;
   closeReason?: string;
@@ -345,9 +346,11 @@ function platformName(platform?: string): string {
   return platform || 'Unknown';
 }
 
-function stateLabel(session: MonitorSession): string {
+export function stateLabel(session: MonitorSession): string {
   if (monitorLane(session) === 'completed') return '完了';
   if (!isRunning(session)) {
+    if (session.agentRunStatus === 'succeeded') return '結果確認待ち';
+    if (session.agentRunStatus === 'failed') return '失敗・確認待ち';
     if (session.activity?.state === 'error') return 'エラー';
     if (session.activity?.state === 'aborted') return '中断';
     return '入力待ち';

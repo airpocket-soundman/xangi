@@ -1,3 +1,4 @@
+import { instanceCliCommand } from './instance-cli.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AgentRun, AgentRunStore } from './agent-runs.js';
 import type { AgentRunner, RunOptions, RunResult, StreamCallbacks } from './agent-runner.js';
@@ -92,7 +93,7 @@ export async function runDelegatingLeader(
   };
   try {
     let nextOptions = options;
-    let text = `${prompt}\n\nYou may delegate one level to these registered Team IDs only: ${policy.teamIds.join(', ')}. Read xangi tool help team. In each round, use --assignments-json to assign independent tasks only to the members needed for that round (at least one); omitted members do not run. Wait for the current round before starting the next. Collect results with team wait and integrate them before finishing. Members cannot delegate. Deadline: ${new Date(policy.deadline).toISOString()}; total member launches: ${policy.maxMemberRuns}.`;
+    let text = `${prompt}\n\nYou may delegate one level to these registered Team IDs only: ${policy.teamIds.join(', ')}. Read ${instanceCliCommand} team --help. In each round, use --assignments-json to assign independent tasks only to the members needed for that round (at least one); omitted members do not run. Wait for the current round before starting the next. Collect results with team wait and integrate them before finishing. Members cannot delegate. Deadline: ${new Date(policy.deadline).toISOString()}; total member launches: ${policy.maxMemberRuns}.`;
     for (;;) {
       if (cancelled || Date.now() >= policy.deadline)
         return {

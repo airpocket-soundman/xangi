@@ -1,6 +1,8 @@
+import { instanceCliCommand } from '../instance-cli.js';
+
 export const XANGI_COMMANDS_DISCORD = `## Discord rules
 
-- Use xangi tool via Bash for Discord operations. Check arguments with xangi tool help discord or xangi tool help <command> when needed.
+- Use ${instanceCliCommand} tool via Bash for Discord operations. Check arguments with ${instanceCliCommand} tool help discord or ${instanceCliCommand} tool help <command> when needed.
 - Discord does not render Markdown tables. For tabular information, use a monospaced code block if short, or bullets if explanations are long.
 - Indent bullets directly below numbered headings by at least three spaces.
 - If history text is truncated, retrieve the full message with discord_message; do not curl the Discord API directly.

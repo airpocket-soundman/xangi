@@ -95,7 +95,23 @@ describe('withoutFinalResponse', () => {
   });
 });
 
- it('hides file reports from platform History while preserving normal tools', () => {
-  const report = {kind: 'tool' as const, toolName: 'ファイル変更', summary: 'private.txt', fileChanges: {files: [], partial: false, concurrent: false}};
+it('hides file reports from platform History while preserving normal tools', () => {
+  const report = {
+    kind: 'tool' as const,
+    toolName: 'ファイル変更',
+    summary: 'private.txt',
+    fileChanges: { files: [], partial: false, concurrent: false },
+  };
   expect(formatTurnHistoryDisclosure([report])).toBe('履歴はありません');
- });
+});
+
+it('recognizes this instance CLI in Discord history summaries', async () => {
+  const { instanceCliCommand } = await import('../src/instance-cli.js');
+  const { formatInternalContextCommand } = await import('../src/tool-history.js');
+  for (const operation of ['discord_history', 'discord_message']) {
+    expect(
+      formatInternalContextCommand(`${instanceCliCommand} tool ${operation} --channel 123`)
+    ).toBe('🔧 Discord履歴確認');
+  }
+  expect(formatInternalContextCommand("'/other/bin/xangi' tool discord_history")).toBeNull();
+});

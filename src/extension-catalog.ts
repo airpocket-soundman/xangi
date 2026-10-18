@@ -1,3 +1,4 @@
+import { instanceCliCommand } from './instance-cli.js';
 import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { delimiter, dirname, isAbsolute, relative, resolve } from 'node:path';
@@ -142,6 +143,25 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     statusKnown: true,
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-avatar',
+  },
+  {
+    id: 'xangi-terminal',
+    displayName: 'xangi-terminal',
+    description: 'ブラウザからシェルを操作し、自然言語でコマンドを提案します。',
+    permissions: [
+      '実行ユーザーの権限でシェルとコマンドを実行',
+      'ターミナルHTTPサーバーを起動',
+      '接続先xangiのエージェントへコマンド変換・確認を依頼',
+      'ローカルの.runtimeディレクトリへ接続情報と設定を保存',
+    ],
+    capabilities: ['terminal.open'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-terminal',
   },
   {
     id: 'xangi-dots',
@@ -445,7 +465,7 @@ export async function createExtensionUninstallRequest(
       'Offer at least these choices: recommended, remove verified extension-specific workspace integrations before stopping and unlinking; or retain workspace changes and only stop and unlink the extension.',
       'Do not delete downloaded source, extension-owned data, indexes, settings, or FACTs in this removal; explicitly state that they are retained. If full erasure is requested, treat it as outside this scope and separately confirm targets and impact.',
       'Only after the user chooses, make minimal changes within the approved scope. Preserve user-specific content in shared files and inspect the resulting diff.',
-      `After workspace cleanup succeeds, run the fixed operation owned by the current xangi parent process exactly once: xangi tool extension_uninstall --id ${id}. Do not stop or unlink using an arbitrary xangi CLI on PATH.`,
+      `After workspace cleanup succeeds, run the fixed operation owned by the current xangi parent process exactly once: ${instanceCliCommand} tool extension_uninstall --id ${id}. Do not stop or unlink using an arbitrary xangi CLI on PATH.`,
       `Check complete, linked, extension.running, hookConfigReload, and requiresRestart from the fixed operation. Briefly report removed workspace integrations, retained source and data, and uncommitted tracked-file changes.`,
       'If cleanup, stopping, unlinking, or verification fails, do not report removal complete. State the actions performed and remaining state.',
     ].join('\n'),

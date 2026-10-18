@@ -4,6 +4,7 @@ import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { BackendResolver, type ResolvedBackend } from '../src/backend-resolver.js';
 import type { Config } from '../src/config.js';
+import type { AgentRunner } from '../src/agent-runner.js';
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
 import {
   createSession,
@@ -28,6 +29,52 @@ function makeConfig(platform: Config['agent']['platform']): Config {
 }
 
 describe('DynamicRunnerManager platform routing', () => {
+  it('defers default backend resolution until managed extensions have started', () => {
+    const config = makeConfig('discord');
+    const getDefault = vi.fn(() => ({ backend: 'local-llm' as const, model: 'test' }));
+    const manager = new DynamicRunnerManager(config, { getDefault } as unknown as BackendResolver, {
+      deferDefaultRunner: true,
+    });
+    expect(getDefault).not.toHaveBeenCalled();
+    expect(manager.getStatus().defaultRunnerStatus).toBeUndefined();
+    manager.initializeDefaultRunner();
+    manager.initializeDefaultRunner();
+    expect(getDefault).toHaveBeenCalledOnce();
+    manager.shutdown();
+  });
+
+  it('waits for initialization before executing a startup notification', async () => {
+    const config = makeConfig('discord');
+    const resolved = { backend: 'local-llm' as const, model: 'test' };
+    const resolver = {
+      getDefault: () => resolved,
+      resolve: () => resolved,
+    } as unknown as BackendResolver;
+    const manager = new DynamicRunnerManager(config, resolver, { deferDefaultRunner: true });
+    const run = vi.fn(async () => ({ result: 'ready', sessionId: 'startup' }));
+    vi.spyOn(
+      manager as unknown as { createRunnerFor: () => AgentRunner },
+      'createRunnerFor'
+    ).mockReturnValue({ run, runStream: vi.fn() });
+    const pending = manager.run('startup notification');
+    await Promise.resolve();
+    expect(run).not.toHaveBeenCalled();
+    manager.initializeDefaultRunner();
+    await expect(pending).resolves.toMatchObject({ result: 'ready' });
+    expect(run).toHaveBeenCalledOnce();
+    manager.shutdown();
+  });
+
+  it('can shut down before deferred initialization completes', () => {
+    const config = makeConfig('discord');
+    const getDefault = vi.fn();
+    const manager = new DynamicRunnerManager(config, { getDefault } as unknown as BackendResolver, {
+      deferDefaultRunner: true,
+    });
+    manager.shutdown();
+    expect(getDefault).not.toHaveBeenCalled();
+  });
+
   it('retires the previous default runner only after its active turn finishes', async () => {
     const config = makeConfig('discord');
     let resolved: ResolvedBackend = { backend: 'codex', model: 'old-model', effort: 'low' };
@@ -52,7 +99,10 @@ describe('DynamicRunnerManager platform routing', () => {
 
     const activeTurn = manager.run('before');
     await vi.waitFor(() => expect(oldRunner.run).toHaveBeenCalledOnce());
-    expect(oldRunner.run).toHaveBeenCalledWith('before', expect.objectContaining({ effort: 'low' }));
+    expect(oldRunner.run).toHaveBeenCalledWith(
+      'before',
+      expect.objectContaining({ effort: 'low' })
+    );
     resolved = { backend: 'codex', model: 'new-model', effort: 'medium' };
     manager.switchDefaultBackend();
     expect(shutdown).not.toHaveBeenCalled();

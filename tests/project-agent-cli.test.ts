@@ -45,6 +45,7 @@ it('uses the injected instance CLI for list/run/status/wait despite login-shell 
       backend: 'codex',
       workspaceId: 'default',
       workspacePath: root,
+      appSessionId: createWebSession({}),
     });
     runs.markSucceeded(run.id, { result: 'CHILD_RESULT', sessionId: 'child-provider' });
     return runs.get(run.id)!;
@@ -100,6 +101,8 @@ it('uses the injected instance CLI for list/run/status/wait despite login-shell 
     const run = await call(`run ${created.agent.id} --task 'bounded task'`);
     expect(await call(`status --id ${run.id}`)).toMatchObject({ status: 'succeeded' });
     expect(await call(`wait --id ${run.id}`)).toMatchObject({ result: 'CHILD_RESULT' });
+    expect(await call(`close --id ${run.id}`)).toMatchObject({ ok: true, lifecycle: 'closed' });
+    expect(await call(`status --id ${run.id}`)).toMatchObject({ result: 'CHILD_RESULT' });
     expect(await call(`delete ${created.agent.id}`)).toEqual({ok:true});
     expect(catalog.agent(created.agent.id)).toBeUndefined();
     expect(prompt).toContain(`${command} run`);
