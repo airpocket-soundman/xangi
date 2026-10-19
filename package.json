@@ -43,7 +43,7 @@
   "author": "karaage",
   "license": "MIT",
   "dependencies": {
-    "@github/copilot-sdk": "^1.0.18",
+    "@github/copilot-sdk": "^1.0.22",
     "@line/bot-sdk": "^11.3.0",
     "@octokit/auth-app": "^8.3.1",
     "@slack/bolt": "^4.7.3",
@@ -58,7 +58,7 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "slackify-markdown": "^5.0.0",
-    "undici": "6.29.0",
+    "undici": "6.29.1",
     "unified": "^11.0.5",
     "ws": "^8.22.0",
     "yaml": "^2.9.1"
@@ -72,26 +72,26 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/ws": "^8.18.2",
-    "@typescript-eslint/eslint-plugin": "^8.71.1",
-    "@typescript-eslint/parser": "^8.71.1",
+    "@typescript-eslint/eslint-plugin": "^8.71.2",
+    "@typescript-eslint/parser": "^8.71.2",
     "@vitejs/plugin-react": "^6.1.2",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "prettier": "^3.9.9",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "prettier": "^3.9.10",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsx": "^4.23.15",
     "typescript": "^5.7.2",
-    "typescript-eslint": "^8.71.1",
+    "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "engines": {
     "node": ">=22.0.0"
   },
   "overrides": {
-    "undici": "6.29.0"
+    "undici": "6.29.1"
   }
 }
