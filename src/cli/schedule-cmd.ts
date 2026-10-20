@@ -162,15 +162,32 @@ async function scheduleList(scheduler?: Scheduler): Promise<string> {
   return formatScheduleList(schedules);
 }
 
+/** 数字・`*`・`/`・`-`・`,` だけでできた語。cron のフィールドとして読める */
+const CRON_FIELD = /^[\d*/,-]+$/;
+
+/** メッセージを足せば予定として通る＝時刻の書き方だけが書かれている */
+function isScheduleWithoutMessage(value: string): boolean {
+  try {
+    return parseScheduleInput(`${value} Send a reminder`) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function scheduleInputError(input: string): string {
   const value = input.trim();
-  let hint = '--input requires both a schedule and a message; a time alone is not supported.';
-  if (/^(?:\S+\s+){4}\S+$/.test(value) && !value.startsWith('cron ')) {
+  const words = value.split(/\s+/);
+  let hint = 'This schedule form is not recognized.';
+  if (words.length === 5 && words.every((word) => CRON_FIELD.test(word))) {
     hint = 'The cron prefix and a message are required.';
-  } else if (/^cron\s+(?:\S+\s+){4}\S+$/i.test(value) || /^毎日\s+\d{1,2}:\d{2}$/.test(value)) {
+  } else if (isScheduleWithoutMessage(value)) {
     hint = 'A message is required.';
   }
-  return `Invalid schedule input: ${input}\n${hint} Example: --input "cron 0 9 * * * Send a reminder"`;
+  return [
+    `Invalid schedule input: ${input}`,
+    `${hint} Examples: --input "30分後 Send a reminder" (one-time), --input "cron 0 9 * * * Send a reminder" (recurring).`,
+    'See xangi tool help schedule_add for all forms.',
+  ].join('\n');
 }
 
 async function scheduleAdd(flags: Record<string, string>, scheduler?: Scheduler): Promise<string> {
