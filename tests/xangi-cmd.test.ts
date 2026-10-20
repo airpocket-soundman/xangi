@@ -1,3 +1,4 @@
+import { runToolCommand } from '../src/cli/tool-command.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'http';
 import { spawn } from 'child_process';
@@ -267,7 +268,12 @@ describe('xangi tool canonical CLI and compatibility shim', () => {
  * 修正された。`XANGI_CHANNEL_ID` 優先のフォールバック順が退行しないこと
  * を保証する。
  */
-describe('xangi-cmd CLI channelId completion', () => {
+describe('tool dispatcher context and flags', () => {
+  // The canonical/shim tests above cover process wiring. Context combinations
+  // exercise the real dispatcher and HTTP request without another CLI boot.
+  const dispatch = (args: string[], env: Record<string, string> = {}) =>
+    runToolCommand(args, { env: { XANGI_TOOL_SERVER: mockUrl, ...env } });
+
   beforeAll(() => {
     setMockResponse({
       status: 200,
@@ -276,7 +282,7 @@ describe('xangi-cmd CLI channelId completion', () => {
   });
 
   it('uses XANGI_CHANNEL_ID when set', async () => {
-    await runCli(['discord_history'], {
+    await dispatch(['discord_history'], {
       XANGI_CHANNEL_ID: '111',
       XANGI_DEFAULT_CHANNEL: '',
     });
@@ -284,7 +290,7 @@ describe('xangi-cmd CLI channelId completion', () => {
   });
 
   it('falls back to XANGI_DEFAULT_CHANNEL when XANGI_CHANNEL_ID is unset', async () => {
-    await runCli(['discord_history'], {
+    await dispatch(['discord_history'], {
       XANGI_CHANNEL_ID: '',
       XANGI_DEFAULT_CHANNEL: '222',
     });
@@ -292,7 +298,7 @@ describe('xangi-cmd CLI channelId completion', () => {
   });
 
   it('prefers XANGI_CHANNEL_ID over XANGI_DEFAULT_CHANNEL when both set', async () => {
-    await runCli(['discord_history'], {
+    await dispatch(['discord_history'], {
       XANGI_CHANNEL_ID: '111',
       XANGI_DEFAULT_CHANNEL: '222',
     });
@@ -300,7 +306,7 @@ describe('xangi-cmd CLI channelId completion', () => {
   });
 
   it('sends empty context when neither env var is set', async () => {
-    await runCli(['discord_history'], {
+    await dispatch(['discord_history'], {
       XANGI_CHANNEL_ID: '',
       XANGI_DEFAULT_CHANNEL: '',
     });
@@ -308,19 +314,19 @@ describe('xangi-cmd CLI channelId completion', () => {
   });
 
   it('uses the same models command name in the CLI and tool server', async () => {
-    await runCli(['models', '--backend', 'codex']);
+    await dispatch(['models', '--backend', 'codex']);
     expect(lastRequest.command).toBe('models');
     expect(lastRequest.flags).toEqual({ backend: 'codex' });
   });
 
   it('forwards positional help topic to the tool server', async () => {
-    await runCli(['help', 'schedule_add']);
+    await dispatch(['help', 'schedule_add']);
     expect(lastRequest.command).toBe('help');
     expect(lastRequest.flags).toEqual({ topic: 'schedule_add' });
   });
 
   it('passes next-turn model selection and current channel context', async () => {
-    await runCli(['models', '--backend', 'codex', '--use', 'gpt-test', '--effort', 'high'], {
+    await dispatch(['models', '--backend', 'codex', '--use', 'gpt-test', '--effort', 'high'], {
       XANGI_CHANNEL_ID: 'web-chat:test',
     });
     expect(lastRequest.command).toBe('models');
@@ -329,7 +335,7 @@ describe('xangi-cmd CLI channelId completion', () => {
   });
 
   it('passes runtime settings with channel and platform context', async () => {
-    await runCli(
+    await dispatch(
       ['runtime_settings', '--name', 'autoreply', '--action', 'set', '--value', 'on'],
       { XANGI_CHANNEL_ID: 'C123', XANGI_PLATFORM: 'slack' }
     );

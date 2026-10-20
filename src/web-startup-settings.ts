@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'dotenv';
+import { resolveEnvFilePath } from './env-file.js';
 import { updateEnvKeyValue } from './env-persist.js';
 import { resolveAppLayout } from './installer/layout.js';
 import { SECRET_FIELDS, validateSettingValue } from './cli/settings-cmd.js';
@@ -35,6 +36,17 @@ interface Definition extends Omit<WebStartupSetting, 'value' | 'applyMode'> {
 }
 
 const DEFINITIONS: Definition[] = [
+  {
+    group: 'general',
+    groupLabel: '全般',
+    key: 'WEB_CHAT_PORT',
+    label: 'Web Chat ポート',
+    description: 'Web ChatとHTTP連携の待受ポートです。再起動後は新しいポートへ接続してください。',
+    type: 'integer',
+    defaultValue: '18888',
+    min: 1,
+    max: 65535,
+  },
   {
     group: 'general',
     groupLabel: '全般',
@@ -592,7 +604,7 @@ const DEFINITIONS: Definition[] = [
 
 function envFileValues(): Record<string, string> {
   try {
-    return parse(readFileSync(process.env.XANGI_ENV_PATH || join(process.cwd(), '.env')));
+    return parse(readFileSync(resolveEnvFilePath()));
   } catch {
     return {};
   }

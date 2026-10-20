@@ -1,3 +1,4 @@
+import { ensureManagedEnv, managedHealthUrl } from '../installer/managed-env.js';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile, rm, writeFile } from 'node:fs/promises';
@@ -67,6 +68,8 @@ export async function executeManagedUpdate(
   dependencies: ManagedCommandDependencies = {}
 ): Promise<UpdateResult> {
   const runtime = await resolveManagedRuntime(flags, dependencies);
+  ensureManagedEnv(runtime.layout.configFile);
+  const healthUrl = managedHealthUrl(runtime.layout.configFile);
   const manifestUrl = await resolveManifestUrl(flags, runtime.layout);
   const manifest = await (dependencies.fetchManifest ?? fetchJson)(manifestUrl);
   const updater = new Updater({
@@ -75,7 +78,7 @@ export async function executeManagedUpdate(
     download: dependencies.download ?? downloadBytes,
     extractArtifact: dependencies.extractArtifact ?? extractTarGzip,
     service: runtime.service,
-    healthCheck: dependencies.healthCheck ?? checkLocalHealth,
+    healthCheck: dependencies.healthCheck ?? ((signal) => checkLocalHealth(signal, healthUrl)),
     healthTimeoutMs: dependencies.healthTimeoutMs,
     healthRetryIntervalMs: dependencies.healthRetryIntervalMs,
   });
@@ -335,9 +338,9 @@ function validateReleaseType(line: string): void {
   }
 }
 
-async function checkLocalHealth(signal: AbortSignal): Promise<boolean> {
+async function checkLocalHealth(signal: AbortSignal, url: string): Promise<boolean> {
   try {
-    const response = await fetch('http://127.0.0.1:18888/health', { signal });
+    const response = await fetch(url, { signal });
     return response.ok;
   } catch (error) {
     if (signal.aborted) throw error;

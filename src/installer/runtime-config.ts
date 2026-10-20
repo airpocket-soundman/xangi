@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { ensureManagedEnv } from './managed-env.js';
+import { loadRuntimeEnvFile } from '../env-file.js';
 import { pathToFileURL } from 'node:url';
 import { parseSetupConfig } from '../setup/schema.js';
 
@@ -53,6 +55,14 @@ export async function runConfiguredRuntime(
   entrypoint: string,
   importModule: (url: string) => Promise<unknown> = (url) => import(url)
 ): Promise<void> {
+  const envPath = ensureManagedEnv(configPath);
+  process.env.XANGI_INSTALLATION_KIND = 'managed';
+  process.env.XANGI_ENV_PATH = envPath;
+  loadRuntimeEnvFile();
+  // Pin these after .env loading so advanced settings cannot redirect setup/state.
+  process.env.XANGI_ENV_PATH = envPath;
+  process.env[SETUP_CONFIG_PATH_ENV] = configPath;
+  process.env[SETUP_STATE_DIR_ENV] = stateDir;
   Object.assign(process.env, await loadSetupRuntimeEnv(configPath, stateDir));
   await importModule(pathToFileURL(entrypoint).href);
 }

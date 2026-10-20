@@ -1,21 +1,6 @@
 import { readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
-
-/**
- * .env ファイルのパスを解決する。
- *
- * 優先順位:
- * 1. `XANGI_ENV_PATH` 環境変数 (明示的な指定)
- * 2. `process.cwd() + '/.env'` (デフォルト)
- *
- * Docker 環境では env vars は `env_file` ディレクティブで注入されるが、
- * `.env` ファイル自体は `/app/.env` に存在しないことが多い。永続化を有効に
- * したい場合は `XANGI_ENV_PATH=/workspace/.env` のように volume mount された
- * path を指定する。
- */
-export function resolveEnvFilePath(): string {
-  return process.env.XANGI_ENV_PATH || join(process.cwd(), '.env');
-}
+import { resolveEnvFilePath } from './env-file.js';
+export { resolveEnvFilePath } from './env-file.js';
 
 /** `.env` 更新結果 */
 export interface UpdateEnvResult {

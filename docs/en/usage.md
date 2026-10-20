@@ -230,6 +230,8 @@ Monitor groups Sessions into `Working` and `Completed` without exposing the inte
 
 Monitor combines running and input-waiting conversations in Working, with a separate activity label on each card. Complete / Back to working buttons and desktop drag-and-drop switch the same Session between columns; Undo reverses the latest individual change. Mobile uses large tap controls. Running Sessions cannot be completed. Reopening (`POST /api/sessions/:id/reopen`) preserves the Session and history without starting a model turn. It rejects missing Sessions (404), scheduler runs (409), and another active Session in the same context (409), rather than replacing that conversation. Scheduler history has no manual status controls.
 
+Monitor completion and reopening are handled per card, so other cards remain actionable. Successful changes appear immediately; background list refreshes are coalesced. Duplicate operations on the same card and simultaneous bulk completion are prevented.
+
 The Monitor “Complete all waiting” action submits the selected session IDs to `POST /api/sessions/close-waiting` in one request, persisting changes and notifying subscribers once. Sessions that have started running are skipped; skipped and failed counts are shown in the UI. Conversation history is preserved.
 
 For long, multi-step work, the agent updates a durable plan with the `progress_card` tool. Monitor list cards show the current step and completed-step count; selecting the Session shows every step with textual Pending / Current / Completed states plus an optional note. The card survives page reloads and xangi restarts, and xangi does not infer a percentage. For manual use, check the current contract with `xangi tool help progress_card` instead of guessing flags.
@@ -2255,3 +2257,13 @@ Participating manifests may declare `"startup": {"exclusiveGroup": "gpu", "timeo
 - Omit `startup` to use the manifest default.
 
 Only assign groups to extensions implementing health startup states. Older extensions with no completion signal time out. Configuration applies to subsequent start requests, not initialization already in progress. After timeout, inspect status for the owning extension, wait for it to finish or explicitly stop it, then request start again for blocked extensions. There is no automatic retry.
+
+### Managed settings persistence
+
+Managed macOS installations store advanced settings in `~/Library/Application Support/xangi/config/runtime.env`; Linux/WSL uses `${XDG_CONFIG_HOME:-~/.config}/xangi/runtime.env`. Startup creates an empty file if needed, and the Web startup settings editor writes to it. `WEB_CHAT_PORT=18889` controls the server, the CLI default URL, doctor, and installation health checks. Restart to apply changes. Explicit CLI URLs still take precedence.
+
+There is no automatic import from release-local `.env` files or LaunchAgents. Configure advanced settings in `runtime.env`; updates and autostart regeneration leave this file unchanged.
+
+Setup-owned values in `xangi.json` (backend, configured model, workspace, Web Chat enablement/access) and the managed state path override `runtime.env`. Other advanced settings come from `runtime.env`. Connection credentials remain in `config/secrets.json`; channel settings remain in `state/settings.json`. Stored secrets fill only environment variables that do not already have a value.
+
+Checkout/Docker startup and settings writes both honor `XANGI_ENV_PATH`, defaulting to the working directory's `.env`. Managed loaders pin that variable to the persistent file above.

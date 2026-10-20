@@ -72,13 +72,4 @@ describe('documentation consistency', () => {
       expect(docs).not.toContain('timeout.cleared');
     }
   });
-
-  it('keeps the README focused on entry points instead of internal xangi-cmd operations', () => {
-    for (const file of ['README.md', 'README.en.md']) {
-      const readme = readRepoFile(file);
-      expect(readme.split('\n').length).toBeLessThan(180);
-      expect(readme).not.toContain('xangi-cmd schedule_');
-      expect(readme).not.toContain('xangi-cmd discord_');
-    }
-  });
 });

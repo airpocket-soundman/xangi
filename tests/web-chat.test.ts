@@ -2293,6 +2293,14 @@ describe('web-chat HTTP API', () => {
           uiAvailable: false,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-dots',
         }),
+        expect.objectContaining({
+          id: 'xangi-stopwatch',
+          displayName: 'xangi-stopwatch',
+          capabilities: ['device.stopwatch'],
+          installed: false,
+          uiAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-stopwatch',
+        }),
       ],
       issues: [],
     });
@@ -2342,6 +2350,7 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-avatar' }),
         expect.objectContaining({ id: 'xangi-terminal' }),
         expect.objectContaining({ id: 'xangi-dots' }),
+        expect.objectContaining({ id: 'xangi-stopwatch' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });

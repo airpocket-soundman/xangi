@@ -182,6 +182,20 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-dots',
   },
+  {
+    id: 'xangi-stopwatch',
+    displayName: 'xangi-stopwatch',
+    description: 'StopWatchの本体マイク会話・Agent設定・顔表示',
+    permissions: ['指定USBシリアルまたはTailnet上のStopWatchへ接続'],
+    capabilities: ['device.stopwatch'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-stopwatch',
+  },
 ];
 
 export interface ExtensionSetupRequest {
