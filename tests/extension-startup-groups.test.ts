@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import {
   linkExtension,
   listExtensions,
@@ -121,7 +121,10 @@ it('honors installation overrides and preserves them on relink', async () => {
   expect(links.find((x) => x.id === 'one')?.startup).toBeNull();
   expect(links.find((x) => x.id === 'two')?.startup?.exclusiveGroup).toBe('gpu:1');
   await startAutostartExtensions({ workspace: f.root });
-  await new Promise((resolve) => setTimeout(resolve, 650));
+  await vi.waitFor(async () => expect(await readFile(f.events, 'utf8')).toContain('one:finish'), {
+    timeout: 3000,
+    interval: 20,
+  });
   const events = (await readFile(f.events, 'utf8')).split('\n');
   expect(events.indexOf('two:start')).toBeLessThan(events.indexOf('one:finish'));
 });
@@ -131,9 +134,20 @@ it('deduplicates concurrent starts and cancels queued work when stopped', async 
   const a = await f.add('one', 'gpu', 500);
   const b = await f.add('two', 'gpu');
   const one = runExtensionAction(a.linked, 'start', { workspace: f.root });
+  // Manifest reads are asynchronous: call order alone does not establish ownership.
+  await vi.waitFor(async () => expect(await readFile(f.events, 'utf8')).toContain('one:start'), {
+    timeout: 3000,
+    interval: 20,
+  });
   const duplicate = runExtensionAction(a.linked, 'start', { workspace: f.root });
   const two = runExtensionAction(b.linked, 'start', { workspace: f.root });
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await vi.waitFor(
+    async () =>
+      expect((await runExtensionAction(b.linked, 'status')).detail).toBe(
+        'waiting for startup group gpu'
+      ),
+    { timeout: 3000, interval: 20 }
+  );
   await runExtensionAction(b.linked, 'stop');
   await Promise.all([one, duplicate, two]);
   const events = await readFile(f.events, 'utf8');
@@ -176,7 +190,10 @@ it('can retry a blocked group after late initialization finishes without stoppin
   expect((await runExtensionAction(a.linked, 'start', { workspace: f.root })).detail).toContain(
     'timed out'
   );
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await vi.waitFor(async () => expect(await readFile(f.events, 'utf8')).toContain('late:finish'), {
+    timeout: 3000,
+    interval: 20,
+  });
   expect((await runExtensionAction(b.linked, 'start', { workspace: f.root })).detail).not.toContain(
     'blocked'
   );
@@ -187,13 +204,21 @@ it('cancels initialization and queued starts during host shutdown', async () => 
   const f = await setup();
   const a = await f.add('one', 'gpu', 60_000);
   const b = await f.add('two', 'gpu');
-  const runs = [
-    runExtensionAction(a.linked, 'start', { workspace: f.root }),
-    runExtensionAction(b.linked, 'start', { workspace: f.root }),
-  ];
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  const one = runExtensionAction(a.linked, 'start', { workspace: f.root });
+  await vi.waitFor(async () => expect(await readFile(f.events, 'utf8')).toContain('one:start'), {
+    timeout: 3000,
+    interval: 20,
+  });
+  const two = runExtensionAction(b.linked, 'start', { workspace: f.root });
+  await vi.waitFor(
+    async () =>
+      expect((await runExtensionAction(b.linked, 'status')).detail).toBe(
+        'waiting for startup group gpu'
+      ),
+    { timeout: 3000, interval: 20 }
+  );
   await stopManagedExtensions();
-  await Promise.all(runs);
+  await Promise.all([one, two]);
   expect(await readFile(f.events, 'utf8')).not.toContain('two:start');
   expect((await runExtensionAction(a.linked, 'status')).running).toBe(false);
 });

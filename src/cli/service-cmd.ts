@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { arch, homedir, platform } from 'os';
@@ -95,9 +95,33 @@ function runPm2(
   };
 }
 
-function checkoutRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.ProcessEnv {
+export function checkoutRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.ProcessEnv {
+  const dir = projectDir(flags);
+  const configChoice = readDotEnvValue(dir, SETUP_CONFIG_PATH_ENV);
+  const stateChoice = readDotEnvValue(dir, SETUP_STATE_DIR_ENV);
+  const localEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    XANGI_INSTALLATION_KIND: 'checkout',
+    XANGI_ENV_PATH: '',
+    [SETUP_CONFIG_PATH_ENV]: '',
+    [SETUP_STATE_DIR_ENV]: '',
+  };
+  const name = stringFlag(flags, 'name');
+  if (name) localEnv.XANGI_PROCESS_NAME = name;
+  if (configChoice !== undefined || stateChoice !== undefined) {
+    // The target checkout owns this pair, including an explicit empty opt-out.
+    // Do not combine one target value with a setup inherited from another bot.
+    localEnv[SETUP_CONFIG_PATH_ENV] = configChoice ?? '';
+    localEnv[SETUP_STATE_DIR_ENV] = stateChoice ?? '';
+    if (Boolean(configChoice) !== Boolean(stateChoice)) {
+      throw new Error(
+        'XANGI_SETUP_CONFIG_PATH and XANGI_SETUP_STATE_DIR must be provided together'
+      );
+    }
+    return localEnv;
+  }
   const currentPlatform = platform();
-  if (currentPlatform !== 'darwin' && currentPlatform !== 'linux') return process.env;
+  if (currentPlatform !== 'darwin' && currentPlatform !== 'linux') return localEnv;
   const layout = resolveAppLayout({
     platform: currentPlatform,
     arch: arch(),
@@ -106,21 +130,23 @@ function checkoutRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.Pro
     xdgConfigHome: process.env.XDG_CONFIG_HOME,
     xdgStateHome: process.env.XDG_STATE_HOME,
   });
-  if (!existsSync(layout.configFile)) return process.env;
-  const dir = projectDir(flags);
+  if (!existsSync(layout.configFile)) return localEnv;
   const isCheckout = existsSync(join(dir, '.git'));
   const explicitStateDir =
     readDotEnvValue(dir, 'DATA_DIR') || (isCheckout ? undefined : process.env.DATA_DIR);
   const setup = parseSetupConfig(JSON.parse(readFileSync(layout.configFile, 'utf8')) as unknown);
+  const ownWorkspace = readDotEnvValue(dir, 'WORKSPACE_PATH');
+  if (isCheckout && ownWorkspace && resolve(dir, ownWorkspace) !== resolve(setup.workspacePath)) {
+    // A shared setup for a different workspace must never select this bot's runtime.
+    return localEnv;
+  }
   const stateDir =
     explicitStateDir || (isCheckout ? join(setup.workspacePath, '.xangi') : layout.stateDir);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...localEnv,
     [SETUP_CONFIG_PATH_ENV]: layout.configFile,
     [SETUP_STATE_DIR_ENV]: stateDir,
   };
-  const name = stringFlag(flags, 'name');
-  if (name) env.XANGI_PROCESS_NAME = name;
   return env;
 }
 

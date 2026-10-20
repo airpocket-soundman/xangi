@@ -145,6 +145,7 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 - [xangi-avatar](https://github.com/karaage0703/xangi-avatar) - A browser-based 2D avatar for voice conversations, screen sharing, and OBS
 - [xangi-terminal](https://github.com/karaage0703/xangi-terminal) - A browser terminal with direct shell access and natural-language command suggestions
 - [xangi-dots](https://github.com/karaage0703/xangi-dots) - Bidirectional requests, responses, file transfers, and progress notifications with Dots
+- [xangi-stopwatch](https://github.com/karaage0703/xangi-stopwatch) - Voice conversations through the built-in microphone, screen, and speaker over USB or Tailscale
 
 ## Related projects
 

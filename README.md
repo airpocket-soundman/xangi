@@ -145,6 +145,7 @@ Web UIの「設定」では全ランタイム設定と日常運用向けの起�
 - [xangi-avatar](https://github.com/karaage0703/xangi-avatar) - 音声会話・画面共有・OBSに対応するブラウザ2Dアバター
 - [xangi-terminal](https://github.com/karaage0703/xangi-terminal) - ブラウザからシェルを操作し、自然言語でコマンドを提案するターミナル
 - [xangi-dots](https://github.com/karaage0703/xangi-dots) - Dotsとの双方向の依頼・回答・ファイル転送、進捗通知
+- [xangi-stopwatch](https://github.com/karaage0703/xangi-stopwatch) - 本体マイク・画面・スピーカーでの会話、USB・Tailscale接続
 
 ## 関連プロジェクト
 

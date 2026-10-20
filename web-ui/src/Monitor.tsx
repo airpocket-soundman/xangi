@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppTopbar } from './AppTopbar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { sessionPath } from './sessionPermalink';
+import { coalesceRefresh } from './monitorRefresh';
 
 export interface MonitorActivityHistory {
   state: string;
@@ -540,7 +541,8 @@ export function Monitor() {
   const [updatedAt, setUpdatedAt] = useState<number>();
   const [clock, setClock] = useState(Date.now());
   const [source, setSource] = useState('source --');
-  const [closingId, setClosingId] = useState('');
+  const [closingIds, setClosingIds] = useState<Set<string>>(new Set());
+  const pendingActions = useRef(new Set<string>());
   const [undoAction, setUndoAction] = useState<{
     session: MonitorSession;
     title: string;
@@ -619,7 +621,8 @@ export function Monitor() {
     setOnline(true);
   }, []);
 
-  const loadSessions = useCallback(async () => {
+  const fetchSessions = useCallback(async () => {
+    if (pendingActions.current.size > 0 || actionInFlight.current) return;
     const sequence = ++loadSequenceRef.current;
     const loadLifecycle = async (lifecycle: 'open' | 'closed') => {
       const collected: MonitorSession[] = [];
@@ -657,11 +660,14 @@ export function Monitor() {
     }
   }, [applySnapshot, timeRange]);
 
+  const loadSessions = useMemo(() => coalesceRefresh(fetchSessions), [fetchSessions]);
+
   const changeSessionState = useCallback(
     async (session: MonitorSession, reopen: boolean, undo = false) => {
-      if (actionInFlight.current) return;
-      actionInFlight.current = true;
-      setClosingId(session.id);
+      if (actionInFlight.current || pendingActions.current.has(session.id)) return;
+      pendingActions.current.add(session.id);
+      setClosingIds(new Set(pendingActions.current));
+      ++loadSequenceRef.current;
       setActionError('');
       try {
         const response = await fetch(
@@ -679,7 +685,21 @@ export function Monitor() {
         setUndoAction(
           undo ? null : { session, title: session.title || session.id, reopen: !reopen }
         );
-        await loadSessions();
+        // Invalidate snapshots started before this mutation and reflect its acknowledgement.
+        ++loadSequenceRef.current;
+        const nextSessions = sessionsRef.current.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                lifecycle: reopen ? ('open' as const) : ('closed' as const),
+                closedAt: reopen ? undefined : new Date().toISOString(),
+                closeReason: reopen ? undefined : 'monitor',
+                updatedAt: new Date().toISOString(),
+              }
+            : item
+        );
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
         window.requestAnimationFrame(() => {
           if (!undo) undoButtonRef.current?.focus({ preventScroll: true });
           else
@@ -690,8 +710,9 @@ export function Monitor() {
       } catch (cause) {
         setActionError(cause instanceof Error ? cause.message : String(cause));
       } finally {
-        actionInFlight.current = false;
-        setClosingId('');
+        pendingActions.current.delete(session.id);
+        setClosingIds(new Set(pendingActions.current));
+        void loadSessions().catch(() => setOnline(false));
       }
     },
     [loadSessions]
@@ -703,7 +724,7 @@ export function Monitor() {
   );
 
   const closeAllWaitingSessions = useCallback(async () => {
-    if (actionInFlight.current) return;
+    if (actionInFlight.current || pendingActions.current.size > 0) return;
     const targets = sessionsRef.current.filter(
       (session) => monitorLane(session) === 'working' && !isRunning(session)
     );
@@ -712,6 +733,7 @@ export function Monitor() {
       return;
     }
     actionInFlight.current = true;
+    ++loadSequenceRef.current;
     setUndoAction(null);
     setClosingAllWaiting(true);
     setActionError('');
@@ -727,7 +749,24 @@ export function Monitor() {
       const failed = data.results.filter(
         (result) => result.status === 'failed' || result.status === 'not_found'
       ).length;
-      await loadSessions();
+      const closedIds = new Set(
+        data.results
+          .filter((result) => result.status === 'closed' || result.status === 'already_closed')
+          .map((result) => result.id)
+      );
+      ++loadSequenceRef.current;
+      const nextSessions = sessionsRef.current.map((session) =>
+        closedIds.has(session.id)
+          ? {
+              ...session,
+              lifecycle: 'closed' as const,
+              closedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }
+          : session
+      );
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
       const notices = [];
       if (running > 0) notices.push(`実行中の${running}件は完了せずに残しました`);
       if (failed > 0) notices.push(`${targets.length}件中${failed}件を変更できませんでした`);
@@ -738,6 +777,7 @@ export function Monitor() {
       setCloseAllWaitingOpen(false);
       actionInFlight.current = false;
       setClosingAllWaiting(false);
+      void loadSessions().catch(() => setOnline(false));
     }
   }, [closingAllWaiting, loadSessions]);
 
@@ -928,7 +968,7 @@ export function Monitor() {
         <button
           type="button"
           className="monitor-bulk-close"
-          disabled={waitingSessions.length === 0 || closingAllWaiting || Boolean(closingId)}
+          disabled={waitingSessions.length === 0 || closingAllWaiting || closingIds.size > 0}
           onClick={() => setCloseAllWaitingOpen(true)}
         >
           入力待ちをすべて完了
@@ -1121,12 +1161,14 @@ export function Monitor() {
                     <button
                       type="button"
                       className="monitor-detail-session-close"
-                      disabled={Boolean(closingId) || closingAllWaiting || isRunning(selected)}
+                      disabled={
+                        closingIds.has(selected.id) || closingAllWaiting || isRunning(selected)
+                      }
                       onClick={() =>
                         void changeSessionState(selected, monitorLane(selected) === 'completed')
                       }
                     >
-                      {closingId === selected.id
+                      {closingIds.has(selected.id)
                         ? '変更中…'
                         : monitorLane(selected) === 'completed'
                           ? '↩ 作業中へ'
@@ -1276,7 +1318,7 @@ export function Monitor() {
             <button
               type="button"
               ref={undoButtonRef}
-              disabled={Boolean(closingId) || closingAllWaiting}
+              disabled={closingIds.has(undoAction.session.id) || closingAllWaiting}
               onClick={() => {
                 const session = undoAction.session;
                 if (session) void changeSessionState(session, undoAction.reopen, true);
@@ -1358,7 +1400,7 @@ export function Monitor() {
                           draggable={
                             !isRunning(session) &&
                             session.scope !== 'scheduler' &&
-                            !closingId &&
+                            !closingIds.has(session.id) &&
                             !closingAllWaiting
                           }
                           onDragStart={(event) => {
@@ -1463,7 +1505,9 @@ export function Monitor() {
                             <div className="monitor-card-actions">
                               <button
                                 type="button"
-                                disabled={Boolean(closingId) || closingAllWaiting || running}
+                                disabled={
+                                  closingIds.has(session.id) || closingAllWaiting || running
+                                }
                                 title={running ? '実行が終わってから完了にできます' : undefined}
                                 data-state-session={session.id}
                                 aria-label={`${session.title || session.id}を${lane.value === 'completed' ? '作業中へ戻す' : '完了にする'}`}
@@ -1471,7 +1515,7 @@ export function Monitor() {
                                   void changeSessionState(session, lane.value === 'completed')
                                 }
                               >
-                                {closingId === session.id
+                                {closingIds.has(session.id)
                                   ? '変更中…'
                                   : lane.value === 'completed'
                                     ? '↩ 作業中へ'

@@ -44,6 +44,7 @@ import { runWithBubbleEvents } from './bubble-events-runner.js';
 import { readTurnHistory, type TurnHistoryEntry } from './activity-store.js';
 import { prefetchSlackHistory } from './slack-history-prefetch.js';
 import { StreamSession } from './stream-session.js';
+import { SlackProgressUpdates } from './slack-progress-updates.js';
 import { registerStreamFinalizer } from './stream-finalizer.js';
 import { formatAgentErrorForUser } from './errors.js';
 import { markdownToSlackMrkdwn } from './slack-mrkdwn.js';
@@ -569,6 +570,7 @@ type SlackProcessingEntry = {
   messageTs: string;
   threadTs?: string;
   currentText: string;
+  updates?: SlackProgressUpdates;
   intervalId?: NodeJS.Timeout;
   /** タイムアウト UI が表示開始された時刻 (最小表示時間判定用) */
   startedAt?: number;
@@ -1780,6 +1782,7 @@ export async function processMessage(
   };
 
   let messageTs = '';
+  const progressUpdates = new SlackProgressUpdates();
   // プロセス終了時に実行中表示を「中断」表示で確定させる finalizer の登録解除関数 (issue #293)
   let unregisterStreamFinalizer: (() => void) | undefined;
   // appSessionId は xangi 内部 (sessions.json) のセッション ID。
@@ -1909,21 +1912,23 @@ export async function processMessage(
         // 1 秒ごとの chat.update でタイムアウト UI を消さないよう、
         // 最新の timeout 状態を渡して blocks を再生成する
         const timeoutInfo = getSlackTimeoutInfoFor(agentRunner, runKey);
-        await client.chat
-          .update({
-            channel: channelId,
-            ts: messageTs,
-            text,
-            ...(showButtons && {
-              blocks: [
-                { type: 'section' as const, text: { type: 'mrkdwn' as const, text } },
-                ...createSlackProcessingBlocks(timeoutInfo),
-              ],
-            }),
-          })
-          .catch((err) => {
-            console.error('[slack] Failed to update message:', err?.message);
-          });
+        await progressUpdates.update(() =>
+          client.chat
+            .update({
+              channel: channelId,
+              ts: messageTs,
+              text,
+              ...(showButtons && {
+                blocks: [
+                  { type: 'section' as const, text: { type: 'mrkdwn' as const, text } },
+                  ...createSlackProcessingBlocks(timeoutInfo),
+                ],
+              }),
+            })
+            .catch((err) => {
+              console.error('[slack] Failed to update message:', err?.message);
+            })
+        );
       },
     });
 
@@ -1956,6 +1961,7 @@ export async function processMessage(
         messageTs,
         threadTs,
         currentText: initialText,
+        updates: progressUpdates,
         startedAt: Date.now(),
       });
     }
@@ -1964,6 +1970,7 @@ export async function processMessage(
     // (スピナー / 本文 + ▌) を放置せず「中断」表示で確定させる (issue #293)
     unregisterStreamFinalizer = registerStreamFinalizer(async () => {
       session.finish();
+      await progressUpdates.finish();
       if (!messageTs) return;
       const note = '⏸ プロセス再起動により中断されました';
       const lastText = stripReplySuggestionMarkup(session.lastText);
@@ -1998,6 +2005,7 @@ export async function processMessage(
         );
       } finally {
         session.finish();
+        await progressUpdates.finish();
       }
       result = streamResult.result;
       newSessionId = streamResult.sessionId;
@@ -2031,6 +2039,7 @@ export async function processMessage(
         structuredAttachments = runResult.attachments;
       } finally {
         session.finish();
+        await progressUpdates.finish();
       }
     }
 
@@ -2187,6 +2196,7 @@ export async function processMessage(
         });
     }
   } catch (error) {
+    await progressUpdates.finish();
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (errorMsg.includes('Request cancelled by user')) {
       console.log('[slack] Request cancelled by user');
@@ -2391,18 +2401,21 @@ export async function refreshSlackProcessingBlocks(
   const info = getSlackTimeoutInfoFor(agentRunner, runKey);
   if (!info) return;
   try {
-    await client.chat.update({
-      channel: entry.channelId,
-      ts: entry.messageTs,
-      text: entry.currentText,
-      blocks: [
-        {
-          type: 'section' as const,
-          text: { type: 'mrkdwn' as const, text: entry.currentText },
-        },
-        ...createSlackProcessingBlocks(info),
-      ],
-    });
+    const render = () =>
+      client.chat.update({
+        channel: entry.channelId,
+        ts: entry.messageTs,
+        text: entry.currentText,
+        blocks: [
+          {
+            type: 'section' as const,
+            text: { type: 'mrkdwn' as const, text: entry.currentText },
+          },
+          ...createSlackProcessingBlocks(info),
+        ],
+      });
+    if (entry.updates) await entry.updates.update(render);
+    else await render();
   } catch (e: unknown) {
     console.warn(
       '[slack] Failed to refresh processing blocks:',

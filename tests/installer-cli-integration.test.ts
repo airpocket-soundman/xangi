@@ -4,7 +4,7 @@ import { mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installCmd, requireSetupConfiguration } from '../src/cli/install-cmd.js';
 import {
   extractTarGzip,
@@ -21,6 +21,7 @@ import type { ReleaseManifest, UnsignedReleaseManifest } from '../src/installer/
 const roots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   const { rm } = await import('node:fs/promises');
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -104,6 +105,30 @@ function fakeUpdateScheduler(installed = false): UpdateSchedulerAdapter & {
 }
 
 describe('managed installer CLI integration', () => {
+  it('uses the persisted port for the default install health check', async () => {
+    const { layout, manifest, artifact, verifier } = await fixture();
+    await mkdir(layout.configDir, { recursive: true });
+    await writeFile(join(layout.configDir, 'runtime.env'), 'WEB_CHAT_PORT=18889\n');
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    await installCmd(
+      { manifest: 'https://releases.example/manifest.json' },
+      {
+        layout,
+        manifestVerifier: verifier,
+        fetchManifest: async () => manifest,
+        download: async () => artifact,
+        extractArtifact: async (_bytes, destination) => {
+          await writeFile(join(destination, 'version'), '1');
+        },
+        service: fakeService(),
+        updateScheduler: fakeUpdateScheduler(),
+        ensureConfigured: async () => undefined,
+        initializeWorkspace: async () => ({ workspacePath: layout.workspaceDir }),
+      }
+    );
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:18889/health', expect.anything());
+  });
+
   it.each([
     ['darwin', 'arm64', '.nvm/versions/node/v22.16.0/bin/codex'],
     ['linux', 'x64', '.nvm/versions/node/v24.18.0/bin/codex'],

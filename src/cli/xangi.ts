@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { ensureManagedEnv } from '../installer/managed-env.js';
+import { loadRuntimeEnvFile } from '../env-file.js';
+import { resolveWebChatPort } from '../web-endpoint-config.js';
 /**
  * xangi — user-facing terminal client.
  *
@@ -69,13 +72,26 @@ const DEFAULT_URL = 'http://127.0.0.1:18888';
 const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function configuredWebChatPort(): number {
-  const value = Number.parseInt(process.env.WEB_CHAT_PORT ?? '18888', 10);
-  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : 18888;
+  return resolveWebChatPort().port;
 }
 
 function loadEnvFiles(): void {
   if (process.env.XANGI_SKIP_ENV_FILE === 'true') return;
 
+  if (process.env.XANGI_INSTALLATION_KIND === 'managed') {
+    const layout = resolveAppLayout({
+      platform: platform(),
+      arch: arch(),
+      homeDir: homedir(),
+      xdgDataHome: process.env.XDG_DATA_HOME,
+      xdgConfigHome: process.env.XDG_CONFIG_HOME,
+      xdgStateHome: process.env.XDG_STATE_HOME,
+    });
+    const path = ensureManagedEnv(layout.configFile);
+    process.env.XANGI_ENV_PATH = path;
+    loadRuntimeEnvFile({ quiet: true });
+    return;
+  }
   const candidates: string[] = [];
   if (process.env.XANGI_ENV_PATH) candidates.push(process.env.XANGI_ENV_PATH);
   if (process.env.XANGI_DIR) candidates.push(join(process.env.XANGI_DIR, '.env'));
@@ -311,7 +327,7 @@ function loadConfig(flags: Record<string, string | boolean>): CliConfig {
     process.env.XANGI_URL ||
     process.env.XANGI_CLI_URL ||
     fileConfig.url ||
-    DEFAULT_URL;
+    `http://127.0.0.1:${configuredWebChatPort()}`;
   const token =
     stringFlag(flags, 'token') ||
     process.env.XANGI_TOKEN ||

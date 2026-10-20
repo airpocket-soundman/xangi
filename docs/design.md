@@ -92,6 +92,8 @@ flowchart LR
 
 ### Slack 統合（slack.ts）
 
+- 通常メッセージの途中表示・ツール履歴・残り時間の更新は `slack-progress-updates.ts` でメッセージごとに直列化し、待機中の更新は最新のものへ集約する。完了・停止・エラー・再起動時は新しい途中更新を止め、送信中の更新が終了してから最終表示を送る。これにより、遅延した途中更新が最終回答を上書きしない。
+
 `@slack/bolt` ベース。
 
 - 通常応答の描画時に最新本文を processing 状態へ保存し、10秒ごとの残り時間更新でも同じ本文を使う。途中コメントやツール表示を開始時の「0秒」へ戻さない。
@@ -136,6 +138,8 @@ flowchart LR
 - 完了Sessionの期間は`Chat`・`Web`・`Schedule`とは独立して24時間・7日・30日・すべてから選択し、既定を24時間とする
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
 - `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを作業中・完了の2列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は作業中・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、作業中カードの状態ラベルと色付きドットで示す。カードと詳細から`POST /api/sessions/:id/close`で完了、`POST /api/sessions/:id/reopen`で同じSessionを作業中へ戻せる。個別切替はUndoとPCドラッグに対応し、実行中は完了を拒否する。reopenはAIを起動せず、履歴・provider文脈を保持してactiveByContextを復元し、保存後に変更を通知する。同じcontextに別のアクティブSessionがある場合とscheduler履歴は409で拒否する。agentは複数工程の長い作業で`progress_card` toolを明示的に呼び、Session内の計画を全置換する。計画は`pending`・`in_progress`・`completed`と任意noteを`DATA_DIR/sessions.json`へ保存し、最大1件の`in_progress`を許す。Monitor一覧カードは現在工程と完了工程数を表示し、詳細は全工程を「未着手／現在／完了」の文字ラベル付きで表示する。いずれも進捗率は推定しない。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量と進捗カードは保存後にSSE snapshotへ反映する。Chatの各ペイン下部にもmodel・現在有効なrunner cwd・context使用量をstatuslineとして表示する。cwdは各snapshot作成時にSessionのworkspace snapshot、なければ現在のdefault workdirから解決し、毎turnのruntime contextと同じrunner workdirを指す。`GET /api/sessions/stream`でターン境界・context・進捗のsnapshotを受け取り、セッション一覧を定期ポーリングしない
+
+Monitorの個別の完了・再開操作はカードごとに処理するため、別のカードを続けて操作できます。API成功後すぐ対象カードを更新し、一覧再取得はバックグラウンドでまとめます。処理中の同じカードへの重複操作と、一括完了との同時操作は防止します。
 
 Monitorの「入力待ちをすべて完了」は、対象IDを `POST /api/sessions/close-waiting` に一括送信し、保存と変更通知を1回にまとめます。実行開始済みのSessionは除外し、変更できなかった件数を画面に表示します。履歴は保持されます。
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
@@ -329,7 +333,7 @@ xangiがAI CLIに注入するシステムプロンプトを管理：
 毎ターン、ユーザープロンプトの先頭に「いま観測されている cwd と git リポ情報」を 1 行で差し込む：
 
 ```
-[runtime] cwd=/home/karaage/borot/tmp/xangi-stackchan-dev repo=xangi-stackchan-dev@feat/k151-step-b
+[runtime] cwd=/home/user/workspace repo=workspace@main
 ```
 
 - **目的**: Bash tool の cwd 持続はメッセージ受信を跨いで保証されないため、AI が借りリポと本体リポを取り違えて `git push` する事故を構造的に減らす
@@ -1407,3 +1411,9 @@ manifestの任意項目 `startup: { exclusiveGroup: "gpu", timeoutSeconds: 120 }
 HTTP受付の `event: ready` と初期化完了を区別する。参加する拡張はhealthに `startup: { state: "initializing" | "complete" | "failed" }` を返す。complete/failedは初期化処理が終了し、同じリソースを使う次の初期化を開始できることを保証する。機器未接続等で `ready: false` でもcompleteを返せる。failedを報告した後に独自の初期化再試行を始めてはいけない。再初期化はホスト経由のrestartで行う。未知・欠落状態、HTTPエラーは終了と見なさない。
 
 タイムアウト（既定120秒、1〜3600秒）はHTTP受付確立後から計測する。health取得には最大2秒を使う。時間切れでは子プロセスを強制終了せず、そのグループの予約を保持し、後続の起動をblockedとして返す。他グループは進行する。再度startを要求すると、前のプロセスの終了または初期化完了を再確認する。待機中の停止・ホスト終了は未開始の起動を取り消す。起動後の推論メモリや総容量の制限は扱わない。
+
+### 配布版の設定読込
+
+`installer/managed-env.ts` は更新対象外の `config/runtime.env` をmode 0600で排他的に新規作成する。既存ファイルは上書きせず、旧形式の自動移行は行わない。`runtime-config.ts` は同ファイルを読み、内部setup/stateパスを固定してJSON設定を適用してから本体をimportする。本体のdotenv読込後にも同じJSONを再適用し、初期設定と追加設定の優先順位を統一する。`env-file.ts` は本体と設定保存のパス解決を共通化する。更新・診断のhealth URLとCLIの既定URLは保存済みポートを利用する。
+
+checkout・Dockerでは専用`.env`のsetup/state指定（両方空なら共通設定を無効化）を尊重する。配布版の起動とCLIだけが選択済みのsetup/state・envファイル・installation kindを固定する。PM2起動は対象checkoutの明示setupペアを優先し、不完全なペアは停止する。共通setupと専用WORKSPACE_PATHが異なる場合や共通setupが無い場合は、呼出し元のsetupを引き継がない。

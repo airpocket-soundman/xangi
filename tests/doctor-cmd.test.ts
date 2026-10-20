@@ -45,6 +45,7 @@ describe('collectDoctorChecks', () => {
     );
     await chmod(configPath, 0o600);
 
+    await writeFile(join(homeDir, 'runtime.env'), 'WEB_CHAT_PORT=18889\n');
     const options = {
       homeDir,
       platform: 'darwin',
@@ -56,6 +57,10 @@ describe('collectDoctorChecks', () => {
       fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 200 })),
     };
     const checks = await collectDoctorChecks(options);
+    expect(options.fetchImpl).toHaveBeenCalledWith(
+      'http://127.0.0.1:18889/health',
+      expect.anything()
+    );
     expect(checks).toContainEqual({
       name: 'backend',
       level: 'ok',
@@ -222,11 +227,13 @@ describe('collectDoctorChecks', () => {
         '',
       ].join('\n')
     );
-    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) =>
-      String(input).endsWith('/api/sessions')
-        ? new Response(JSON.stringify({ meta: { workdir: checkoutWorkspace } }), { status: 200 })
-        : new Response('{}', { status: 200 })
-    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (input) =>
+        String(input).endsWith('/api/sessions')
+          ? new Response(JSON.stringify({ meta: { workdir: checkoutWorkspace } }), { status: 200 })
+          : new Response('{}', { status: 200 })
+      );
 
     const checks = await collectDoctorChecks({
       homeDir,

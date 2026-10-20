@@ -1,3 +1,4 @@
+import { runCliInProcess } from './helpers/cli-in-process.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { spawn, spawnSync } from 'child_process';
@@ -196,37 +197,35 @@ exit 0
     return { dir, logFile };
   }
 
+  // Argument variants share one process; process-sensitive cases below retain bin/xangi.
   it.each(['workspace', 'agent', 'team'])('uses one management entrypoint for %s', async (name) => {
-    const result = await runCli([name, 'list'], { XANGI_TOOL_SERVER: serverUrl });
-    expect(result.code).toBe(0);
+    const env = { XANGI_TOOL_SERVER: serverUrl };
+    await runCliInProcess([name, 'list'], env);
     expect(requests.at(-1)?.body).toMatchObject({ command: name, flags: { action: 'list' } });
     const count = requests.length;
-    const duplicate = await runCli(['tool', name, '--action', 'list'], { XANGI_TOOL_SERVER: serverUrl });
-    expect(duplicate.code).toBe(1);
-    expect(duplicate.stderr).toContain(`Use xangi ${name} <action>`);
+    await expect(runCliInProcess(['tool', name, '--action', 'list'], env)).rejects.toThrow(
+      `Use xangi ${name} <action>`
+    );
     expect(requests).toHaveLength(count);
-    const help = await runCli([name, '--help'], { XANGI_TOOL_SERVER: serverUrl });
-    expect(help.code).toBe(0);
+    await runCliInProcess([name, '--help'], env);
     expect(requests.at(-1)?.body).toMatchObject({ command: 'help', flags: { topic: name } });
   });
 
   it('documents managed install and update commands in help', async () => {
-    const result = await runCli(['help']);
-
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain('xangi --version');
-    expect(result.stdout).toContain('xangi install');
-    expect(result.stdout).toContain('xangi rescue');
-    expect(result.stdout).toContain('xangi uninstall');
-    expect(result.stdout).toContain('xangi update');
-    expect(result.stdout).toContain('xangi worker install --pair');
-    expect(result.stdout).not.toContain('notion-sync');
-    expect(result.stdout).toContain('--allow-downgrade');
-    expect(result.stdout).toContain('--purge');
-    expect(result.stdout).toContain('--yes');
-    expect(result.stdout).toContain('setup --apply');
-    expect(result.stdout).toContain('--workspace-mode');
-    expect(result.stdout).not.toContain('--browser');
+    const stdout = await runCliInProcess(['help']);
+    expect(stdout).toContain('xangi --version');
+    expect(stdout).toContain('xangi install');
+    expect(stdout).toContain('xangi rescue');
+    expect(stdout).toContain('xangi uninstall');
+    expect(stdout).toContain('xangi update');
+    expect(stdout).toContain('xangi worker install --pair');
+    expect(stdout).not.toContain('notion-sync');
+    expect(stdout).toContain('--allow-downgrade');
+    expect(stdout).toContain('--purge');
+    expect(stdout).toContain('--yes');
+    expect(stdout).toContain('setup --apply');
+    expect(stdout).toContain('--workspace-mode');
+    expect(stdout).not.toContain('--browser');
   });
 
   it.each([
@@ -235,27 +234,24 @@ exit 0
     ['extension', 'restart', '-h'],
     ['extension', 'restart', 'xangi-studio', '--help'],
   ])('shows extension help without contacting the runtime for %s %s', async (...args) => {
-    const result = await runCli(args, { XANGI_TOOL_SERVER: serverUrl });
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain('xangi extension <start|stop|restart> --all');
+    const stdout = await runCliInProcess(args, { XANGI_TOOL_SERVER: serverUrl });
+    expect(stdout).toContain('xangi extension <start|stop|restart> --all');
     expect(requests).toHaveLength(0);
   });
 
   it.each(['start', 'stop', 'restart'])(
     'requires an ID or --all before %s can reach the runtime',
     async (action) => {
-      const result = await runCli(['extension', action], { XANGI_TOOL_SERVER: serverUrl });
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain('requires an ID or explicit --all');
+      await expect(
+        runCliInProcess(['extension', action], { XANGI_TOOL_SERVER: serverUrl })
+      ).rejects.toThrow('requires an ID or explicit --all');
       expect(requests).toHaveLength(0);
     }
   );
 
   it('forwards an explicit ID or --all and rejects their combination', async () => {
-    const target = await runCli(['extension', 'restart', 'xangi-studio'], {
-      XANGI_TOOL_SERVER: serverUrl,
-    });
-    expect(target.code).toBe(0);
+    const env = { XANGI_TOOL_SERVER: serverUrl };
+    await runCliInProcess(['extension', 'restart', 'xangi-studio'], env);
     expect(requests[0].body).toMatchObject({
       command: 'extension_runtime',
       flags: { action: 'restart', id: 'xangi-studio' },
@@ -263,10 +259,7 @@ exit 0
     expect((requests[0].body as { flags: Record<string, string> }).flags).not.toHaveProperty('all');
 
     requests = [];
-    const all = await runCli(['extension', 'restart', '--all'], {
-      XANGI_TOOL_SERVER: serverUrl,
-    });
-    expect(all.code).toBe(0);
+    await runCliInProcess(['extension', 'restart', '--all'], env);
     expect(requests[0].body).toMatchObject({
       command: 'extension_runtime',
       flags: { action: 'restart', all: 'true' },
@@ -274,11 +267,9 @@ exit 0
     expect((requests[0].body as { flags: Record<string, string> }).flags).not.toHaveProperty('id');
 
     requests = [];
-    const invalid = await runCli(['extension', 'restart', 'xangi-studio', '--all'], {
-      XANGI_TOOL_SERVER: serverUrl,
-    });
-    expect(invalid.code).not.toBe(0);
-    expect(invalid.stderr).toContain('either an ID or --all');
+    await expect(
+      runCliInProcess(['extension', 'restart', 'xangi-studio', '--all'], env)
+    ).rejects.toThrow('either an ID or --all');
     expect(requests).toHaveLength(0);
   });
 
@@ -300,13 +291,10 @@ exit 0
   it.each([['--help'], ['-h'], ['--managed', '--help']])(
     'prints update-specific help without running the updater for %s',
     async (...updateArgs) => {
-      const result = await runCli(['update', ...updateArgs]);
-
-      expect(result.code).toBe(0);
-      expect(result.stderr).toBe('');
-      expect(result.stdout).toContain('Usage:');
-      expect(result.stdout).toContain('xangi update --managed');
-      expect(result.stdout).toContain('service is not restarted automatically');
+      const stdout = await runCliInProcess(['update', ...updateArgs]);
+      expect(stdout).toContain('Usage:');
+      expect(stdout).toContain('xangi update --managed');
+      expect(stdout).toContain('service is not restarted automatically');
     }
   );
 
@@ -326,6 +314,32 @@ exit 0
       expect(result).toEqual({ stdout: `xangi ${expected}\n`, stderr: '', code: 0 });
     }
   );
+
+  it('connects to the port saved outside the managed release directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'xangi-cli-env-'));
+    const configDir = join(root, 'xdg-config/xangi');
+    mkdirSync(configDir, { recursive: true });
+    const port = new URL(serverUrl).port;
+    writeFileSync(
+      join(configDir, 'runtime.env'),
+      `WEB_CHAT_PORT=${port}\nXANGI_INSTALLATION_KIND=checkout\nXANGI_ENV_PATH=/wrong.env\n`
+    );
+    try {
+      const result = await runCli(['sessions'], {
+        XANGI_INSTALLATION_KIND: 'managed',
+        XANGI_SKIP_ENV_FILE: 'false',
+        XDG_CONFIG_HOME: join(root, 'xdg-config'),
+        HOME: root,
+        XANGI_URL: '',
+        XANGI_CLI_URL: '',
+        XANGI_TOKEN: 'test-token',
+      });
+      expect(result.code).toBe(0);
+      expect(requests.some((request) => request.url?.startsWith('/api/sessions'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('prints the active managed release from the current version link', async () => {
     const appRoot = mkdtempSync(join(tmpdir(), 'xangi-cli-version-'));

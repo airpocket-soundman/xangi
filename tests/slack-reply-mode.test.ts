@@ -983,6 +983,55 @@ describe('resolveSlackDeleteReactionTarget', () => {
 });
 
 describe('processMessage', () => {
+  it.each(['stream', 'timeout', 'cancel'])('drains delayed %s edits before the terminal answer', async (mode) => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const firstStarted = new Promise<void>(resolve => { started = resolve; });
+    let pending = false;
+    let finalOvertookProgress = false;
+    let first = true;
+    const update = vi.fn().mockImplementation(async (args) => {
+      if (['完了', '🛑 停止しました'].includes(args.text) && pending) finalOvertookProgress = true;
+      if (first) {
+        first = false;
+        pending = true;
+        started();
+        await gate;
+        pending = false;
+      }
+      return {};
+    });
+    const client = {
+      chat: { postMessage: vi.fn().mockResolvedValue({ ts: 'progress-ts' }), update },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runKey = slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS);
+    const agentRunner = {
+      runStream: vi.fn().mockImplementation(async (_prompt, callbacks) => {
+        if (mode === 'timeout') void refreshSlackProcessingBlocks(client, agentRunner, runKey);
+        else callbacks.onText?.('途中', '途中');
+        await firstStarted;
+        callbacks.onToolUse?.('Bash', { command: 'echo latest' });
+        void refreshSlackProcessingBlocks(client, agentRunner, runKey);
+        setTimeout(release, 20);
+        if (mode === 'cancel') throw new Error('Request cancelled by user');
+        return { result: '完了', sessionId: 'provider-delayed' };
+      }),
+      getTimeoutState: () => ({ active: true, timeoutAt: Date.now() + 60000, maxTimeoutAt: Date.now() + 120000 }),
+    } as unknown as AgentRunner;
+    await processMessageWithoutMinimumDisplayDelay(
+      AUTO_REPLY_CHANNEL, runKey, THREAD_TS, '調査して', 'delayed-request', client, agentRunner,
+      { agent: { config: { workdir: tempDir } }, slack: { streaming: true, showThinking: true, replySuggestions: false } } as Config
+    );
+    expect(finalOvertookProgress).toBe(false);
+    expect(update.mock.calls.at(-1)![0].text).toBe(mode === 'cancel' ? '🛑 停止しました' : '完了');
+    const count = update.mock.calls.length;
+    await refreshSlackProcessingBlocks(client, agentRunner, runKey);
+    expect(update).toHaveBeenCalledTimes(count);
+  });
+
   it.each([true, false])('preserves the latest rendered text on timeout refresh (streaming=%s)', async (streaming) => {
     const update = vi.fn().mockResolvedValue({});
     const client = {
@@ -995,6 +1044,7 @@ describe('processMessage', () => {
       for (const step of ['first', 'second']) {
         if (streaming) callbacks.onText?.(step, `**${step}**`);
         callbacks.onToolUse?.('Bash', { command: `echo ${step}` });
+        await new Promise(resolve => setImmediate(resolve));
         const rendered = update.mock.calls.at(-1)![0];
         expect(rendered.text).toContain(step);
         await refreshSlackProcessingBlocks(client, agentRunner, runKey);

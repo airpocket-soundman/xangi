@@ -1,3 +1,4 @@
+import { managedHealthUrl } from '../installer/managed-env.js';
 import { spawnSync } from 'node:child_process';
 import { access, constants, readFile, realpath, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -402,7 +403,9 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
 
   const healthUrl =
     options.healthUrl ??
-    (checkoutDir ? await checkoutHealthUrl(checkoutDir) : 'http://127.0.0.1:18888/health');
+    (checkoutDir
+      ? await checkoutHealthUrl(checkoutDir)
+      : managedHealthUrl(options.configPath ?? layout.configFile));
   if (configResult.config?.webChatEnabled && configResult.config.webChatAccess === 'tailscale') {
     const port = Number.parseInt(new URL(healthUrl).port || '80', 10);
     checks.push(await (options.tailscaleServeCheck ?? checkTailscaleServe)(port));

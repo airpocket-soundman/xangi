@@ -235,6 +235,8 @@ MonitorはSessionを`作業中`・`完了`の2列に分け、内部のOpen / Clo
 
 Monitorでは実行中と入力待ちを「作業中」にまとめ、カード内の状態ラベルで区別します。各カードの「✓ 完了」「↩ 作業中へ」で確認ダイアログなしに切り替え、直前の変更は「元に戻す」で取り消せます。PCではカードを列間でドラッグしても切り替えられます。スマホではタップ操作を使えます。実行中のカードは完了にできません。「作業中へ」は同じSessionを開き直すだけで、AIを実行しません。同じ会話先に別の作業中Sessionがある場合は置き換えずエラーを表示します。スケジュール実行履歴は手動切替の対象外です。
 
+Monitorの個別の完了・再開操作はカードごとに処理するため、別のカードを続けて操作できます。API成功後すぐ対象カードを更新し、一覧再取得はバックグラウンドでまとめます。処理中の同じカードへの重複操作と、一括完了との同時操作は防止します。
+
 Monitorの「入力待ちをすべて完了」は、対象IDを `POST /api/sessions/close-waiting` に一括送信し、保存と変更通知を1回にまとめます。実行開始済みのSessionは除外し、変更できなかった件数を画面に表示します。履歴は保持されます。
 
 複数工程の長い作業では、agentが`progress_card` toolで計画を更新します。Monitorの一覧カードには現在工程と完了工程数が表示され、Sessionを選ぶと「未着手／現在／完了」の全工程と任意の補足を確認できます。ページ再読込やxangi再起動後も残り、進捗率は表示内容から推定しません。手動利用時は、引数を推測せず`xangi tool help progress_card`で現在の契約を確認してください。
@@ -1055,7 +1057,7 @@ managed extensionの状態は`running`、`healthy`、`ready`を別々に表示�
 
 managed extensionの子processには親xangiの`XANGI_EXTENSION_INSTANCE_ID`が渡ります。Web Chat有効時は`XANGI_EXTENSION_HOST_URL`、イベント配信も有効なら`XANGI_EXTENSION_EVENTS_URL`も渡るため、イベント購読型extensionはportやbind hostを推測せず現在のinstanceへ接続できます。無効なendpointのURLは渡しません。これらは親が所有するruntime contextであり、利用者が`.env`で設定する項目ではありません。
 
-初回起動時も公式catalogのxangi-search、xangi-stackchan、xangi-even-g2、xangi-avatar、xangi-terminal、xangi-dotsが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
+初回起動時も公式catalogのxangi-search、xangi-stackchan、xangi-even-g2、xangi-avatar、xangi-terminal、xangi-dots、xangi-stopwatchが表示されます。候補表示だけではrepositoryを取得・実行せず、「追加」を選んだ後に公開repositoryをcommitへ固定して検証し、専用のsetup会話を開始します。任意の公開GitHub repository URLを入力する導線と、開発用local manifestの設定も引き続き利用できます。
 
 CLIや配備作業で先にlinkされたextensionには、利用可能な状態でも「セットアップ」が表示されます。選ぶとextensionを停止・再導入せず、repository内のsetup文書を使う専用会話を開きます。setup文書に承認待ちの設定・workspace変更・任意機能がある場合、LLMはそれをgenericな活用案や次回依頼へ先送りせず、重要な差分・影響・選択肢を具体的に提示します。返答待ちの項目は変更せず、未決の間はsetup完了と報告しません。setup、status、doctorの確認に成功した後は、LLMがextensionのREADMEと現在のworkspaceにあるREADME・AGENTS.md・上位directory構成を参照し、利用者の目的や既存workflowに合う活用案を2〜3件提示します。各案には適合理由、最初に依頼する文または操作、得られる結果を含めます。活用案の提示だけではworkspaceや設定を変更せず、自動化・外部送信・定期実行は別途確認してから実行します。
 
@@ -2343,3 +2345,13 @@ xangi agent run LEADER_ID --task '調査・実装・レビューを進めて結�
 - `startup` を省略するとmanifestの既定値を使う。
 
 グループの指定は、healthのstartup状態を報告できる拡張にだけ行う。旧拡張へ指定すると完了が分からずタイムアウトする。設定変更は次の起動要求から有効で、すでに開始した初期化を移動しない。タイムアウト後はstatusの理由と所有元拡張を確認し、所有元の初期化完了を待つか明示的に停止してから、blockedになった拡張へstartを再要求する。自動再試行は行わない。
+
+### 配布版の設定保存先と更新
+
+Mac配布版の追加設定は `~/Library/Application Support/xangi/config/runtime.env`、Linux/WSL配布版は `${XDG_CONFIG_HOME:-~/.config}/xangi/runtime.env` に保存します。Web画面の起動設定も同じファイルを使い、初回起動で空ファイルを作成します。`WEB_CHAT_PORT=18889` のような指定は、本体・CLIの既定接続先・doctor・インストール時の起動確認で共有されます。ポート変更は再起動後に反映されます。CLIの `--url` 等による明示的な接続先指定は優先されます。
+
+配布ディレクトリの `.env` やLaunchAgentからの自動移行は行いません。追加設定は `runtime.env` に記入してください。更新や自動起動の再設定では、このファイルを上書きしません。
+
+初期設定の `xangi.json` が管理するbackend、model（設定済みの場合）、workspace、Web Chat有効化と公開範囲、および配布版のstate保存先は、`runtime.env` より優先します。それ以外の追加設定は `runtime.env` を使います。接続情報は引き続き `config/secrets.json`、会話別設定は `state/settings.json` に保存します。`secrets.json` は既存環境変数に値がない項目を補います。
+
+Git checkout/Dockerでは引き続き `XANGI_ENV_PATH`（未指定時は起動ディレクトリの `.env`）を使い、保存と本体起動の読込先を一致させます。配布版ではローダーが `XANGI_ENV_PATH` を上記の永続ファイルへ固定します。

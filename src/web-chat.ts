@@ -3281,9 +3281,9 @@ ${delegatedTeam.prompt}`
         return;
       }
       if (current) agentRunner.destroy?.(entry.contextKey);
-      closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
       busySessions.delete(targetId);
-      invalidateSessionSnapshots();
+      closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
+      // closeSession already notifies the session snapshot subscribers.
       sendJson(res, 200, { ok: true, lifecycle: 'closed' });
       return;
     }

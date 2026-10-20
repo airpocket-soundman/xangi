@@ -13,7 +13,7 @@ import { join, resolve } from 'path';
 import { realpathSync } from 'fs';
 import { initTranscriptStorage } from './transcript-logger.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
-import { config as dotenvConfig } from 'dotenv';
+import { loadRuntimeEnvFile } from './env-file.js';
 import { startWebChat } from './web-chat.js';
 import { startLineBot } from './line.js';
 import { startTelegramBot } from './telegram.js';
@@ -46,7 +46,7 @@ import { acquireDataDirLock } from './data-dir-lock.js';
 import { startPlatformWithRetry } from './platform-startup-retry.js';
 import { discordChannelUrl, type ExternalChatUrlResolvers } from './external-chat-link.js';
 import { startAutostartExtensions, stopManagedExtensions } from './extensions.js';
-dotenvConfig({ override: true });
+loadRuntimeEnvFile();
 await applySetupRuntimeEnvFromProcess();
 await loadStoredSecrets();
 
