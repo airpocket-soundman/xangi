@@ -1807,6 +1807,17 @@ headless実行はMCP初期化完了後に`init`イベントを返します。`St
 
 `ANTIGRAVITY_MODE=accept-edits|auto|plan` でAgyの実行モードを明示できます。未指定時はAgyの設定を引き継ぎます。設定はバックエンドによらず起動時に検証・正規化し、不正値は警告して未指定扱いにします。`XANGI_CONFIG_STRICT=true` なら起動時にエラーにします。既存のhelp確認で `--mode` の対応も調べ、一時的な失敗では同じリクエスト内でhelpだけを1回再確認します。各確認は5秒で打ち切り、終了しないhelpプロセスは停止してから再試行します。未対応が確定した場合、2回とも確認に失敗した場合、Stopされた場合は実プロンプトを開始しません。実プロンプトを再送することはありません。Agy 1.3.2以降の `--dangerously-skip-permissions` はツールの承認だけを省略し、計画を自動承認しません。無人実行で計画レビューを避けたい場合は `ANTIGRAVITY_MODE=accept-edits` を選びます。`auto` は追加承認が必要な場合があり、`plan` はArtifact Review設定に従います。`auto` のツール審査を利用する場合は `SKIP_PERMISSIONS=false` も設定してください。`true` のままならモードによらず従来どおりツール承認を省略します。
 
+Agy 1.4.3では、空のartifact情報によって通常ファイルの書き込み・編集が拒否される問題と、空ファイル作成の失敗が修正されています。旧版との互換性と他のartifact-pathエラーへの備えとして、xangiのworkspace書き込みガイダンスと一度だけのリカバリは維持します。
+
+インストール・認証済みのAgyでworkspace書き込みを実機検証する場合は、リポジトリ直下で次を実行します。通常のテストでは実行されません。テスト開始前にランナーと同じ実行ファイルの`--version`を確認し、1.4.3未満・確認失敗・未確認のバージョン表記では、AIを呼び出さず理由を表示して失敗します。この検証はAI利用枠を消費し、Agy側に会話が保存される場合があります。既存のAgy認証・プラグイン・MCP設定を利用するため、信頼できるテスト環境で実行してください。`accept-edits`とツール承認の省略を使い、一時ディレクトリ内で新規作成・編集・空ファイル作成をJSON／stream-jsonの2回で確認し、xangiの書き込みリカバリが発動していないことも確認します。削除するのはテスト用一時ディレクトリだけで、Agy側の会話履歴・ログなどは削除しません。`DATA_DIR`は継承値を使うstatusline helperの保存先を一時領域に向けますが、保存先が明示指定されたhelperやimport済みのxangiモジュールを隔離するものではありません。プラグインやMCPを無効化するサンドボックスでもありません。
+
+```bash
+agy --version
+XANGI_TEST_AGY_LIVE=true npx vitest run tests/antigravity-workspace.integration.test.ts
+```
+
+1.4.3実機の`agy --version`標準出力は`1.4.3`と末尾改行のみで、この出力をfixtureとして検証しています。実機テストは正式リリース版を対象とし、`1.5.0-beta`など新しい系列も含め、プレリリース版は意図的に受け付けません。
+
 Agy が成功終了しても stdout が空の場合、stderr に出力された timeout・quota・認証などの詳細をエラーとして表示します。
 
 Agy 1.2.6以降は、stderrに構造化された `AGY_ERROR: { ... }` を出力して終了コード3で終了する場合があります。stdoutに利用可能なエラーがないときは、検証済みの `short_error` を表示し、`status`、`code_kind`、`error_code`、`retryable`、`error_id` をAntigravity専用の入れ子diagnostic metadataとして保持します。stdoutに有用なエラーがあればそちらを優先します。不正なmarkerと旧版のplain stderrは従来のfallbackを維持します。providerの `retryable` は診断情報としてのみ扱い、その値や終了コード3を理由にタスクを自動再送しません。
