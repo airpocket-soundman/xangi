@@ -206,7 +206,24 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     usage:
       'xangi tool schedule_add --input <schedule-and-message> [--channel <id>] [--platform <discord|slack|telegram|web|line>]',
     notes: [
-      '--input requires both a time and a message. Example: --input "cron 0 9 * * * Send a reminder". Bare cron expressions are not supported.',
+      '--input requires both a time and a message. Bare cron expressions are not supported.',
+      [
+        'One-time (runs once, then removed):',
+        '    --input "30分後 <message>"  (also 秒後 / 時間後)',
+        '    --input "15:30 <message>"  (today, or tomorrow if the time has passed)',
+        '    --input "2026-10-20 09:00 <message>"',
+      ].join('\n'),
+      [
+        'Recurring:',
+        '    --input "毎日 9:00 <message>"',
+        '    --input "毎週月曜 10:00 <message>"',
+        '    --input "毎時 <message>"  (毎時 15分 <message> for a fixed minute)',
+        '    --input "cron 0 9 * * * <message>"',
+      ].join('\n'),
+      'When the schedule runs, the message is given to the agent as an instruction, not sent as-is. Write what the agent should do, e.g. "ユーザーに「起きて」と伝える" rather than "起きて".',
+      'For a one-off reminder, use a one-time form. A cron with a fixed day and month (e.g. "cron 35 17 19 10 *") repeats every year.',
+      'Times are interpreted in the scheduler timezone (shown as "Timezone:" in the result), not the shell timezone. Relative forms such as "1分後" need no clock lookup.',
+      'The keywords (分後, 毎日, 毎週月曜, ...) must be written in Japanese; English phrases such as "in 1 minute" are not accepted.',
       'Omitting the destination uses the current conversation. Platform precedence: explicit option, XANGI_PLATFORM, inferred from destination, then discord.',
     ],
   },
@@ -219,6 +236,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     notes: [
       '--input replaces time/type AND message; include the existing message when changing only the time. Example: --input "cron 0 9 * * * Existing task". A time alone or a bare cron expression is not supported. Use --message to change only the body.',
       'Unspecified fields are preserved. --input and --message are mutually exclusive. Changing platform also requires --channel.',
+      '--input accepts the same forms as schedule_add (see xangi tool help schedule_add).',
     ],
   },
   {
