@@ -479,19 +479,10 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
     });
   }
 
-  if (options.codexTransport === 'app-server') {
-    await Promise.all(
-      allowedUsers
-        .filter((id) => id !== '*')
-        .map((id) =>
-          agentRunner.warmLineCodex?.(`${LINE_CONTEXT_PREFIX}${id}`).catch(() => {
-            console.warn(
-              '[xangi-line] Codex warmup failed; next request will retry initialization'
-            );
-          })
-        )
-    );
-  }
+  // app-server 方式でも、常駐プロセスは起動時に立てず最初の発言で立てる
+  // （CodexAppServerRunner.run() が warm() する）。起動時に立てると tool-server が
+  // 待ち受けを始める前の環境を引き継ぎ、XANGI_TOOL_SERVER が渡らない。
+  // 他のプラットフォームも、プロセスはリクエストが来てから起動している。
 
   const server = createServer(async (req, res) => {
     try {

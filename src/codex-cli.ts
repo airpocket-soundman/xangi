@@ -130,9 +130,6 @@ export class CodexRunner extends CliRunnerBase {
     }
     return runner;
   }
-  async warmLineCodex(channelId: string) {
-    await this.appServer(channelId).warm();
-  }
   cancel(channelId?: string): boolean {
     const app = channelId ? this.appServers.get(channelId) : undefined;
     return app?.cancel() || super.cancel(channelId);

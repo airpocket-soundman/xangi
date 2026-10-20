@@ -159,7 +159,6 @@ export interface StreamCallbacks {
  * AIエージェントランナーの統一インターフェース
  */
 export interface AgentRunner {
-  warmLineCodex?(channelId: string): Promise<void>;
   run(prompt: string, options?: RunOptions): Promise<RunResult>;
   runStream(prompt: string, callbacks: StreamCallbacks, options?: RunOptions): Promise<RunResult>;
   /** 現在処理中のリクエストをキャンセル */

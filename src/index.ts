@@ -191,34 +191,6 @@ async function main() {
     });
   }
 
-  // LINE Bot 起動 (Tailscale Funnel 等で外部公開して webhook を受ける想定)
-  if (config.line.enabled) {
-    platformStartupTasks.push(
-      startLineBot({
-        codexTransport: config.line.codexTransport,
-        agentRunner,
-        resolver,
-        scheduler,
-        channelSecret: config.line.channelSecret!,
-        channelAccessToken: config.line.channelAccessToken!,
-        allowedUsers: lineAllowed,
-        port: config.line.webhookPort,
-        path: config.line.webhookPath,
-        loadingAnimationEnabled: config.line.loadingAnimationEnabled,
-        loadingAnimationSeconds: config.line.loadingAnimationSeconds,
-        slowResponseEnabled: config.line.slowResponseEnabled,
-        slowResponseThresholdMs: config.line.slowResponseThresholdMs,
-        idleResetEnabled: config.line.idleResetEnabled,
-        idleResetHours: config.line.idleResetHours,
-        resetTextPatterns: config.line.resetTextPatterns,
-        completionDisplay: config.completion,
-        completionNotifyAfterMs: config.completion.notifyAfterMs,
-      }).then(() => {
-        console.log('[xangi] LINE bot started');
-      })
-    );
-  }
-
   // Telegram Bot 起動。一時的な接続失敗は startTelegramBot 内で再試行する。
   // 他platformと同時に開始し、恒久エラーは全体の起動失敗としてservice managerへ伝える。
   if (config.telegram.enabled) {
@@ -249,6 +221,35 @@ async function main() {
     agentRunner,
     scheduler,
   });
+
+  // LINEはtool-serverの待ち受けとGitHub認証の準備後に受付を開始する。
+  // 起動直後の発言でも、常駐プロセスへ接続先と認証用の環境を渡す。
+  if (config.line.enabled) {
+    platformStartupTasks.push(
+      startLineBot({
+        codexTransport: config.line.codexTransport,
+        agentRunner,
+        resolver,
+        scheduler,
+        channelSecret: config.line.channelSecret!,
+        channelAccessToken: config.line.channelAccessToken!,
+        allowedUsers: lineAllowed,
+        port: config.line.webhookPort,
+        path: config.line.webhookPath,
+        loadingAnimationEnabled: config.line.loadingAnimationEnabled,
+        loadingAnimationSeconds: config.line.loadingAnimationSeconds,
+        slowResponseEnabled: config.line.slowResponseEnabled,
+        slowResponseThresholdMs: config.line.slowResponseThresholdMs,
+        idleResetEnabled: config.line.idleResetEnabled,
+        idleResetHours: config.line.idleResetHours,
+        resetTextPatterns: config.line.resetTextPatterns,
+        completionDisplay: config.completion,
+        completionNotifyAfterMs: config.completion.notifyAfterMs,
+      }).then(() => {
+        console.log('[xangi] LINE bot started');
+      })
+    );
+  }
 
   // Discord ボット: トークン未設定 (Web オンリーモード等) では Client を生成しない。
   // 生成だけでも discord.js の内部リソースを確保するし、login しない Client が
