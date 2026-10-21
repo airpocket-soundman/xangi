@@ -67,6 +67,58 @@ describe('agent output recovery', () => {
     vi.stubEnv('LOCAL_LLM_XANGI_COMMANDS', 'false');
   });
   afterEach(() => rmSync(workdir, { recursive: true, force: true }));
+  it('recovers through the real client when the server rejects non-leading system messages', async () => {
+    vi.stubEnv('LOCAL_LLM_BASE_URL', 'http://localhost:8001');
+    const path = join(workdir, 'recovered.txt');
+    const forbidden = join(workdir, 'partial.txt');
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      if (body.messages.slice(1).some((m: { role: string }) => m.role === 'system')) {
+        return new Response('System message must be at the beginning.', { status: 400 });
+      }
+      const step = requests.length;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: step === 1 ? 'length' : step === 2 ? 'tool_calls' : 'stop',
+              message:
+                step < 3
+                  ? {
+                      content: '',
+                      tool_calls: [
+                        {
+                          id: step === 1 ? 'partial' : 'complete',
+                          type: 'function',
+                          function: {
+                            name: 'write',
+                            arguments: JSON.stringify({
+                              path: step === 1 ? forbidden : path,
+                              content: 'complete',
+                            }),
+                          },
+                        },
+                      ],
+                    }
+                  : { content: 'done' },
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    });
+    const runner = new LocalLlmRunner({ workdir, model: 'qwen3.8-27b' });
+    const result = await runner.run('write', { sessionId: 'wire', channelId: 'wire' });
+    expect(result.failed).not.toBe(true);
+    expect(result.result).toBe('done');
+    expect(requests).toHaveLength(3);
+    expect(requests[1].messages.at(-1)).toMatchObject({ role: 'user' });
+    expect(requests[1].messages.at(-1)?.content).toContain('small section');
+    expect(existsSync(forbidden)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe('complete');
+  });
   for (const streaming of [false, true]) {
     for (const reason of ['length', 'missing'] as const) {
       it(`discards ${reason} calls and recovers with a small real write (stream=${streaming})`, async () => {
@@ -91,6 +143,7 @@ describe('agent output recovery', () => {
           .mockImplementationOnce(async (messages) => {
             expect(messages.some((m) => m.toolCalls?.some((c) => c.id === 'bad'))).toBe(false);
             expect(messages.at(-1)?.content).toContain('small section');
+            expect(messages.at(-1)?.role).toBe('runtime');
             return {
               content: '',
               finishReason: 'tool_calls',

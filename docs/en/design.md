@@ -398,6 +398,8 @@ adapter only implements "command argument building" and "JSONL event interpretat
 
 #### Local LLM Adapter Detailed Design
 
+`LLMMessage.role = runtime` identifies internal regeneration, step-limit, Stop-hook, and pseudo-tool recovery instructions. It stays distinct from human `user` input in session memory and becomes `user` only in `toOpenAIMessages()` / `toOllamaMessages()`. Explicit `system` messages are not demoted; the base prompt remains at the beginning. This supports templates rejecting mid-conversation system messages while preserving chronology and tool call/result associations. Like existing intermediate messages, runtime instructions are not restored from transcript JSONL.
+
 **Session Retry Flow:**
 
 ```
