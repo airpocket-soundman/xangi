@@ -1877,7 +1877,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         );
       }
       session.messages.push({
-        role: 'system',
+        role: 'runtime',
         content:
           'The previous generation was incomplete (output limit or missing required tool arguments). None of its tool calls were executed. Regenerate a smaller, complete action. For file changes, write a small section or make one small edit at a time, then continue with further calls. Include all required arguments, especially content/new_string. Do not resend the entire large file or append a suffix to the discarded generation. Reduce reasoning and output size. Continue the task using tools; do not just promise to finish later.',
       });
@@ -1997,7 +1997,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
       toolRounds++;
       if (this.agentStepLimit !== undefined && toolRounds >= this.agentStepLimit) {
         console.warn(`[local-llm] Agent step limit reached (${this.agentStepLimit})`);
-        session.messages.push({ role: 'system', content: STEP_LIMIT_PROMPT });
+        session.messages.push({ role: 'runtime', content: STEP_LIMIT_PROMPT });
         const summary = await this.llm.chat(session.messages, {
           systemPrompt,
           tools: iterTools.length > 0 ? iterTools : undefined,
@@ -2073,7 +2073,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     });
 
     session.messages.push({
-      role: 'system',
+      role: 'runtime',
       content: `[STOP HOOK FEEDBACK]\n${verdict.reason}\n[END STOP HOOK FEEDBACK]\n\nA turn-end verification hook blocked this response. Address the feedback now (call the required tool or revise your statement), then give a short follow-up reply to the user.`,
     });
 
@@ -2206,7 +2206,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         toolRounds++;
         if (this.agentStepLimit !== undefined && toolRounds >= this.agentStepLimit) {
           console.warn(`[local-llm] Agent step limit reached (${this.agentStepLimit})`);
-          session.messages.push({ role: 'system', content: STEP_LIMIT_PROMPT });
+          session.messages.push({ role: 'runtime', content: STEP_LIMIT_PROMPT });
           stepLimitReached = true;
           break;
         }
@@ -2348,7 +2348,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           failure_reason: 'stream drift dropped to empty',
         });
         session.messages.push({
-          role: 'system',
+          role: 'runtime',
           content: buildStructuredFeedback({
             kind: 'unparseable_pseudo_call',
             reason:
@@ -2393,7 +2393,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             failure_reason: 'idempotent cache hit',
           });
           session.messages.push({
-            role: 'system',
+            role: 'runtime',
             content: buildStructuredFeedback({
               kind: 'already_executed',
               attempted_tool: parsed.name,
@@ -2431,7 +2431,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
               repeats: loopResult.repeats ?? REPEATED_TOOL_CALL_THRESHOLD,
             });
             session.messages.push({
-              role: 'system',
+              role: 'runtime',
               content: buildStructuredFeedback({
                 kind: 'already_executed',
                 attempted_tool: parsed.name,
@@ -2474,10 +2474,10 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
               duration_ms: rescueDuration,
               status: result.success ? 'success' : 'error',
             });
-            // rescue 経路では tool_call_id が無いので、system message として tool 結果を注入
+            // rescue 経路では tool_call_id が無いので、runtime message として tool 結果を注入
             // (function_calling 経路の tool role と混ぜると schema が崩れるため)
             session.messages.push({
-              role: 'system',
+              role: 'runtime',
               content: `[RESCUED TOOL RESULT]\nTool: ${parsed.name}\nArgs: ${JSON.stringify(parsed.args)}\nResult:\n${rawOutput}\n[END RESCUED TOOL RESULT]\n\nUse this result to compose your final reply to the user. Do NOT call the same tool again in pseudo format.`,
             });
           }
@@ -2495,7 +2495,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             failure_reason: safety.reason,
           });
           session.messages.push({
-            role: 'system',
+            role: 'runtime',
             content: buildStructuredFeedback({
               kind: 'unsafe_tool_in_pseudo_format',
               attempted_tool: parsed.name,
@@ -2520,7 +2520,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
           failure_reason: 'parse failed',
         });
         session.messages.push({
-          role: 'system',
+          role: 'runtime',
           content: buildStructuredFeedback({
             kind: 'unparseable_pseudo_call',
             reason:

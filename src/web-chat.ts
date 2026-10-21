@@ -1,3 +1,4 @@
+import { proxyExtensionRequest, attachExtensionWebSockets } from './extension-web-proxy.js';
 import { instanceCliCommand } from './instance-cli.js';
 import { runDelegatingLeader } from './team-delegation.js';
 import { DEFAULT_TEAM_AGENT_ID } from './teams.js';
@@ -2055,40 +2056,7 @@ ${delegatedTeam.prompt}`
       return;
     }
 
-    const extensionServiceMatch = url.match(/^\/api\/extensions\/([^/]+)\/service(\/.*)$/);
-    if (extensionServiceMatch && ['GET', 'PUT', 'POST'].includes(req.method || '')) {
-      if (req.method !== 'GET' && !acceptsSameHostMutation(req)) {
-        sendJson(res, 403, { error: 'cross-origin extension changes are not allowed' });
-        return;
-      }
-      try {
-        const target = await resolveDevelopmentExtensionService(
-          decodeURIComponent(extensionServiceMatch[1])
-        );
-        const query = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
-        const body = req.method === 'GET' ? undefined : await readRawBody(req, 1024 * 1024);
-        const upstream = await fetch(`${target.baseUrl}${extensionServiceMatch[2]}${query}`, {
-          method: req.method,
-          headers: {
-            Authorization: target.authorization,
-            ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
-          },
-          body,
-          signal: AbortSignal.timeout(30_000),
-        });
-        const responseBody = Buffer.from(await upstream.arrayBuffer());
-        res.writeHead(upstream.status, {
-          'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
-          'Content-Length': String(responseBody.length),
-          'Cache-Control': 'no-store',
-          'X-Content-Type-Options': 'nosniff',
-        });
-        res.end(responseBody);
-      } catch (error) {
-        sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
-      }
-      return;
-    }
+    if (await proxyExtensionRequest(req, res, resolveDevelopmentExtensionService)) return;
 
     const extensionUninstallMatch = url.match(/^\/api\/extensions\/([^/]+)$/);
     if (extensionUninstallMatch && req.method === 'DELETE') {
@@ -4030,6 +3998,8 @@ ${delegatedTeam.prompt}`
 
   server.on('close', unsubscribeSessionChanges);
   server.on('close', () => clearInterval(parentWatch));
+
+  attachExtensionWebSockets(server, resolveDevelopmentExtensionService, uiEnabled);
 
   server.listen(port, host, () => {
     // 冒頭行も実際に到達できる URL に合わせる（specific IP bind なら localhost は誤誘導）。

@@ -1049,6 +1049,13 @@ XANGI_WORKSPACE=/home/user/my-workspace
 
 ## Extension連携
 
+拡張のブラウザ画面・HTTP API・WebSocket・SSEは、本体のWeb UIと同じポートで提供できます。ブラウザ側の入口は `/api/extensions/<id>/ui`、通信先は `/api/extensions/<id>/service/` です。拡張の内部HTTPサーバーはloopbackの自動割当ポートで動かし、利用者に個別ポートを設定させない構成を推奨します。機器接続や外部の音声・推論サーバーの通信は別です。
+
+拡張作者は画面のアセット・API・WebSocketを相対URLにしてください。独立した画面へ移動する場合は、manifestの `ui.path`（例 `/ui`）で `location.replace(new URL('./service/', location.href).href)` を返し、内部サービスの `/` で画面を配信できます。既存の単一HTML形式も従来どおり動作します。サービス中継はGET/HEAD/POST/PUT/PATCH/DELETE、最大32MiBのバイナリを含むリクエスト、逐次レスポンスに対応します。応答ヘッダーまで30秒、WebSocket接続まで10秒の上限を設け、SSEの接続時間は制限しません。
+
+本体はブラウザのOriginを確認してから拡張専用Bearerで転送します。本体のCookieやAuthorization、転送元認証ヘッダーを拡張へ渡しません。拡張のCookieは拡張別の名前とパスへ変換し、同じ拡張だけに戻します。上流の同一originへのリダイレクトも本体配下へ変換し、別originへのリダイレクトは拒否します。WebSocketには同じホストのOriginが必要です。拡張画面を操作できる利用者はその機能も使えるため、本体のアクセス範囲を適切に制限してください。音声・画面共有などのブラウザ機能には、本体側のHTTPSまたはlocalhostが必要です。
+
+
 外部extensionはWeb UIの「拡張」から追加・管理します。個別extensionの導入方法、設定、保存データ、UI、更新手順はxangi側へ複製せず、各repositoryの文書を正本とします。
 
 CLIの`xangi extension restart --help`（または`-h`）は操作せずヘルプを表示します。`start`、`stop`、`restart`は対象IDが必須です。全拡張を対象にする場合だけ`--all`を明示します（例: `xangi extension restart xangi-studio`、`xangi extension restart --all`）。`xangi tool extension_runtime`からの操作にも同じ制限を適用します。
@@ -2223,6 +2230,8 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 ### Local LLMの不完全なツール呼び出し
 
 Local LLMのツール生成が出力上限に達した場合、または必須引数が欠けた場合、その応答内のツールは一切実行しません。小さい範囲の書き込み・編集に分けるよう最大2回再生成を促し、回復しなければ失敗として停止します。既に成功した過去の変更は保持されます。`incomplete_generation`ログに終了理由・出力トークン数・不足引数を記録します。
+
+再生成・ステップ上限・終了時チェック・疑似ツール呼び出しの補正は、人間の発言と区別した内部指示として扱います。OpenAI互換APIとOllamaへ送る時だけ会話順を保って `user` に変換し、基本の `system` 指示は先頭に維持します。途中の `system` を許可しないQwen等でも、再生成を継続できます。内部指示は現在のセッション内で区別されますが、既存の履歴復元は中間ツールメッセージと同様にこれを復元しません。
 
 ## シークレットモード（極力ログを残さない会話）
 

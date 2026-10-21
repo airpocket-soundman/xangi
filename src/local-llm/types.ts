@@ -6,7 +6,8 @@ export interface LLMImageContent {
 }
 
 export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
+  /** runtime は実行中の内部指示。人間の発言とは区別し、送信時だけ user に変換する。 */
+  role: 'system' | 'user' | 'assistant' | 'tool' | 'runtime';
   content: string;
   toolCalls?: LLMToolCall[];
   toolCallId?: string;

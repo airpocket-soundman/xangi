@@ -397,6 +397,8 @@ claude-code / codex-cli / opencode-cli / cursor-cli / grok-cli / antigravity-cli
 
 #### Local LLMアダプターの詳細設計
 
+`LLMMessage.role = runtime` は、再生成・ステップ上限・Stop hook・疑似ツール救済の内部指示を表す。セッション内では人間の `user` 発言と区別し、`toOpenAIMessages()` / `toOllamaMessages()` でのみ `user` に変換する。通常の `system` メッセージは変換せず、基本プロンプトは従来どおり先頭に置く。これにより途中のsystemを拒否するテンプレートへ対応し、指示の時系列とツールの呼出し・結果の対応を保持する。既存の中間メッセージ同様、runtimeは履歴JSONLからの再開では復元しない。
+
 **セッションリトライのフロー:**
 
 ```

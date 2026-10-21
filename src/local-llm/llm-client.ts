@@ -68,7 +68,7 @@ function toOllamaMessages(messages: LLMMessage[]): Array<Record<string, unknown>
 
   return messages.map((msg) => {
     const m: Record<string, unknown> = {
-      role: msg.role,
+      role: msg.role === 'runtime' ? 'user' : msg.role,
       content: msg.content,
     };
     if (msg.images && msg.images.length > 0) {
@@ -156,7 +156,10 @@ async function* responseLines(response: Response): AsyncGenerator<string> {
 
 function toOpenAIMessages(messages: LLMMessage[], isOllama: boolean): OpenAIMessage[] {
   return messages.map((msg) => {
-    const m: OpenAIMessage = { role: msg.role, content: msg.content };
+    const m: OpenAIMessage = {
+      role: msg.role === 'runtime' ? 'user' : msg.role,
+      content: msg.content,
+    };
 
     // マルチモーダル: 画像がある場合はcontent配列形式にする（OpenAI互換API向け）
     if (msg.images && msg.images.length > 0 && !isOllama) {

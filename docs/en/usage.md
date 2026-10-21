@@ -1031,6 +1031,11 @@ XANGI_WORKSPACE=/home/user/my-workspace
 
 ## Extension Integration
 
+Extension browser UIs, HTTP APIs, WebSockets and SSE can share the host Web UI port. The entry is `/api/extensions/<id>/ui`; service requests use `/api/extensions/<id>/service/`. Bind internal services to automatically allocated loopback ports and use relative asset/API/WebSocket URLs. Existing single-HTML UIs remain supported. A separate app can return `location.replace(new URL('./service/', location.href).href)` from its declared UI entry and serve the app at its service root.
+
+The proxy supports GET/HEAD/POST/PUT/PATCH/DELETE, binary request bodies up to 32 MiB, and streamed responses. Response headers have a 30-second deadline and WebSocket handshakes have a 10-second deadline; SSE duration is unlimited. The browser origin is checked before the host supplies the extension bearer token. Host credentials and identity headers are not forwarded. Cookies are namespaced and scoped per extension, and same-upstream redirects are rewritten under the service path; redirects to another origin are rejected. WebSockets require a same-host Origin. Restrict host access to intended users. Microphone and screen capture still require HTTPS or localhost on the host; device and external inference/voice connections remain separate.
+
+
 Add and manage external extensions from Extensions in the Web UI. Installation, configuration, stored data, standalone UI, and update instructions remain canonical in each extension repository instead of being duplicated in xangi documentation.
 
 `xangi extension restart --help` (or `-h`) prints help without taking action. `start`, `stop`, and `restart` require an extension ID. Use explicit `--all` only when every linked extension should be affected (for example, `xangi extension restart xangi-studio` or `xangi extension restart --all`). The same guard applies to `xangi tool extension_runtime`.
@@ -2178,6 +2183,8 @@ Recovery and progress notices require explicit delivery tracking recorded when a
 ### Incomplete Local LLM tool calls
 
 If a Local LLM tool generation hits the output limit or omits required arguments, no tools from that response execute. The runner asks for smaller, complete writes or edits with at most two regeneration attempts, then reports failure if recovery fails. Earlier successful changes remain. The `incomplete_generation` event records finish reason, output token count, and missing argument names.
+
+Regeneration, step-limit, stop-hook, and pseudo-tool recovery feedback remain internal instructions, distinct from human input. At the OpenAI-compatible and Ollama API boundaries, they become `user` messages in their original order, while the base `system` prompt stays at the beginning. This allows recovery with templates such as Qwen that reject mid-conversation system messages. Internal instructions are distinguished within the active session; existing transcript restoration does not restore them, just as it does not restore intermediate tool messages.
 
 ## Secret mode (best-effort reduced logging)
 
