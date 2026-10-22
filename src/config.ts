@@ -160,6 +160,7 @@ export interface Config {
     deleteReactions?: string[];
   };
   web: {
+    workspaceBrowserExclude?: string[];
     replySuggestions: boolean;
     replySuggestionCount: number;
   };
@@ -493,6 +494,7 @@ export function loadConfig(): Config {
         : ['wastebasket', 'x'],
     },
     web: {
+      workspaceBrowserExclude: [...new Set(parseCsv(process.env.WORKSPACE_BROWSER_EXCLUDE))],
       replySuggestions: process.env.WEB_REPLY_SUGGESTIONS === 'true',
       replySuggestionCount: v.int('WEB_REPLY_SUGGESTIONS_COUNT', 3, { min: 1, max: 5 }),
     },

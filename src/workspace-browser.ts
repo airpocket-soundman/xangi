@@ -121,12 +121,15 @@ export class WorkspaceBrowserError extends Error {
 export class WorkspaceBrowser {
   private readonly root: string;
   private rootRealPath?: string;
+  private readonly excludedDirectoryNames: ReadonlySet<string>;
 
   constructor(
     root: string,
-    private readonly maxFileBytes = DEFAULT_MAX_FILE_BYTES
+    private readonly maxFileBytes = DEFAULT_MAX_FILE_BYTES,
+    excludedDirectoryNames: readonly string[] = []
   ) {
     this.root = resolve(root);
+    this.excludedDirectoryNames = new Set(excludedDirectoryNames);
   }
 
   async list(directory = ''): Promise<WorkspaceDirectory> {
@@ -141,6 +144,8 @@ export class WorkspaceBrowser {
       const childAbsolute = join(target, entry.name);
 
       if (entry.isDirectory()) {
+        // Display preference only: direct listing, reading and writing stay available.
+        if (this.excludedDirectoryNames.has(entry.name)) continue;
         const childStat = await stat(childAbsolute);
         visible.push({
           name: entry.name,

@@ -2027,6 +2027,25 @@ describe('web-chat HTTP API', () => {
     expect(file.version).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('shows logs by default in the workspace API and allows direct links and edits', async () => {
+    mkdirSync(join(testDir, 'logs'));
+    writeFileSync(join(testDir, 'logs', 'session.jsonl'), '{}\n');
+    const root = await (await fetch(`${baseUrl}/api/workspace/entries?path=`)).json() as { entries: Array<{ name: string }> };
+    expect(root.entries.some((entry) => entry.name === 'logs')).toBe(true);
+    const directory = await fetch(`${baseUrl}/api/workspace/entries?path=logs`);
+    expect(directory.status).toBe(200);
+    const response = await fetch(`${baseUrl}/api/workspace/file?path=logs%2Fsession.jsonl`);
+    expect(response.status).toBe(200);
+    const opened = await response.json() as { version: string };
+    const saved = await fetch(`${baseUrl}/api/workspace/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'logs/session.jsonl', content: '{"saved":true}\n', version: opened.version }),
+    });
+    expect(saved.status).toBe(200);
+    expect(readFileSync(join(testDir, 'logs', 'session.jsonl'), 'utf8')).toBe('{"saved":true}\n');
+  });
+
   it('registers a workspace and snapshots it for Project sessions and editor requests', async () => {
     const alternate = join(testDir, 'alternate-workspace');
     mkdirSync(alternate);

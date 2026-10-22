@@ -38,6 +38,32 @@ describe('WorkspaceBrowser', () => {
     expect(notes.entries.map((entry) => entry.path)).toEqual(['notes/today.md']);
   });
 
+  it('hides configured directories but keeps direct listing, reading and saving', async () => {
+    mkdirSync(join(workspace, 'logs'));
+    mkdirSync(join(workspace, 'notes', 'logs'));
+    writeFileSync(join(workspace, 'logs', 'session.jsonl'), '{}\n');
+    writeFileSync(join(workspace, 'notes', 'logs.md'), 'visible');
+    expect((await browser.list()).entries.map((entry) => entry.name)).toContain('logs');
+    browser = new WorkspaceBrowser(workspace, undefined, ['logs']);
+    expect((await browser.list()).entries.map((entry) => entry.name)).not.toContain('logs');
+    expect((await browser.list('notes')).entries.map((entry) => entry.name)).toEqual(['logs.md', 'today.md']);
+    expect((await browser.list('logs')).entries.map((entry) => entry.name)).toEqual(['session.jsonl']);
+    const opened = await browser.read('logs/session.jsonl');
+    await browser.write('logs/session.jsonl', '{"updated":true}\n', opened.version);
+    expect(readFileSync(join(workspace, 'logs', 'session.jsonl'), 'utf8')).toBe('{"updated":true}\n');
+  });
+
+  it('replaces display exclusions and allows clearing them without weakening access restrictions', async () => {
+    for (const name of ['logs', 'skills', 'skills-extra']) mkdirSync(join(workspace, name));
+    const custom = new WorkspaceBrowser(workspace, undefined, ['skills']);
+    expect((await custom.list()).entries.map((entry) => entry.name)).toEqual(['logs', 'notes', 'skills-extra', 'README.md']);
+    const cleared = new WorkspaceBrowser(workspace, undefined, []);
+    expect((await cleared.list()).entries.map((entry) => entry.name)).toContain('skills');
+    expect((await cleared.list()).entries.map((entry) => entry.name)).toContain('logs');
+    await expect(cleared.read('.env')).rejects.toMatchObject({ status: 403 });
+    await expect(cleared.list('node_modules')).rejects.toMatchObject({ status: 403 });
+  });
+
   it('lists and reads JSON Lines files', async () => {
     mkdirSync(join(workspace, 'logs'));
     mkdirSync(join(workspace, 'logs', 'sessions'));

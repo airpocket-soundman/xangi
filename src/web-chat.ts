@@ -343,7 +343,11 @@ export function startWebChat(options: WebChatOptions) {
     const workspace = await resolveWorkspace(workspaceId);
     let browser = workspaceBrowsers.get(workspace.id);
     if (!browser) {
-      browser = new WorkspaceBrowser(workspace.path);
+      browser = new WorkspaceBrowser(
+        workspace.path,
+        undefined,
+        options.config?.web?.workspaceBrowserExclude
+      );
       workspaceBrowsers.set(workspace.id, browser);
     }
     return { workspace, browser };

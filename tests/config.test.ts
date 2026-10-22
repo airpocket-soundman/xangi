@@ -64,6 +64,20 @@ describe('config', () => {
     }
   });
 
+  it.each([
+    [undefined, []],
+    ['', []],
+    ['  , , ', []],
+    [' logs, skills, hooks, tmp, skills, ', ['logs', 'skills', 'hooks', 'tmp']],
+    ['skills', ['skills']],
+  ])('loads workspace browser display exclusions: %s', async (value, expected) => {
+    process.env.WEB_CHAT_ENABLED = 'true';
+    if (value === undefined) delete process.env.WORKSPACE_BROWSER_EXCLUDE;
+    else process.env.WORKSPACE_BROWSER_EXCLUDE = value;
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig().web.workspaceBrowserExclude).toEqual(expected);
+  });
+
   it('should load Discord config when DISCORD_TOKEN is set', async () => {
     process.env.DISCORD_TOKEN = 'test-discord-token';
     process.env.DISCORD_ALLOWED_USER = '123456789';
