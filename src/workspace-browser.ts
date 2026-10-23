@@ -98,6 +98,7 @@ export interface WorkspaceDirectory {
   path: string;
   parent: string | null;
   entries: WorkspaceEntry[];
+  excludedDirectoryCount: number;
 }
 
 export interface WorkspaceFile {
@@ -121,12 +122,15 @@ export class WorkspaceBrowserError extends Error {
 export class WorkspaceBrowser {
   private readonly root: string;
   private rootRealPath?: string;
+  private readonly excludedDirectoryPaths: ReadonlySet<string>;
 
   constructor(
     root: string,
-    private readonly maxFileBytes = DEFAULT_MAX_FILE_BYTES
+    private readonly maxFileBytes = DEFAULT_MAX_FILE_BYTES,
+    excludedDirectoryPaths: readonly string[] = []
   ) {
     this.root = resolve(root);
+    this.excludedDirectoryPaths = new Set(excludedDirectoryPaths);
   }
 
   async list(directory = ''): Promise<WorkspaceDirectory> {
@@ -134,6 +138,7 @@ export class WorkspaceBrowser {
     const target = await this.resolveExisting(normalized, 'directory');
     const entries = await readdir(target, { withFileTypes: true });
     const visible: WorkspaceEntry[] = [];
+    let excludedDirectoryCount = 0;
 
     for (const entry of entries) {
       if (isExcludedSegment(entry.name) || entry.isSymbolicLink()) continue;
@@ -141,6 +146,11 @@ export class WorkspaceBrowser {
       const childAbsolute = join(target, entry.name);
 
       if (entry.isDirectory()) {
+        // Display preference only: direct listing, reading and writing stay available.
+        if (this.excludedDirectoryPaths.has(childRelative)) {
+          excludedDirectoryCount++;
+          continue;
+        }
         const childStat = await stat(childAbsolute);
         visible.push({
           name: entry.name,
@@ -176,6 +186,7 @@ export class WorkspaceBrowser {
       parent:
         normalized === '' ? null : parentSeparator < 0 ? '' : normalized.slice(0, parentSeparator),
       entries: visible,
+      excludedDirectoryCount,
     };
   }
 

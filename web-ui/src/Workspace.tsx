@@ -35,6 +35,7 @@ interface WorkspaceDirectory {
   path: string;
   parent: string | null;
   entries: WorkspaceEntry[];
+  excludedDirectoryCount?: number;
 }
 
 interface WorkspaceFile {
@@ -438,6 +439,11 @@ export function Workspace() {
             ))}
             {!directoryLoading && visibleEntries.length === 0 && (
               <p className="workspace-file-empty">表示できるファイルはありません。</p>
+            )}
+            {!directoryLoading && (directory.excludedDirectoryCount ?? 0) > 0 && (
+              <p className="workspace-file-empty">
+                設定により{directory.excludedDirectoryCount}個のフォルダを非表示にしています。
+              </p>
             )}
             {directoryLoading && <p className="workspace-file-empty">読み込み中…</p>}
           </div>
