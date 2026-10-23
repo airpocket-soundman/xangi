@@ -2046,6 +2046,38 @@ describe('web-chat HTTP API', () => {
     expect(readFileSync(join(testDir, 'logs', 'session.jsonl'), 'utf8')).toBe('{"saved":true}\n');
   });
 
+  it('passes configured exclusions to the workspace API while allowing direct access', async () => {
+    await new Promise<void>(resolve => webServer.close(() => resolve()));
+    const port = await freePort();
+    webServer = startWebChat({
+      agentRunner: runner,
+      port,
+      config: { web: { workspaceBrowserExclude: ['logs'] } } as Config,
+    });
+    await new Promise<void>(resolve => webServer.listening ? resolve() : webServer.once('listening', resolve));
+    const url = `http://127.0.0.1:${port}`;
+    mkdirSync(join(testDir, 'logs'));
+    writeFileSync(join(testDir, 'logs', 'session.jsonl'), '{}\n');
+    const listing = await fetch(`${url}/api/workspace/entries`);
+    expect(listing.status).toBe(200);
+    const root = await listing.json() as { entries: Array<{ name: string }>; excludedDirectoryCount: number };
+    expect(root.entries.some(entry => entry.name === 'logs')).toBe(false);
+    expect(root.excludedDirectoryCount).toBe(1);
+    const direct = await fetch(`${url}/api/workspace/entries?path=logs`);
+    expect(direct.status).toBe(200);
+    expect((await direct.json()).entries).toEqual([expect.objectContaining({ name: 'session.jsonl' })]);
+    const response = await fetch(`${url}/api/workspace/file?path=logs%2Fsession.jsonl`);
+    expect(response.status).toBe(200);
+    const opened = await response.json() as { content: string; version: string };
+    expect(opened.content).toBe('{}\n');
+    const saved = await fetch(`${url}/api/workspace/file`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'logs/session.jsonl', content: '{"saved":true}\n', version: opened.version }),
+    });
+    expect(saved.status).toBe(200);
+    expect(readFileSync(join(testDir, 'logs', 'session.jsonl'), 'utf8')).toBe('{"saved":true}\n');
+  });
+
   it('registers a workspace and snapshots it for Project sessions and editor requests', async () => {
     const alternate = join(testDir, 'alternate-workspace');
     mkdirSync(alternate);

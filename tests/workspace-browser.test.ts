@@ -46,11 +46,21 @@ describe('WorkspaceBrowser', () => {
     expect((await browser.list()).entries.map((entry) => entry.name)).toContain('logs');
     browser = new WorkspaceBrowser(workspace, undefined, ['logs']);
     expect((await browser.list()).entries.map((entry) => entry.name)).not.toContain('logs');
-    expect((await browser.list('notes')).entries.map((entry) => entry.name)).toEqual(['logs.md', 'today.md']);
+    expect((await browser.list('notes')).entries.map((entry) => entry.name)).toEqual(['logs', 'logs.md', 'today.md']);
     expect((await browser.list('logs')).entries.map((entry) => entry.name)).toEqual(['session.jsonl']);
     const opened = await browser.read('logs/session.jsonl');
     await browser.write('logs/session.jsonl', '{"updated":true}\n', opened.version);
     expect(readFileSync(join(workspace, 'logs', 'session.jsonl'), 'utf8')).toBe('{"updated":true}\n');
+  });
+
+  it('matches workspace-relative paths and reports directories hidden by settings', async () => {
+    mkdirSync(join(workspace, 'tmp', 'web-uploads'), { recursive: true });
+    mkdirSync(join(workspace, 'notes', 'tmp', 'web-uploads'), { recursive: true });
+    const custom = new WorkspaceBrowser(workspace, undefined, ['tmp/web-uploads']);
+    expect((await custom.list()).entries.map((entry) => entry.name)).toContain('tmp');
+    expect(await custom.list('tmp')).toMatchObject({ entries: [], excludedDirectoryCount: 1 });
+    expect((await custom.list('notes/tmp')).entries.map((entry) => entry.name)).toEqual(['web-uploads']);
+    expect((await custom.list('tmp/web-uploads')).entries).toEqual([]);
   });
 
   it('replaces display exclusions and allows clearing them without weakening access restrictions', async () => {

@@ -70,6 +70,7 @@ describe('config', () => {
     ['  , , ', []],
     [' logs, skills, hooks, tmp, skills, ', ['logs', 'skills', 'hooks', 'tmp']],
     ['skills', ['skills']],
+    [' logs/, logs///, tmp/web-uploads/ ', ['logs', 'tmp/web-uploads']],
   ])('loads workspace browser display exclusions: %s', async (value, expected) => {
     process.env.WEB_CHAT_ENABLED = 'true';
     if (value === undefined) delete process.env.WORKSPACE_BROWSER_EXCLUDE;

@@ -1649,6 +1649,8 @@ Web Projectは会話・共通情報をまとめます。管理方法と移行は
 
 同じサーバの `http://localhost:<WEB_CHAT_PORT>/workspace` は、設定済み `WORKSPACE_PATH` のbrowser/editor。ディレクトリを辿り、1 MiB以内のMarkdown・テキスト・JSON/JSONL/YAML/TOML、C/C++・Rust・Go、Astro・Vue・Svelte・Sass系を含む主要コード形式、ログ・diff・patch・TSV・CFGを開いて編集できる。Markdownは編集とプレビューを切り替え、`Ctrl/Cmd+S`でも保存できる。ファイルは名前・更新日時の昇順／降順に並び替えられ、Markdown frontmatterの`tags`で絞り込める。デスクトップではファイル一覧の幅をドラッグまたは矢印キーで変えられ、スマートフォンではファイル一覧とエディタを画面単位で切り替える。Web Chatの回答にあるテキストファイル参照はこの画面の`/workspace?path=...`へ開き、`:12`または`#L12`の行指定があれば編集表示で該当行を選択する。ヘッダーの`rawで開く`から従来の生ファイル配信も利用できる。コードブロックとインラインコード内の`MEDIA:`は説明用テキストとして扱い、メディアへ変換しない。
 
+`WORKSPACE_BROWSER_EXCLUDE=logs,skills,hooks,tmp/web-uploads` で一覧から非表示にするフォルダを指定できる。workspace相対パスの完全一致で、`hooks` は直下だけが対象（`src/hooks` は表示される）。末尾の `/` は省略可能。未設定・空欄なら除外なし。設定で隠れたフォルダ数を一覧に表示する。直接リンクでの閲覧・編集は引き続き可能。変更は再起動後に全workspaceへ適用される。
+
 Chat / Files / Schedules / Monitor / Extensions / Settingsは共通ナビゲーションを使う。デスクトップでは左レール、モバイルでは下部ナビゲーションになり、Monitor / Extensions / Settings / `表示`は`その他`から開く。端末設定・ライト・ダークの選択はブラウザに保存される。
 
 - hidden path、`.git`、`.xangi`、`.workspace_rag`、依存物、build/coverage成果物、symlinkは一覧・読込・保存のすべてで拒否する
