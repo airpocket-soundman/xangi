@@ -15,14 +15,14 @@ USBへの書込みやserial操作は初版には含みません。対象device�
 推奨はsingle-use pairingです。Gatewayで10分有効のpair URIを発行します。
 
 ```bash
-xangi tool remote_worker --action pair-create --worker karaage-mac \
-  --gateway-url ws://100.86.210.85:18791/api/remote-workers/connect
+xangi tool remote_worker --action pair-create --worker example-mac \
+  --gateway-url ws://100.64.0.1:18791/api/remote-workers/connect
 ```
 
 Macでは既存のxangi配布物をworker modeとしてlaunchdへ登録します。`--workspace`を省略すると実行時のdirectoryだけを許可します。
 
 ```bash
-xangi worker install --pair 'xangi-pair://...' --workspace /Users/you/borot
+xangi worker install --pair 'xangi-pair://...' --workspace /Users/you/project
 xangi worker status
 ```
 
@@ -47,8 +47,8 @@ xangi worker uninstall
 ```json
 [
   {
-    "id": "karaage-mac",
-    "tokenFile": "/absolute/path/to/karaage-mac.token"
+    "id": "example-mac",
+    "tokenFile": "/absolute/path/to/example-mac.token"
   }
 ]
 ```
@@ -69,10 +69,10 @@ Mac側の例です。`gatewayUrl`にはMacから到達できるxangi hostのTail
 
 ```json
 {
-  "gatewayUrl": "ws://100.86.210.85:18791/api/remote-workers/connect",
-  "workerId": "karaage-mac",
+  "gatewayUrl": "ws://100.64.0.1:18791/api/remote-workers/connect",
+  "workerId": "example-mac",
   "tokenFile": "/Users/you/.config/xangi/remote-worker.token",
-  "workspaceRoots": ["/Users/you/borot"],
+  "workspaceRoots": ["/Users/you/project"],
   "allowedCommands": [
     "/usr/bin/git",
     "/opt/homebrew/bin/node",
@@ -96,10 +96,10 @@ nodeは切断後に自動再接続します。`worker install`を使ったMacで
 
 ```bash
 xangi tool remote_worker --action list
-xangi tool remote_worker --action info --worker karaage-mac
-xangi tool remote_worker --action usb-list --worker karaage-mac
-xangi tool remote_worker --action exec --worker karaage-mac \
-  --argv-json '["/usr/bin/git","status","--short"]' --cwd /Users/you/borot
+xangi tool remote_worker --action info --worker example-mac
+xangi tool remote_worker --action usb-list --worker example-mac
+xangi tool remote_worker --action exec --worker example-mac \
+  --argv-json '["/usr/bin/git","status","--short"]' --cwd /Users/you/project
 ```
 
 `info`は接続中workerが実際に読み込んでいる`workspaceRoots`と`allowedCommands`を`executionPolicy`として返します。token、Gateway URL、token/config file pathは返しません。設定変更後は`xangi worker restart`を実行し、`info`で反映を確認してください。

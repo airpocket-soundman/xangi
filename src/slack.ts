@@ -55,6 +55,7 @@ import {
   closeSession,
   createSchedulerSession,
   getActiveSessionId,
+  activateSession,
   getProviderSessionId,
   getSessionEntry,
   incrementMessageCount,
@@ -882,7 +883,55 @@ async function deleteMessageByReaction(
 
 import type { Scheduler } from './scheduler.js';
 
+export interface SlackRemoteInputBridge {
+  createSession(channelId: string, title: string): Promise<{ sessionId: string }>;
+  continueSession(input: { appSessionId: string; message: string }): Promise<{ response: null }>;
+}
+export function createSlackRemoteInputBridge(
+  client: WebClient,
+  agentRunner: AgentRunner,
+  config: Config
+): SlackRemoteInputBridge {
+  return {
+    async createSession(channelId, title) {
+      const posted = await client.chat.postMessage({
+        channel: channelId,
+        text: title,
+        mrkdwn: false,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+      if (!posted.ts) throw new Error('Slackのスレッドを作成できません');
+      const result = await ensureSessionWithWorkspace({
+        platform: 'slack',
+        contextKey: `${channelId}:${posted.ts}`,
+        bindingKey: channelId,
+      });
+      return { sessionId: result.appSessionId };
+    },
+    async continueSession({ appSessionId, message }) {
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'slack') throw new Error('Slackセッションが見つかりません');
+      if (!message.trim()) throw new Error('メッセージを入力してください');
+      const [channelId, threadTs] = entry.contextKey.split(':', 2);
+      await processMessage(
+        channelId,
+        entry.contextKey,
+        threadTs,
+        message.trim(),
+        'web',
+        client,
+        agentRunner,
+        config,
+        false,
+        appSessionId
+      );
+      return { response: null };
+    },
+  };
+}
 export interface SlackChannelOptions {
+  remoteInputRef?: { current?: SlackRemoteInputBridge };
   config: Config;
   agentRunner: AgentRunner;
   resolver: BackendResolver;
@@ -1138,6 +1187,8 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     socketMode: true,
     logLevel: LogLevel.INFO,
   });
+  if (options.remoteInputRef)
+    options.remoteInputRef.current = createSlackRemoteInputBridge(app.client, agentRunner, config);
   registerSlackAgentWork(
     app.client,
     createSlackWorkUi(agentRunner, config.slack.showThinking ?? true)
@@ -1749,7 +1800,8 @@ export async function processMessage(
   client: WebClient,
   agentRunner: AgentRunner,
   config: Config,
-  removeReaction = true
+  removeReaction = true,
+  remoteSessionId?: string
 ): Promise<void> {
   const runKey = conversationKey;
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -1790,6 +1842,7 @@ export async function processMessage(
   let acquiredRunLock = false;
   try {
     if (busySlackConversations.has(runKey)) {
+      if (remoteSessionId) throw new Error('このSlackセッションは処理中です');
       console.log(`[slack] Skipping busy conversation: runKey=${runKey}`);
       await client.chat.postMessage({
         channel: channelId,
@@ -1800,6 +1853,20 @@ export async function processMessage(
     }
     busySlackConversations.add(runKey);
     acquiredRunLock = true;
+    if (remoteSessionId) {
+      activateSession(conversationKey, remoteSessionId);
+      const mirrored = await client.chat.postMessage({
+        channel: channelId,
+        text: `🌐 Webから: ${text}`,
+        mrkdwn: false,
+        unfurl_links: false,
+        unfurl_media: false,
+        ...(threadTs && { thread_ts: threadTs }),
+      });
+      if (!mirrored.ts) throw new Error('Slackへの投稿に失敗しました');
+      originalTs = mirrored.ts;
+      eventCtx.turnId = turnIdFor('slack', originalTs);
+    }
     const controlResult = await handleSecretConversationCommand({
       platform: 'slack',
       contextKey: conversationKey,
@@ -2196,6 +2263,7 @@ export async function processMessage(
         });
     }
   } catch (error) {
+    if (remoteSessionId && !acquiredRunLock) throw error;
     await progressUpdates.finish();
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (errorMsg.includes('Request cancelled by user')) {
@@ -2218,6 +2286,7 @@ export async function processMessage(
         ...(threadTs && { thread_ts: threadTs }),
       });
     }
+    if (remoteSessionId) throw error;
   } finally {
     if (acquiredRunLock) {
       busySlackConversations.delete(runKey);

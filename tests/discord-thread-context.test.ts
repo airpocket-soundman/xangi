@@ -1090,6 +1090,112 @@ describe('Discord remote input bridge', () => {
     );
     expect(getActiveSessionId(threadId)).toBe(appSessionId);
   });
+  it.each([false, true])('AI-names a Web-created thread and preserves manual rename=%s', async (manualRename) => {
+    const threadId = 'remote-thread-123';
+    const replyMessage = {
+      id: 'remote-reply-1',
+      edit: vi.fn().mockResolvedValue(undefined),
+      channel: { send: vi.fn().mockResolvedValue(undefined) },
+    };
+    const mirroredMessage = {
+      id: 'remote-source-1',
+      content: '🌐 Webから: 続きをお願いします',
+      createdTimestamp: Date.now(),
+      channelId: threadId,
+      client: null as unknown as Client,
+      author: {
+        id: '999',
+        bot: true,
+        username: 'xangi',
+        displayName: 'xangi',
+      },
+      channel: null as unknown,
+      reply: vi.fn().mockResolvedValue(replyMessage),
+      react: vi.fn().mockResolvedValue(undefined),
+      reactions: {
+        cache: {
+          find: vi.fn().mockReturnValue({
+            emoji: { name: '👀' },
+            users: { remove: vi.fn().mockResolvedValue(undefined) },
+          }),
+        },
+      },
+    } as unknown as Message;
+    const thread = {
+      id: threadId,
+      name: '続きをお願いします',
+      fetch: vi.fn().mockImplementation(async () => ({ name: manualRename ? '手動の名前' : '続きをお願いします' })),
+      setName: vi.fn().mockResolvedValue(undefined),
+      parentId: 'parent-123',
+      parent: { name: 'dev_xangi' },
+      isThread: () => true,
+      send: vi.fn().mockResolvedValue(mirroredMessage),
+    };
+    const client = {
+      user: { id: '999' },
+      on: vi.fn().mockReturnThis(),
+      channels: { fetch: vi.fn().mockImplementation(async (id) => id === 'parent-123' ? { type: 0, threads: { create: vi.fn().mockResolvedValue(thread) } } : thread) },
+    } as unknown as Client;
+    (mirroredMessage as unknown as { client: Client; channel: unknown }).client = client;
+    (mirroredMessage as unknown as { client: Client; channel: unknown }).channel = thread;
+
+    const runStream = vi
+      .fn()
+      .mockImplementation(async (_prompt, callbacks) => { callbacks.onBackendReady?.(); return { result: 'Discordで回答', sessionId: 'provider-remote-1' }; });
+    const agentRunner = {
+      run: vi.fn().mockResolvedValue({ result: 'AIで付けた名前', sessionId: 'title' }),
+      runStream,
+      getTimeoutState: vi.fn().mockReturnValue(undefined),
+    } as unknown as AgentRunner;
+    const config = {
+      agent: { backend: 'claude-code', config: { skipPermissions: false, workdir: tempDir } },
+      sessionTitle: { mode: 'ai' },
+      discord: {
+        sessionTitleAiOnce: true,
+        allowedUsers: ['*'],
+        streaming: true,
+        showThinking: true,
+        showButtons: false,
+        completionNotifyAfterMs: 60_000,
+      },
+    } as Config;
+
+    const bridge = registerDiscordMessageHandlers({
+      client,
+      config,
+      agentRunner,
+      workdir: tempDir!,
+    });
+    const { sessionId: appSessionId } = await bridge.createSession!('parent-123', '続きをお願いします');
+    expect(getSessionEntry(appSessionId)?.title).toBeFalsy();
+    const result = await bridge.continueSession({
+      appSessionId,
+      message: '続きをお願いします',
+    });
+
+    expect(result).toEqual({ response: 'Discordで回答' });
+    expect(thread.send).toHaveBeenCalledWith({
+      content: '🌐 Webから: 続きをお願いします',
+      allowedMentions: { parse: [] },
+    });
+    expect(runStream).toHaveBeenCalledWith(
+      expect.stringContaining('[発言者: Web (ID: web)]'),
+      expect.any(Object),
+      expect.objectContaining({
+        channelId: threadId,
+        appSessionId,
+      })
+    );
+    expect(getActiveSessionId(threadId)).toBe(appSessionId);
+    await vi.waitFor(() => expect(thread.fetch).toHaveBeenCalled());
+    if (manualRename) {
+      expect(thread.setName).not.toHaveBeenCalled();
+      expect(getSessionEntry(appSessionId)?.title).not.toBe('AIで付けた名前');
+    } else {
+      await vi.waitFor(() => expect(thread.setName).toHaveBeenCalledWith('AIで付けた名前'));
+      expect(getSessionEntry(appSessionId)?.title).toBe('AIで付けた名前');
+    }
+  });
 });
 
 function createThreadModeMessage(params: {

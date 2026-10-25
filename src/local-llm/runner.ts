@@ -1739,6 +1739,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     signal: AbortSignal,
     callbacks?: StreamCallbacks
   ): Promise<void> {
+    const imageResults: LLMMessage[] = [];
     const trajectory = this.trajectoryCommon(logId, options?.channelId, round);
     const toolContext = {
       signal,
@@ -1830,6 +1831,13 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         `[local-llm] Tool result: ${result.success ? 'OK' : 'FAIL'} (${content.length} chars)`
       );
       session.messages.push({ role: 'tool', content, toolCallId: toolCall.id });
+      if (result.success && result.images?.length) {
+        imageResults.push({
+          role: 'runtime',
+          content: `[Image tool result: ${toolCall.name}] ${content}`,
+          images: result.images,
+        });
+      }
       for (const match of rawOutput.matchAll(/^MEDIA:(.+)$/gm)) {
         const path = match[1].trim();
         if (!mediaPaths.includes(path)) {
@@ -1838,6 +1846,9 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
         }
       }
     }
+    // Complete all tool responses before appending a user-compatible image message.
+    // OpenAI-compatible providers do not universally accept images in tool messages.
+    session.messages.push(...imageResults);
   }
 
   /** Discard incomplete generations before recording or executing any tool call. */
@@ -2478,6 +2489,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
             // (function_calling 経路の tool role と混ぜると schema が崩れるため)
             session.messages.push({
               role: 'runtime',
+              ...(result.success && result.images?.length ? { images: result.images } : {}),
               content: `[RESCUED TOOL RESULT]\nTool: ${parsed.name}\nArgs: ${JSON.stringify(parsed.args)}\nResult:\n${rawOutput}\n[END RESCUED TOOL RESULT]\n\nUse this result to compose your final reply to the user. Do NOT call the same tool again in pseudo format.`,
             });
           }

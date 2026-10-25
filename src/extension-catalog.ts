@@ -196,6 +196,37 @@ const OFFICIAL_EXTENSION_CATALOG: ReadonlyArray<DevelopmentExtensionCatalogEntry
     actionsAvailable: true,
     setupRepositoryUrl: 'https://github.com/karaage0703/xangi-stopwatch',
   },
+  {
+    id: 'xangi-tasks',
+    displayName: 'xangi-tasks',
+    description: 'タスクを整理し、xangiへ仕事を依頼します。',
+    permissions: ['ローカルのタスクデータを保存し、タスクの閲覧・追加・実行・完了・削除を行う'],
+    capabilities: ['xangi-tasks.manage'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-tasks',
+  },
+  {
+    id: 'xangi-remote-desktop',
+    displayName: 'xangi-remote-desktop',
+    description: 'ブラウザから同じPCの画面を閲覧し、マウスとキーボードで操作します。',
+    permissions: [
+      '設定された同一PCのVNCサーバーへ接続し画面を表示する',
+      '接続した利用者のマウス・キーボード入力をVNCサーバーへ送信する',
+    ],
+    capabilities: ['desktop.open'],
+    installed: false,
+    running: false,
+    healthy: false,
+    uiAvailable: true,
+    statusKnown: true,
+    actionsAvailable: true,
+    setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
+  },
 ];
 
 export interface ExtensionSetupRequest {
@@ -665,6 +696,19 @@ export async function resolveDevelopmentExtensionService(
   const runtime = resolveExtensionCapability(id, capability.id);
   if (!runtime) throw new Error(`Extension runtime is unavailable: ${id}`);
   return { ...runtime, uiPath: manifest.ui.path };
+}
+
+/** Device ingress never grants access to an arbitrary extension or its management API. */
+export async function resolveExtensionDeviceService(
+  id: string
+): Promise<{ baseUrl: string; authorization: string }> {
+  const linked = (await listExtensions()).find((item) => item.id === id && item.enabled);
+  if (!linked) throw new Error(`Extension is not installed: ${id}`);
+  const manifest = await loadExtensionManifest(linked.manifestPath);
+  if (!manifest.deviceIngress) throw new Error(`Extension does not declare device ingress: ${id}`);
+  const runtime = resolveExtensionCapability(id, manifest.deviceIngress.capability);
+  if (!runtime) throw new Error(`Extension device runtime is unavailable: ${id}`);
+  return runtime;
 }
 
 export async function installDevelopmentExtension(

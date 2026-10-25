@@ -9,6 +9,7 @@ import { SETUP_CONFIG_PATH_ENV, SETUP_STATE_DIR_ENV } from '../installer/runtime
 import { parseSetupConfig } from '../setup/schema.js';
 import { resolveManagedLifecycle } from './update-cmd.js';
 import { assertRuntimeStateCanStart } from '../runtime-state-validation.js';
+import { readEnvFile } from '../env-file.js';
 
 export interface ServiceCommandDependencies {
   installationKind?: 'checkout' | 'managed';
@@ -32,51 +33,64 @@ function projectDir(flags: Record<string, string | boolean>): string {
   if (dir) {
     return dir;
   }
-  if (process.env.XANGI_DIR) {
-    return process.env.XANGI_DIR;
-  }
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 }
 
-function readDotEnvValue(dir: string, key: string): string | undefined {
-  const envPath = join(dir, '.env');
-  if (!existsSync(envPath)) {
-    return undefined;
-  }
-  for (const rawLine of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) {
-      continue;
-    }
-    const eqIdx = line.indexOf('=');
-    if (eqIdx === -1) {
-      continue;
-    }
-    const envKey = line.slice(0, eqIdx).trim();
-    if (envKey !== key) {
-      continue;
-    }
-    let value = line.slice(eqIdx + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    return value;
-  }
-  return undefined;
+// Only host facilities cross a checkout boundary. Runtime settings (including
+// future settings and credentials) must come from the target checkout's .env.
+const HOST_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'TZ',
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'PM2_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+  'XDG_RUNTIME_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+];
+
+function checkoutHostEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    HOST_ENV_KEYS.filter((key) => process.env[key] !== undefined).map((key) => [
+      key,
+      process.env[key],
+    ])
+  );
 }
 
 function resolveProcessName(flags: Record<string, string | boolean>): string {
   const dir = projectDir(flags);
+  const env = readEnvFile(join(dir, '.env'));
   return (
     stringFlag(flags, 'name') ||
-    process.env.XANGI_PROCESS_NAME ||
-    readDotEnvValue(dir, 'XANGI_PROCESS_NAME') ||
-    process.env.XANGI_INSTANCE_ID ||
-    readDotEnvValue(dir, 'XANGI_INSTANCE_ID') ||
-    basename(dir)
+    env.XANGI_PROCESS_NAME ||
+    env.XANGI_INSTANCE_ID ||
+    basename(resolve(dir))
   );
 }
 
@@ -97,17 +111,18 @@ function runPm2(
 
 export function checkoutRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.ProcessEnv {
   const dir = projectDir(flags);
-  const configChoice = readDotEnvValue(dir, SETUP_CONFIG_PATH_ENV);
-  const stateChoice = readDotEnvValue(dir, SETUP_STATE_DIR_ENV);
+  const targetEnv = readEnvFile(join(dir, '.env'));
+  const configChoice = targetEnv[SETUP_CONFIG_PATH_ENV];
+  const stateChoice = targetEnv[SETUP_STATE_DIR_ENV];
   const localEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...checkoutHostEnv(),
+    ...targetEnv,
+    XANGI_PROCESS_NAME: resolveProcessName(flags),
     XANGI_INSTALLATION_KIND: 'checkout',
     XANGI_ENV_PATH: '',
     [SETUP_CONFIG_PATH_ENV]: '',
     [SETUP_STATE_DIR_ENV]: '',
   };
-  const name = stringFlag(flags, 'name');
-  if (name) localEnv.XANGI_PROCESS_NAME = name;
   if (configChoice !== undefined || stateChoice !== undefined) {
     // The target checkout owns this pair, including an explicit empty opt-out.
     // Do not combine one target value with a setup inherited from another bot.
@@ -132,10 +147,9 @@ export function checkoutRuntimeEnv(flags: Record<string, string | boolean>): Nod
   });
   if (!existsSync(layout.configFile)) return localEnv;
   const isCheckout = existsSync(join(dir, '.git'));
-  const explicitStateDir =
-    readDotEnvValue(dir, 'DATA_DIR') || (isCheckout ? undefined : process.env.DATA_DIR);
+  const explicitStateDir = targetEnv.DATA_DIR;
   const setup = parseSetupConfig(JSON.parse(readFileSync(layout.configFile, 'utf8')) as unknown);
-  const ownWorkspace = readDotEnvValue(dir, 'WORKSPACE_PATH');
+  const ownWorkspace = targetEnv.WORKSPACE_PATH;
   if (isCheckout && ownWorkspace && resolve(dir, ownWorkspace) !== resolve(setup.workspacePath)) {
     // A shared setup for a different workspace must never select this bot's runtime.
     return localEnv;
@@ -150,22 +164,15 @@ export function checkoutRuntimeEnv(flags: Record<string, string | boolean>): Nod
   return env;
 }
 
-function targetRuntimeEnv(flags: Record<string, string | boolean>): NodeJS.ProcessEnv {
-  const dir = projectDir(flags);
-  const env = { ...checkoutRuntimeEnv(flags) };
-  for (const key of ['DATA_DIR', 'WORKSPACE_PATH', 'WEB_CHAT_ENABLED'] as const) {
-    const value = readDotEnvValue(dir, key);
-    if (value !== undefined) env[key] = value;
-  }
-  return env;
-}
-
-function validateBeforeRestart(flags: Record<string, string | boolean>): void {
-  assertRuntimeStateCanStart({ env: targetRuntimeEnv(flags), cwd: projectDir(flags) });
+function validateBeforeRestart(flags: Record<string, string | boolean>, managed = false): void {
+  // Managed service configuration belongs to its current installation; checkout
+  // validation must see exactly the environment that will be sent to PM2.
+  const env = managed ? process.env : checkoutRuntimeEnv(flags);
+  assertRuntimeStateCanStart({ env, cwd: projectDir(flags) });
 }
 
 function ensurePm2(): void {
-  const proc = spawnSync('pm2', ['--version'], { encoding: 'utf8' });
+  const proc = spawnSync('pm2', ['--version'], { encoding: 'utf8', env: checkoutHostEnv() });
   if (proc.error && 'code' in proc.error && proc.error.code === 'ENOENT') {
     throw new Error('pm2 が見つかりません。PM2運用では npm install -g pm2 を先に実行してください');
   }
@@ -209,7 +216,11 @@ export async function serviceCmd(
 ): Promise<string> {
   const installationKind =
     dependencies.installationKind ??
-    (process.env.XANGI_INSTALLATION_KIND === 'managed' ? 'managed' : 'checkout');
+    (stringFlag(flags, 'dir')
+      ? 'checkout'
+      : process.env.XANGI_INSTALLATION_KIND === 'managed'
+        ? 'managed'
+        : 'checkout');
   if (!action || action === 'help') {
     return SERVICE_USAGE;
   }
@@ -232,7 +243,7 @@ export async function serviceCmd(
       return `${enabled ? 'Enabled' : 'Disabled'} xangi service autostart`;
     }
     if (action === 'restart') {
-      validateBeforeRestart(flags);
+      validateBeforeRestart(flags, true);
       await service.restart();
       return 'Restarted xangi service';
     }

@@ -15,6 +15,14 @@ export function readEnvFile(path: string): Record<string, string> {
   }
 }
 
+/** Match startup precedence without changing the caller's environment. */
+export function readRuntimeEnv(
+  path: string,
+  env: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  return { ...env, ...readEnvFile(path) };
+}
+
 /** Use the same path for startup and the settings editor. */
 export function loadRuntimeEnvFile(options: { quiet?: boolean } = {}): void {
   // Only managed installations pin setup paths. Checkout/Docker env files may

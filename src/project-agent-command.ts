@@ -1,4 +1,4 @@
-import { closeAgentRun } from './agent-work.js';
+import { agentRunBusy, closeAgentRun } from './agent-work.js';
 import {
   delegationScopeCount,
   delegatedRuns,
@@ -379,10 +379,37 @@ export async function executeTeamCommand(
     });
   }
   if (!parent) throw new Error('現在の会話が必要です');
-  if (action === 'status' || action === 'wait' || action === 'logs') {
+  if (action === 'status' || action === 'wait' || action === 'logs' || action === 'close') {
     let run = runs.get(flags.id || '');
     if (!run || run.parentContextKey !== parent || !run.agentId?.startsWith('team:'))
       throw new Error('この会話のTeam依頼が見つかりません');
+    if (action === 'close') {
+      // Include intermediate batches and every review/revision round, not just
+      // the members shown in status. Snapshot and preflight before any close.
+      const all = runs.list();
+      const selected = new Map([[run.id, run]]);
+      for (const owner of selected.values()) {
+        for (const child of all) {
+          if (
+            child.parentContextKey === `web-chat:${owner.appSessionId}` ||
+            child.delegationRootId === owner.id
+          )
+            selected.set(child.id, child);
+        }
+      }
+      const busy = [...selected.values()].filter(agentRunBusy);
+      if (busy.length)
+        throw new Error(
+          '実行中または追加指示待ちのTeamセッションは終了できません: ' +
+            busy.map((r) => r.id).join(', ')
+        );
+      const sessions = [...selected.values()].reverse().map((child) => ({
+        id: child.id,
+        appSessionId: child.appSessionId,
+        outcome: closeAgentRun(child),
+      }));
+      return JSON.stringify({ ok: true, id: run.id, sessions });
+    }
     const deadline = Date.now() + (action === 'wait' ? 25_000 : 0);
     while (['queued', 'running'].includes(run.status) && Date.now() < deadline) {
       await delay(200);
@@ -432,7 +459,7 @@ export async function executeTeamCommand(
     });
   }
   if (action !== 'run')
-    throw new Error('action must be create, delete, list, show, run, status, wait or logs');
+    throw new Error('action must be create, delete, list, show, run, status, wait, logs or close');
   if (!flags.task?.trim()) throw new Error('--task is required');
   if (
     callerRun &&

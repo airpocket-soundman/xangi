@@ -1,5 +1,6 @@
 """担当一覧・新会話・チャンネル設定を隔離したブラウザで確認する。"""
 import mimetypes
+import os
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -9,7 +10,7 @@ root = Path(__file__).resolve().parents[2] / 'web/app'
 out = Path(tempfile.mkdtemp(prefix='agent-selection-browser-'))
 print(out, flush=True)
 with sync_playwright() as pw:
-    browser = pw.chromium.launch(executable_path='/snap/bin/chromium', headless=True, args=['--no-sandbox'])
+    browser = pw.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH', '/snap/bin/chromium'), headless=True, args=['--no-sandbox'])
     try:
         for width in [1280, 768, 414, 375, 320]:
             context = browser.new_context(viewport={'width': width, 'height': 1000})
@@ -28,6 +29,7 @@ with sync_playwright() as pw:
                 elif path == '/api/agents': data={'agents':agents}
                 elif path == '/api/models': data={'status':'available','models':[{'id':'test-model'}],'supportedEfforts':[]}
                 elif path == '/api/projects': data={'projects':[]}
+                elif path == '/api/teams': data={'teams':[]}
                 elif path == '/api/sessions' and method == 'POST':
                     body=r.request.post_data_json; calls.append(body)
                     session={'id':'new-session','title':'担当との新しい会話','selectedAgentId':body.get('agentId'),'platform':'web','contextKey':'web-chat:new-session','updatedAt':'2026-01-01T00:00:00Z','isActive':True,'lifecycle':'open'}
@@ -59,12 +61,9 @@ with sync_playwright() as pw:
             page.goto('http://agent-test.test/')
             if width <= 768: page.get_by_role('button',name='サイドバーを開く').click()
             projects=page.get_by_role('button',name='Projects',exact=False)
-            agents_button=page.get_by_role('button',name='Agents',exact=False)
-            assert projects.evaluate('(e)=>e.parentElement===e.nextElementSibling.parentElement')
-            agents_button.click()
-            expect(page.get_by_role('heading',name='Agents',exact=True)).to_be_visible()
-            page.screenshot(path=str(out/f'agents-{width}.png'), animations='disabled')
-            page.get_by_role('button',name='レビュー担当',exact=False).click()
+            expect(projects).to_be_visible()
+            expect(page.locator('.sidebar .projects-link')).to_have_count(1)
+            page.get_by_label('新規会話の担当').select_option('a1')
             expect(page.get_by_label('新規会話の担当')).to_have_value('a1')
             page.get_by_role('button',name='＋ 新規',exact=True).click()
             expect(page).to_have_url('http://agent-test.test/chat/new-session')
@@ -94,4 +93,4 @@ with sync_playwright() as pw:
             assert not errors,errors
             context.close()
     finally: browser.close()
-print('PASS: Agents並列配置・担当選択・新会話・処理中拒否・保存/再読込・解除 (1280/768/414/375/320px)')
+print('PASS: Projects入口・担当選択・新会話・処理中拒否・保存/再読込・解除 (1280/768/414/375/320px)')

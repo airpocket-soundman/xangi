@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { readEnvFile } from '../env-file.js';
+import { readEnvFile, readRuntimeEnv } from '../env-file.js';
 import { resolveWebChatPort } from '../web-endpoint-config.js';
 
 export function managedEnvPath(configPath: string): string {
@@ -16,10 +16,17 @@ export function ensureManagedEnv(configPath: string): string {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
+  // Services do not necessarily inherit the installing shell's environment.
+  // Preserve an explicitly supplied port once, without replacing a saved value.
+  const saved = readEnvFile(target);
+  const inherited = resolveWebChatPort();
+  if (!Object.hasOwn(saved, 'WEB_CHAT_PORT') && inherited.source === 'environment') {
+    appendFileSync(target, `\nWEB_CHAT_PORT=${inherited.port}\n`);
+  }
   return target;
 }
 
 export function managedHealthUrl(configPath: string): string {
-  const { port } = resolveWebChatPort(undefined, readEnvFile(managedEnvPath(configPath)));
+  const { port } = resolveWebChatPort(undefined, readRuntimeEnv(managedEnvPath(configPath)));
   return `http://127.0.0.1:${port}/health`;
 }

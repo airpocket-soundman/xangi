@@ -15,7 +15,7 @@ export function canComposeInSession(
   discordComposeEnabled: boolean
 ): boolean {
   if (!detail) return false;
-  if (detail.platform === 'discord') return discordComposeEnabled;
+  if (detail.platform === 'discord' || detail.platform === 'slack') return discordComposeEnabled;
   return detail.platform === 'web' && detail.lifecycle !== 'closed';
 }
 

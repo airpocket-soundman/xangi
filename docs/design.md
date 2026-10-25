@@ -4,6 +4,8 @@
 
 xangiのアーキテクチャと設計思想について説明します。
 
+操作方法・設定例・利用時の制限は[使い方](usage.md)にまとめます。この資料には内部構造・保存形式・設計理由を記載し、同じ説明を両方に複製しません。更新時は既存の説明を検索し、必要な箇所からリンクで参照します。日本語版と英語版は、それぞれ同じ役割にそろえます。
+
 ## 概要
 
 xangiは「AI CLI（Claude Code / Codex CLI / OpenCode / Cursor CLI / Grok CLI / Antigravity CLI / GitHub Copilot CLI）やローカルLLM（Ollama等）をチャットプラットフォームから使えるようにするラッパー」です。
@@ -139,7 +141,7 @@ flowchart LR
 - Project絞り込みは`GET /api/sessions`と`GET /api/sessions/stream`のserver側で行う。検索入力中にSSEを再接続せず、初期検索の重複requestも抑える
 - `/monitor` は同じReactアプリのSession監視モード。画面ではSessionを作業中・完了の2列に分類し、内部のOpen / Closedは表示しない。provider側の文脈を持たないstateless extension backendは実行中だけ表示し、応答完了後は作業中・完了の両方から除外する。会話ログ自体はChatに残す。完了は既定で直近24時間を表示する。エラーと中断は独立列を作らず、作業中カードの状態ラベルと色付きドットで示す。カードと詳細から`POST /api/sessions/:id/close`で完了、`POST /api/sessions/:id/reopen`で同じSessionを作業中へ戻せる。個別切替はUndoとPCドラッグに対応し、実行中は完了を拒否する。reopenはAIを起動せず、履歴・provider文脈を保持してactiveByContextを復元し、保存後に変更を通知する。同じcontextに別のアクティブSessionがある場合とscheduler履歴は409で拒否する。agentは複数工程の長い作業で`progress_card` toolを明示的に呼び、Session内の計画を全置換する。計画は`pending`・`in_progress`・`completed`と任意noteを`DATA_DIR/sessions.json`へ保存し、最大1件の`in_progress`を許す。Monitor一覧カードは現在工程と完了工程数を表示し、詳細は全工程を「未着手／現在／完了」の文字ラベル付きで表示する。いずれも進捗率は推定しない。完了後の履歴画面でも、元のDiscordへの継続と履歴を引き継ぐWeb分岐の既存導線を維持する。公式構造化sourceから利用枠を正常取得できたproviderをSessionの有無にかかわらず表示し、`GET /api/usage`から60秒ごとに更新する。providerカードは折り畳み・非表示にできる。Session詳細のcontext使用量と進捗カードは保存後にSSE snapshotへ反映する。Chatの各ペイン下部にもmodel・現在有効なrunner cwd・context使用量をstatuslineとして表示する。cwdは各snapshot作成時にSessionのworkspace snapshot、なければ現在のdefault workdirから解決し、毎turnのruntime contextと同じrunner workdirを指す。`GET /api/sessions/stream`でターン境界・context・進捗のsnapshotを受け取り、セッション一覧を定期ポーリングしない
 
-Monitorの個別の完了・再開操作はカードごとに処理するため、別のカードを続けて操作できます。API成功後すぐ対象カードを更新し、一覧再取得はバックグラウンドでまとめます。処理中の同じカードへの重複操作と、一括完了との同時操作は防止します。
+詳しくは[Monitorの完了・再開操作](usage.md#monitor-card-actions)を参照してください。
 
 Monitorの「入力待ちをすべて完了」は、対象IDを `POST /api/sessions/close-waiting` に一括送信し、保存と変更通知を1回にまとめます。実行開始済みのSessionは除外し、変更できなかった件数を画面に表示します。履歴は保持されます。
 - `/workspace` は同じReactアプリのworkspace browser/editorモード。`workspace-browser.ts`が`WORKSPACE_PATH`配下だけを列挙・読込し、workspace相対pathに加えて同じroot内の絶対pathを正規化する。hidden/state/依存物/build成果物・symlink・非テキスト・1 MiB超は拒否する。Web Chatのテキストファイルリンクは`/workspace?path=...&line=...`へ変換し、親directoryと対象fileを開いて指定行を選択する。コードフェンス・inline code・indent code内の`MEDIA:`は分割対象外とし、実メディア記法だけをMarkdownの外へ分離する。MarkdownのYAML frontmatterから`tags`を抽出し、UI側でタグ絞り込みと名前・更新日時の並び替えを行う。保存は読込時SHA-256との一致を確認し、同一directoryの一時fileからatomic renameする。外部変更時は409を返し、UIが再読込を促す
@@ -400,6 +402,8 @@ claude-code / codex-cli / opencode-cli / cursor-cli / grok-cli / antigravity-cli
 
 `LLMMessage.role = runtime` は、再生成・ステップ上限・Stop hook・疑似ツール救済の内部指示を表す。セッション内では人間の `user` 発言と区別し、`toOpenAIMessages()` / `toOllamaMessages()` でのみ `user` に変換する。通常の `system` メッセージは変換せず、基本プロンプトは従来どおり先頭に置く。これにより途中のsystemを拒否するテンプレートへ対応し、指示の時系列とツールの呼出し・結果の対応を保持する。既存の中間メッセージ同様、runtimeは履歴JSONLからの再開では復元しない。
 
+`view_image`の結果は`ToolResult.images`で文字列出力と分離する。同一ラウンドのtool応答をすべて追加した後、画像付きruntimeメッセージを追加する。API送信時はuserへ変換するため、toolロールの画像を受け付けないproviderでも既存の画像変換を使える。疑似ツール救済でも画像を保持し、trajectoryには文字列結果だけを記録する。再起動・履歴要約後に画像が必要なら再度開く。
+
 **セッションリトライのフロー:**
 
 ```
@@ -445,7 +449,7 @@ Ollamaネイティブ経由では `toolCallId` → `tool_name` の逆引きマ�
 | `'required'`                               | 必ず tool を呼ぶ                          |
 | `{ type: 'function', function: { name } }` | 特定 tool を強制                          |
 
-`executeStreamLoop` の最終応答 chatStream では `toolChoice='none'` を指定し、tool ループ完了後に LLM が再度 tool を呼ぼうとして擬似 tool_call 文字列を text 漏れさせないようにする。Codex CLI は Responses API で streaming と tools/tool_choice を一体送信する設計（`codex-rs/core/src/client.rs` 参照）。xangi-dev は Chat Completions API のまま `tool_choice='none'` で同等の効果を得る。
+`executeStreamLoop` の最終応答 chatStream では `toolChoice='none'` を指定し、tool ループ完了後に LLM が再度 tool を呼ぼうとして擬似 tool_call 文字列を text 漏れさせないようにする。Codex CLI は Responses API で streaming と tools/tool_choice を一体送信する設計（`codex-rs/core/src/client.rs` 参照）。xangi は Chat Completions API のまま `tool_choice='none'` で同等の効果を得る。
 
 **Ollama ネイティブ経路の tools / tool_choice:**
 
@@ -1241,50 +1245,38 @@ src/
 
 ## プロジェクトとエージェントの共用
 
-プロジェクトは会話と共通指示をまとめます。エージェントは名前・基本指示・ワークスペース・使用AIを持つ独立した設定です。参加登録やプロジェクトの既定担当はありません。「新規会話の担当」には常に登録済みの全エージェントを表示します。会話のプロジェクトを移動しても担当を保持します。Agent指定中は担当の設定を優先し、個別設定の変更には担当の解除が必要です。
+詳しくは[プロジェクトとエージェントの共用](usage.md#プロジェクトとエージェントの共用)を参照してください。
 
-Studioは拡張一覧から開きます。会話画面上部の「Studioで制作」リンクは表示しません。制作・確認・分担調査の担当だけを作業ごとに選びます。必要な共通指示や、引き継ぐ会話を最大5件まで明示選択できます。会話本文は各30,000文字、作業へ渡す資料合計は50,000文字までです。URLを共通指示へ書くだけでは自動取得しません。
-
-設定はDATA_DIR/project-catalog.jsonへ保存し、/api/projectsと/api/agentsで別々に管理します。プロジェクトにAI設定や参加者を保存しません。未完了・実行中の会話で使用するエージェントの削除は拒否します。終了済み・アーカイブ済み会話だけが参照する担当は削除でき、その担当選択だけを解除します。本文・プロジェクト所属・作業場所は保持します。プロジェクトの削除で会話本文やStudio成果物は消えません。
-
-Studio側と本体を対応版の組み合わせで更新してください。ロールバック時は両サービスを止め、事前バックアップを一式復元します。旧web-projects.jsonは移行後の編集を反映しないため、そのファイルだけへ戻すと新しい設定は引き継がれません。
+設定はDATA_DIR/project-catalog.jsonへ保存し、/api/projectsと/api/agentsで別々に管理します。プロジェクトにAI設定や参加者を保存しません。未完了・実行中の会話で使用するエージェントの削除は拒否します。終了済み・アーカイブ済み会話だけが参照する担当は削除でき、その担当選択だけを解除します。本文・プロジェクト所属・作業場所は保持します。プロジェクトの削除で会話本文や成果物は消えません。
 
 
 ### チャンネルの担当と設定の優先順位
 
-WebのサイドバーではProjectsとAgentsが並列に並びます。Agentsで担当を選ぶと、その担当との会話を絞り込みます。「新規会話の担当」を選択して新しい会話を作成できます。
+詳しくは[チャンネルの担当と設定の優先順位](usage.md#チャンネルの担当と設定の優先順位)を参照してください。
+
+Projectの接続設定は`project-catalog.json`の`defaultAgentId`（Agent IDまたは`team:<ID>`）と`channel: { platform, channelId }`に保存する。`POST/PATCH /api/projects`で設定し、nullで解除する。継続APIは`POST /api/sessions/:id/discord-continue`と`POST /api/sessions/:id/slack-continue`。
 
 Discord/Slackでは `/agent list`、`/agent status`、`/agent set <ID>`、`/agent reset` を使います。Discordのsetでは `id` オプションにIDを指定します。Webの設定画面でもプラットフォーム・チャンネル・担当を選択できます。Slackの `/agent` はSlack AppのSlash Commandsへの登録が必要です。
 
-Agent指定時は、その担当のバックエンド・モデル・推論設定・ワークスペースをまとめて使用します。チャンネルの個別設定は保存したまま適用せず、解除すると元に戻ります。未指定値は全体既定または選択バックエンドの既定値を使用し、異なるバックエンドのモデル名は引き継ぎません。担当指定中に個別のモデル・作業場所を変更する操作は拒否します。
-
-担当の設定・解除は処理中に拒否し、次の投稿から新しいセッションで開始します。投稿履歴・ファイルは削除しません。Discordのスレッドは親チャンネルの担当、Slackのスレッドは所属チャンネルの担当を使います。スレッド独自の担当設定はこの版では扱いません。Discord/Slackの担当の設定一式はセッション開始時に保存し、担当の編集は新しいセッションから適用します。予約実行にも担当の指示と作業場所を使用します。
-
-`xangi agent delete <ID>` はWebと同じ削除ルールを使用します。チャンネルに設定中、未完了または実行中の会話から参照されている担当は削除できず、参照先を表示します。解除・会話完了後に削除しても会話本文と作業ファイルは残ります。
-
-チャンネルの担当は `DATA_DIR/channel-agents.json` に保存します。Agentの管理はWeb Chatと同じcatalogを使用するため、Web ChatのHTTPサーバーが有効な構成で利用します。CLIからの設定確認は `xangi tool runtime_settings --name agent --action status --platform discord --channel CHANNEL_ID`、設定は `--action set --value AGENT_ID`、解除は `--action reset` です。実行中のAIから自身の担当を変更すると処理中として拒否されるため、Slash CommandかWeb設定画面を使用してください。
-
 ### エージェントへの委譲
 
-`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、同一担当への重複実行、明示許可したTeam・defaultへの問い合わせ以外の再委譲は拒否します。予約ID `xangi:default`（CLI別名 `default`）はインスタンス既定のAI設定・Workspaceで独立会話を開始し、その問い合わせ先からの再委譲は拒否します。HTTP Agent Runの任意projectIdはStudio成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
+`xangi agent` はTool Server経由でWeb Chatと同じcatalog・AgentRunStoreを使います。create/list/runはProjectに依存しません。子は担当自身の設定とWorkspaceを使う独立Web会話で実行し、agentId・parentContextKey・parentPlatformで元の会話へ結果を返します。他会話の結果取得、同一担当への重複実行、明示許可したTeam・defaultへの問い合わせ以外の再委譲は拒否します。予約ID `xangi:default`（CLI別名 `default`）はインスタンス既定のAI設定・Workspaceで独立会話を開始し、その問い合わせ先からの再委譲は拒否します。HTTP Agent Runの任意projectIdは成果物の分類用で、初回実行へ共通指示を暗黙に追加しません。
 
 ### エージェントの実行設定
 
-エージェントのワークスペースは通常会話と委譲先の両方で使用します。親のワークスペースは引き継ぎません。未設定の既存エージェントはdefaultを使用するため、必要な作業場所をエージェント編集画面で選択してください。Webでは設定変更後の実行から、Discord/Slackでは新しいセッションから変更した作業場所を使用します。プロジェクトには作業場所を設定しません。
-
-local-llmを選ぶとAgent（ツールを使って作業）/Chat（会話のみ）とLocal LLMの推論強度を設定できます。空欄はxangiの既定設定を使用します。推論強度はモデル側が対応する値を選んでください。これらは通常のeffortとは別項目で、保存後の通常会話と委譲に反映します。Agent指定中は担当の動作モードを使用します。
+詳しくは[エージェントの実行設定](usage.md#エージェントの実行設定)を参照してください。
 
 
 ### 拡張お気に入りの保存
 
-`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ拡張IDの順序付き配列をatomic renameで保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動を行う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
+`ExtensionFavorites`は`DATA_DIR/extension-favorites.json`へ`id`と任意の`displayName`を持つ順序付き配列をatomic renameで保存する。旧形式のID文字列配列も読み込み、次の更新時に新形式で保存する。`GET /api/extension-favorites`は現在のカタログから表示名と利用可否を付与し、`POST`は同一Hostのmutation検査後に登録・解除・上下移動・表示名変更を行う。表示名は80文字以内の1行とし、空欄で標準名に戻す。標準名は先頭の`xangi-`を省略する。アイコンはUI側の小さなSVGを共有し、未定義の拡張には共通アイコンを使う。配列全体の上書きをクライアントから受けず、操作ごとに最新ファイルを読み直す。追加対象は画面を持つインストール済み拡張だけとし、不在IDも解除可能。破損ファイルは空設定として上書きしない。端末間では本体の設定を共有し、画面のmount/focus時、同じ画面の変更通知時に再取得する。稼働状態や権限の変更は行わない。
 
 
 ### 外部入力のAgent設定
 
 送信の実行設定はWeb側でAgent/Projectから解決し、device/pet/terminal inboxへ渡す。会話作成時の保存値だけに依存せず、各送信でAI・モード・指示・workspaceを再解決する。解決できないAgent会話を本体既定AIへフォールバックさせない。
 
-エージェントへの依頼手順には、稼働中の本体に付属するCLIの絶対パスを渡します。ログインシェルでPATHが変わっても別のxangiへ切り替わりません。一覧検索はプロジェクトとエージェントで文言を分け、作成・編集画面には表示しません。名前が `Avatar:` で始まる項目も他と同じように表示します。
+詳しくは[Agentのコマンド案内](usage.md#agent-command-guidance)を参照してください。
 
 共通の操作案内には稼働中CLIの絶対パスと一覧・依頼・結果確認の手順を載せます。名簿を会話へ常時埋め込まず、必要なときに全件一覧を取得します。子へはそのAgent固有の指示と依頼文だけを渡し、親のプロジェクト指示や会話履歴は暗黙に継承しません。通常のプロジェクト内会話は共通指示と選択したAgentの指示を使います。
 
@@ -1299,7 +1291,7 @@ local-llmを選ぶとAgent（ツールを使って作業）/Chat（会話のみ�
 
 `/api/session-attachment`はsessionIdとpathを受け取り、保存済み返答のコード例を除いたMEDIA宣言・構造化添付、または検証済み受信添付と照合する。任意の一時ファイルを公開せず、会話の作業フォルダ・添付保存先・一時領域のrealpath境界と既存ダウンロード拡張子設定を適用する。`workspace-file`の許可範囲は変更しない。
 
-DocumentAttachmentsが検証済みファイルのコピー、形式判定、LibreOfficeによるPDF変換、PopplerによるページごとのPNG描画を担当する。変換は独立したプロファイル・マクロ無効・同時2件・時間制限付き。原本は変更しない。サイズ・mtime・ctimeによってキャッシュを更新し、一度表示した一時ファイルは元が消えても保存コピーから表示できる。APIはinfo/page/raw/download/listを提供し、WebとStudioが同じ操作を使う。HTMLはsandbox/CSPで隔離し、任意バイナリは常にダウンロード扱いとする。
+DocumentAttachmentsが検証済みファイルのコピー、形式判定、LibreOfficeによるPDF変換、PopplerによるページごとのPNG描画を担当する。変換は独立したプロファイル・マクロ無効・同時2件・時間制限付き。原本は変更しない。サイズ・mtime・ctimeによってキャッシュを更新し、一度表示した一時ファイルは元が消えても保存コピーから表示できる。APIはinfo/page/raw/download/listを提供し、Webがこれらの操作を使う。HTMLはsandbox/CSPで隔離し、任意バイナリは常にダウンロード扱いとする。
 
 ### OpenRouter接続の分離
 
@@ -1308,48 +1300,14 @@ DocumentAttachmentsが検証済みファイルのコピー、形式判定、Libr
 
 ### Team（メンバーの編成）
 
-設定の「チーム」でメンバーと共通指示を登録します。リーダーは常に呼び出し元の会話です。固定リーダー・サブリーダー・報告先の設定はありません。
-
-- Agentの「基本指示」に専門性・得意分野・普段の振る舞いをまとめます。旧「役割」の本文は基本指示へ移行します。チーム側へ同じ文をコピーしていた場合は重複する担当文だけを外し、独自の担当文は残します。
-- チーム内の「担当」は任意です。空欄なら依頼時にリーダーが分担します。Agentの指示をコピーせず、そのチーム固有の担当が必要な場合だけ入力します。
-- チームの共通指示と、今回の前提・担当作業はそれぞれ子に渡されます。子は親の会話全体を知りません。
-
-Teamはチャンネルへ割り当てず、呼び出し元から `team run` で選びます。Discordの `/team list` と `/team show id:` は登録内容の確認用です。Agentのチャンネル割当はDiscord・Slackを通して0〜1か所です。別のチャンネルへ移すには現在の割当を解除します。処理中の割当変更は拒否します。
-
-Web UIのエージェント一覧と編集画面には現在の作業チャンネルを表示します。編集画面からDiscord/Slackのチャンネルを選択して設定・解除できます。変更時は現在の紐づきを解除してから新しいチャンネルを選びます。この操作はAgentの基本設定の保存とは別に即時保存されます。処理中の変更は拒否し、失敗時は設定を保持します。重複割当エラーにも現在のプラットフォームとチャンネルID（Discordではチャンネル参照）を表示します。名前を取得できない設定先はIDで表示します。
-
-Teamメンバーへは共通指示、呼び出し時の共通背景、個別の担当作業を渡します。リーダー用のTeam起動指示と親セッションの会話履歴は自動転送しません。必要な前提は呼び出し元が `--task` にまとめてください。
-
-割当済みAgentへ単独またはTeamで依頼すると、設定先チャンネルに依頼ごとの作業スレッドを作成します。本文の途中出力と実行中ツール名を間引いて表示し、結果と作業スレッドのURLを呼び出し元へ返します。未設定なら従来の独立セッションで実行します。スレッド作成に失敗した依頼は実行せず失敗を返します。途中の送信失敗は実行結果を保持して `workDeliveryError` に記録し、呼び出し元にも伝えます。
-
-作業スレッド名は担当作業の最初の文から最大36文字の見出しを作り、モデル名や依頼IDは含めません。開始投稿は担当名・チーム名と、文ごとに箇条書きへ整えた担当作業を表示します。Teamの会話履歴・内部手順・メンバーID一覧は表示せず、実行用の指示はそのまま保持します。単独依頼はプラットフォーム情報を除いて表示します。担当作業の条件は省略しません。Discordの親投稿に収まらない場合はスレッド内へ案内します。作業中はStopと既存の延長・残り時間表示を子Agentの実行へ接続します。延長の可否と上限はバックエンド設定に従います。完了結果のCloseは押した本人だけをスレッドから退出させ、終了済みの子AgentセッションをMonitorの完了へ移します。追加指示の実行中・待機中は作業を閉じず、その旨を表示します。履歴は保持し、後から追加指示を送ると同じセッションを再開します。処理を中止する場合はStopを使います。
-
-Slackの子Agentも通常応答と同じ処理中・完了ボタンを使います。Stop・延長・残り時間更新は子Agentの実行先へ接続し、Closeは終了済みの子セッションを完了にします。実行中や追加指示待ちは閉じません。Close後もHistoryボタンを保持し、後から同じ履歴で再開できます。履歴の抽出と最終本文の除外はDiscord・Slackで共通です。
-
-通常応答・スラッシュコマンド・子Agentの完了ボタンとHistoryの紐づけを共通化しています。Historyが有効な設定では、途中経過・ツール履歴がある応答にHistoryを表示します。単独依頼・Team・追加指示は共通の履歴記録処理を通り、実行ごとに異なる履歴IDを持ちます。以前の応答のHistoryは後の追加指示と混ざらず、再起動後も保存ログから表示できます。
-
-作業スレッドへ許可されたユーザーがテキストを投稿すると追加指示として保存し、現在の応答終了後に同じセッションで順番に処理します。実行中処理の即時中断・割込みではありません。完了後や再起動後も、保存済みセッションがあれば同じスレッドから継続できます。再起動で中断された処理は失敗として保持し、新しい追加指示で継続します。完了後のTeamメンバーへの追加指示も元の呼び出し元へ結果を返し、Team全体を再実行しません。botの投稿や許可されないユーザーは受け付けません。追加指示は1件20000文字、待機20件までで、添付は未対応です。
-
-メンバーは1〜64名、同時実行数は既定16・1〜64です。同じチームの複数会話で上限を共有します。通常は同じ作業場所でも並列実行し、必要なら「同じ作業場所では順番に実行する」を選びます。単独Agent実行との排他は対象外です。親会話のAgent／Team依頼の合計上限も既定16で、`AGENT_MAX_CONCURRENT_REQUESTS`（1〜64）で変更できます。
-
-`xangi tool help team` で使い方を確認し、`xangi team list`、`xangi team show NAME_OR_ID` で編成を確認します。リーダーは必要な前提を整理してから `xangi team run NAME_OR_ID --task "共通背景・根拠・仮定" --assignments-json '[{"agentId":"ID","task":"独立して完結できる仕事"}]'` で全員に一括依頼します。必須情報が足りなければ起動前に質問します。担当の抜け・重複・空の仕事は起動前に拒否し、受理したメンバーは上限の範囲で並列開始します。
-
-受付IDで `xangi team status --id RUN_ID` / `wait --id RUN_ID`（最大25秒）を使います。再送せず同じIDを確認し、完了通知後は呼び出し元が結果をまとめます。進捗・部分結果・失敗はAgent Runへ保存します。停止は子へ伝え、待機中の担当は起動しません。結果は依頼元のみ取得でき、重複依頼・許可のない子からの再委譲・使用中の編成削除を拒否します。
-
-`xangi agent logs --id RUN_ID` は単独Agentの行動ログを取得します。`xangi team logs --id RUN_ID` は同じ読み取り処理で各メンバーを集約します。保存ログは複製しません。依頼元の会話のみ取得でき、Teamでは `--member RUN_OR_AGENT_ID` で絞り込めます。ツール別回数、記録された検索語・URL、エラー・明示的な再試行、元ログのファイルと行番号を返します。`--offset N --limit N` はメンバーごとのイベントページ（既定20、最大100）で、集計は全体です。欠落・破損ログは警告を返します。入力のないタイミングログ、シェル内部の検索・取得、未記録の再試行は不明であり、検索結果に載ったURLを閲覧済みとみなしません。Grokはprovider session全体のnative履歴を補完に使います。1ファイル32 MiBを超えるログは読み込まず警告します。
+詳しくは[Team（メンバーの編成）](usage.md#teamメンバーの編成)を参照してください。
 
 編成は `project-catalog.json`、チャンネルのAgentは `channel-agents.json` に保存します。`GET/POST /api/teams`、`PATCH/DELETE /api/teams/:id` に対応します。旧編成は呼び出し元方式へ移行し、報告先だけを外して登録Agentと担当文を保持します。冗長なデフォルト担当の頂点は削除します。旧会話スナップショットも再開時に変換します。旧partyコマンド・API別名はありません。 起動時に旧Team割当と重複Agent割当を `channel-assignments-before-single-agent.json` へ退避し解除します。重複のないAgent割当と登録Teamは保持します。
-
-メンバーの `xangi:default` は全体の既定AI設定・defaultワークスペースで動く独立担当です。呼び出し元を指すものではありません。メンバー間通信や依存タスクの受け渡し、反復改善は行いません。
-
-AIタイトル生成は本文と並行し、最大60秒でタイトル専用処理だけを停止します。非ストリーミング表示でも準備完了通知を渡し、命名を開始します。失敗時は元のタイトルを保持し、必要なら `/retitle` で再生成できます。
 
 
 ### 子Agentの経過確認と結果通知
 
-xangi本体が未通知の完了・失敗と実行中の依頼を定期確認します。Slackでは元のチャンネルとスレッドへ通知します。親が処理中なら次の確認まで待ち、AIの待機ターンは消費しません。通知処理は初回を含め最大3回試行し、上限後はAIを介さず結果と通知失敗を1回送信します。それも失敗した場合はログと実行記録に未通知状態を残します。試行回数と経過報告時刻を保存し、再起動後も引き継ぎます。
-
-`.env` の `AGENT_PARENT_CHECK_INTERVAL_MS` は確認・再試行間隔（既定30000ミリ秒）、`AGENT_PARENT_PROGRESS_INTERVAL_MS` は実行中の経過報告間隔（既定180000ミリ秒）です。どちらも1000〜86400000の整数で、変更後は再起動が必要です。経過報告は確認タイミングで送るため、実際の間隔は確認間隔に丸められます。進捗率は推測せず実行中／実行待ちと経過時間を報告します。
+詳しくは[子Agentの経過確認と結果通知](usage.md#子agentの経過確認と結果通知)を参照してください。
 
 再通知・経過報告は、新規依頼または明示的に再実行した際に通知追跡を有効にした実行だけを対象にします。追跡情報のない旧記録は、未通知印がなくても自動通知しません。Webの結果返却は既存セッションを更新し、終了済み・存在しない会話のルーティング補完で空の会話を生成しません。
 
@@ -1361,16 +1319,12 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 
 デフォルト担当 `xangi:default` の表示名と選択Workspaceはproject-catalog.jsonへ保存し、AI既定値は従来の全体BackendResolverと保存先を使います。設定UIはデフォルト担当の画面へ統合します。担当未指定の新規会話はチャンネルWorkspace指定を優先し、未指定ならデフォルト担当のWorkspaceを使います。既存会話のsnapshotは変更せず、自己呼び出し判定は固定IDで維持します。
 
-通常会話から自分と同じ担当への依頼も可能です。新しい独立会話として実行し、元の会話履歴は引き継ぎません。この自己依頼で起動された担当は、明示許可したTeamへの一段委譲を除き、defaultへの問い合わせを含め再委譲できません。自己依頼の制限は実行情報に保存され、再起動後も維持されます。
+詳しくは[同じ担当への依頼](usage.md#agent-self-delegation)を参照してください。
 
 
 ### 設定画面でチームのリーダーを指定する
 
-設定 → チーム → 作成または編集の「リーダー（任意）」でAgentを選び、保存します。「指定なし（呼び出し元が担当）」が既定です。リーダーと作業メンバーは別のAgentにし、リーダーに選んだAgentはメンバー追加の候補から除外します。既存チームの動作は未指定のまま変わりません。解除して保存すると、次の依頼から呼び出し元が分担・統合を担当します。
-
-リーダー指定済みチームは `xangi team run TEAM_ID --task '依頼内容'` だけで呼べます。呼び出し元がメンバーごとの依頼や `--allow-teams-json` を渡す必要はありません。リーダーは自身のAI設定・指示・Workspaceで動き、そのチームのメンバーだけへ `team run --assignments-json` で作業を渡します。分担、結果の確認、修正依頼、統合はリーダーが担当します。指定なしのチームでは従来どおり全員分の `--assignments-json` が必要です。
-
-リーダーは各ラウンドの `--assignments-json` に必要なメンバーだけを1名以上指定できます。例えば制作担当4名の完了を待ち、次に審査担当1名だけを呼びます。指定しなかったメンバーは起動せず、累計起動数も選択人数だけ加算します。空配列・重複ID・チーム外ID・空の担当作業は拒否します。現在のラウンドが完了するまでは次を起動できません。リーダー未指定の通常の呼び出しは、従来どおり全員分の担当指定が必要です。明示的な `agent run --allow-teams-json` で委譲されたリーダーも部分選択できます。
+詳しくは[設定画面でチームのリーダーを指定する](usage.md#設定画面でチームのリーダーを指定する)を参照してください。
 
 依頼時の編成・共通指示・メンバー設定を保存し、実行中のリーダーによる `team show` と次の作業ラウンドでも同じ構成を使用します。設定変更は次の依頼から適用します。親への `team status` / `logs` は配下メンバーの各ラウンドも返します。期限・累計起動数・停止連動は下記の一段委譲と共通です。リーダーを指定したAgentは、チームの設定から外すまで削除できません。
 
@@ -1378,15 +1332,7 @@ xangi本体が未通知の完了・失敗と実行中の依頼を定期確認し
 
 親が登録済みのリーダーへ依頼する際、呼び出せるTeam IDを明示します。これは今回の依頼だけの許可で、Agentの恒久設定は変更しません。
 
-```bash
-xangi agent run LEADER_ID --task '調査・実装・レビューを進めて結果をまとめて' --allow-teams-json '["WORK_TEAM_ID","REVIEW_TEAM_ID"]' --delegation-max-members 32 --delegation-timeout-ms 3600000
-```
-
-リーダーは `team show` で編成を確認し、`team run` の `--assignments-json` で全員へ具体的な独立作業を渡します。同時に走らせるTeamは1件です。同じ実行IDで `team wait` を繰り返し、作業→レビュー→修正の各結果を取り込んで統合します。リーダーが先に応答を終えた場合も、実行基盤が未完了のTeamを待って結果を渡し、統合を続けさせます。子Teamの完了通知から別のリーダーターンは起動しません。
-
-許可外Team、リーダー自身・親の担当を含むTeam、担当メンバーからの再委譲（defaultへの問い合わせも含む）は拒否します。編成を後から変更した場合も、起動時に循環を再検査します。停止・失敗・共通期限で配下へ停止を伝え、待機担当は起動しません。終了した依頼の委譲権限は再利用できません。必要なら親から新しく依頼します。
-
-同時実行枠は元の会話で共有し、リーダーと配下の担当メンバーを数えます。Teamの集約用実行は追加枠に数えません。`AGENT_MAX_CONCURRENT_REQUESTS` は2以上が必要です。累計メンバー起動数は失敗したバッチも含め、既定64・指定範囲1〜256。共通期限は受付時から既定 `TIMEOUT_MS`（未設定なら60分）、指定範囲1秒〜10時間で、子や追加ラウンドごとにリセットしません。厳密な金額上限やストリーム途中のトークン予算停止は非対応です。これらの制限はxangi経由の依頼に適用し、任意シェルプロセスのサンドボックスにはなりません。
+詳しくは[リーダーからTeamへの一段委譲](usage.md#リーダーからteamへの一段委譲)を参照してください。
 
 ### 設定一覧と対話からの作成
 
@@ -1415,8 +1361,39 @@ HTTP受付の `event: ready` と初期化完了を区別する。参加する拡
 
 タイムアウト（既定120秒、1〜3600秒）はHTTP受付確立後から計測する。health取得には最大2秒を使う。時間切れでは子プロセスを強制終了せず、そのグループの予約を保持し、後続の起動をblockedとして返す。他グループは進行する。再度startを要求すると、前のプロセスの終了または初期化完了を再確認する。待機中の停止・ホスト終了は未開始の起動を取り消す。起動後の推論メモリや総容量の制限は扱わない。
 
+status/doctorも予約中の所有元のhealthを再確認し、complete/failedまたはプロセス終了を確認したら古い待機表示と予約を解除する。failedはHTTPが正常でも失敗として返す。初期化中・未知状態・health取得失敗では予約を維持する。
+
 ### 配布版の設定読込
 
 `installer/managed-env.ts` は更新対象外の `config/runtime.env` をmode 0600で排他的に新規作成する。既存ファイルは上書きせず、旧形式の自動移行は行わない。`runtime-config.ts` は同ファイルを読み、内部setup/stateパスを固定してJSON設定を適用してから本体をimportする。本体のdotenv読込後にも同じJSONを再適用し、初期設定と追加設定の優先順位を統一する。`env-file.ts` は本体と設定保存のパス解決を共通化する。更新・診断のhealth URLとCLIの既定URLは保存済みポートを利用する。
 
 checkout・Dockerでは専用`.env`のsetup/state指定（両方空なら共通設定を無効化）を尊重する。配布版の起動とCLIだけが選択済みのsetup/state・envファイル・installation kindを固定する。PM2起動は対象checkoutの明示setupペアを優先し、不完全なペアは停止する。共通setupと専用WORKSPACE_PATHが異なる場合や共通setupが無い場合は、呼出し元のsetupを引き継がない。
+
+### 端末向け拡張の共通HTTP入口
+
+端末アプリやcompanionなど、xangi画面とは別originから接続するHTTPクライアント向けに、`/api/devices/<extension-id>/*`を提供する。製品名やcapability IDを本体に追加する必要はない。画面用の`/api/extensions/<extension-id>/service/*`は同一origin検査付きで、端末向け入口とは使い分ける。
+
+対象拡張はmanaged-http runtimeを使い、manifestに次の宣言を追加する。`capability`には同じmanifestの`capabilities`で宣言したHTTP capabilityを指定する。`ui`は不要で、headlessでも利用できる。
+
+```json
+{
+  "deviceIngress": {
+    "capability": "device.control",
+    "authentication": "extension-bearer"
+  }
+}
+```
+
+未宣言・無効・未登録・未起動の拡張へは転送しない。端末向け入口を使うには、本体と拡張の両方がこの方式に対応している必要がある。宣言を追加するだけでは端末認証を実装したことにならない。
+
+#### 転送と認証
+
+- `GET/POST /api/devices/<extension-id>/<path>`を対象runtimeの`/device/<path>`へ転送する。queryとPOSTのバイナリ本文を維持する。管理用`/health`は端末向け経路の転送先にしない。
+- 本体は管理用Bearerを`Authorization`へ設定し、クライアントの元の`Authorization`を`X-Xangi-Device-Authorization`へ渡す。クライアントが同名の専用ヘッダーを送っても本体が上書きする。
+- **拡張は管理用Bearerと端末用Bearerを両方検証し、不在・不一致を拒否する。** 端末トークンの発行・保存・失効は拡張側が担当する。管理用Bearerだけを確認して端末操作を許可してはいけない。
+- 別originを許可するため、Cookie認証には使わない。要求Cookieと応答Set-Cookieは転送しない。クライアントのOriginも認証根拠にしない。
+- EventSourceなどquery tokenが必要な場合は、拡張が対象のイベント経路だけで検証し、ログへ残さない。本体はquery tokenを検証しない。
+
+POST本文は最大32 MiB。応答ヘッダーまでの待機は120秒で、受信開始後はSSE等を逐次転送する。HTTP GET/POST専用で、WebSocket・任意の外部API認証・機器固有TCPの汎用中継ではない。redirectを使うクライアントも対象外。内部bridge/STT等のポート自動割当は拡張runtime側の責務であり、この入口自体は内部ポートを割り当てない。
+
+Even G2はこの仕組みを利用する一例で、`deviceIngress.capability`に`device.even-g2`を指定する。他の拡張も同じ認証・転送仕様を実装すれば、固有ポートを端末へ公開せずに利用できる。

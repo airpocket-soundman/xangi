@@ -1,3 +1,4 @@
+import { ExtensionIcon, shortExtensionName } from './ExtensionIcon';
 import { useExtensionFavorites } from './extensionFavorites';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
@@ -62,6 +63,8 @@ function permissionLabels(extension: ExtensionEntry): string[] {
 
 export function Extensions() {
   const favorites = useExtensionFavorites();
+  const [editingId, setEditingId] = useState<string>();
+  const [nameDraft, setNameDraft] = useState('');
   const [extensions, setExtensions] = useState<ExtensionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionId, setActionId] = useState<string>();
@@ -159,7 +162,7 @@ export function Extensions() {
         <section className="extension-favorites" aria-labelledby="extension-favorites-title">
           <h2 id="extension-favorites-title">お気に入り</h2>
           <p>
-            左メニューから拡張を開けます。スマホでは「その他」に表示します。登録と表示順は端末間で共通です。
+            左メニューから拡張を開けます。スマホでは「その他」に表示します。表示名・登録・表示順は端末間で共通です。
           </p>
           {favorites.error ? <p role="alert">{favorites.error}</p> : null}
           {favorites.loading ? (
@@ -170,11 +173,60 @@ export function Extensions() {
             <ol className="extension-favorites-list">
               {favorites.favorites.map((favorite, index) => (
                 <li key={favorite.id}>
-                  <span>
-                    {favorite.displayName}
-                    {!favorite.available ? '（利用できません）' : ''}
-                  </span>
+                  <div className="extension-favorite-identity">
+                    <ExtensionIcon id={favorite.id} />
+                    <div>
+                      <span>{favorite.displayName}</span>
+                      <small>{favorite.id}</small>
+                      {!favorite.available ? <small>利用できません</small> : null}
+                    </div>
+                  </div>
+                  {editingId === favorite.id ? (
+                    <form
+                      className="extension-name-editor"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        if (await favorites.update(favorite.id, 'rename', nameDraft))
+                          setEditingId(undefined);
+                      }}
+                    >
+                      <label htmlFor={`favorite-name-${favorite.id}`}>表示名（80文字まで）</label>
+                      <input
+                        id={`favorite-name-${favorite.id}`}
+                        value={nameDraft}
+                        maxLength={80}
+                        placeholder={favorite.defaultDisplayName}
+                        autoFocus
+                        disabled={favorites.saving}
+                        onChange={(event) => setNameDraft(event.target.value)}
+                      />
+                      <small>空欄で保存すると標準の名前に戻ります。</small>
+                      <div className="extension-favorite-controls">
+                        <button type="submit" disabled={favorites.saving}>
+                          保存
+                        </button>
+                        <button
+                          type="button"
+                          disabled={favorites.saving}
+                          onClick={() => setEditingId(undefined)}
+                        >
+                          キャンセル
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
                   <div className="extension-favorite-controls">
+                    <button
+                      type="button"
+                      disabled={favorites.saving}
+                      aria-label={`${favorite.displayName}の表示名を変更`}
+                      onClick={() => {
+                        setEditingId(favorite.id);
+                        setNameDraft(favorite.displayName);
+                      }}
+                    >
+                      編集
+                    </button>
                     <button
                       type="button"
                       aria-label={`${favorite.displayName}を上へ`}
@@ -263,11 +315,13 @@ export function Extensions() {
                 <article className="extension-row" key={extension.id}>
                   <div className="extension-main" aria-live="polite">
                     <div className="extension-title-row">
-                      <h2>{extension.displayName}</h2>
+                      <ExtensionIcon id={extension.id} />
+                      <h2>{shortExtensionName(extension.displayName)}</h2>
                       <span className={`extension-status ${extension.healthy ? 'healthy' : ''}`}>
                         {statusLabel(extension)}
                       </span>
                     </div>
+                    <small className="extension-original-id">{extension.id}</small>
                     <p className="extension-description">{extensionDescription(extension)}</p>
                     <dl className="extension-meta">
                       {extension.version ? (

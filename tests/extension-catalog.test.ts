@@ -13,9 +13,10 @@ import {
   listDevelopmentExtensions,
   loadExtensionIdsReservedForRepository,
   resolveDevelopmentExtensionService,
+  resolveExtensionDeviceService,
   uninstallDevelopmentExtension,
 } from '../src/extension-catalog.js';
-import { linkExtension, stopManagedExtensions } from '../src/extensions.js';
+import { linkExtension, runExtensionAction, stopManagedExtensions } from '../src/extensions.js';
 import { preparePublicGitHubExtension } from '../src/extension-repository.js';
 
 const previousCatalog = process.env.XANGI_EXTENSION_DEV_MANIFESTS;
@@ -181,6 +182,26 @@ describe('development extension catalog', () => {
         uiAvailable: true,
         setupRepositoryUrl: 'https://github.com/karaage0703/xangi-stopwatch',
       }),
+      expect.objectContaining({
+        id: 'xangi-tasks',
+        displayName: 'xangi-tasks',
+        capabilities: ['xangi-tasks.manage'],
+        installed: false,
+        running: false,
+        uiAvailable: true,
+        actionsAvailable: true,
+        setupRepositoryUrl: 'https://github.com/karaage0703/xangi-tasks',
+      }),
+      expect.objectContaining({
+        id: 'xangi-remote-desktop',
+        displayName: 'xangi-remote-desktop',
+        capabilities: ['desktop.open'],
+        installed: false,
+        running: false,
+        uiAvailable: true,
+        actionsAvailable: true,
+        setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
+      }),
     ]);
     expect(entries.every((entry) => !('version' in entry))).toBe(true);
     const readmes = await Promise.all([
@@ -193,18 +214,18 @@ describe('development extension catalog', () => {
     }
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/karaage0703/xangi-search'),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
     expect([
       ...extensionIdsReservedForRepository(entries, 'https://github.com/example/other'),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
     expect([
       ...(await loadExtensionIdsReservedForRepository(
         'https://github.com/karaage0703/xangi-search'
       )),
-    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch']);
+    ]).toEqual(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
     expect([
       ...(await loadExtensionIdsReservedForRepository('https://github.com/example/other')),
-    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch']);
+    ]).toEqual(['xangi-search', 'xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']);
   });
 
   it('isolates an unsupported repository manifest and keeps the official catalog visible', async () => {
@@ -230,6 +251,8 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-terminal' }),
         expect.objectContaining({ id: 'xangi-dots' }),
         expect.objectContaining({ id: 'xangi-stopwatch' }),
+        expect.objectContaining({ id: 'xangi-tasks' }),
+        expect.objectContaining({ id: 'xangi-remote-desktop' }),
       ],
       issues: [
         expect.objectContaining({
@@ -266,6 +289,8 @@ describe('development extension catalog', () => {
         expect.objectContaining({ id: 'xangi-terminal', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-dots', statusKnown: false }),
         expect.objectContaining({ id: 'xangi-stopwatch', statusKnown: false }),
+        expect.objectContaining({ id: 'xangi-tasks', statusKnown: false }),
+        expect.objectContaining({ id: 'xangi-remote-desktop', statusKnown: false }),
       ],
       issues: expect.arrayContaining([
         expect.objectContaining({ code: 'source-store-invalid' }),
@@ -321,6 +346,8 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-terminal', installed: false }),
       expect.objectContaining({ id: 'xangi-dots', installed: false }),
       expect.objectContaining({ id: 'xangi-stopwatch', installed: false }),
+      expect.objectContaining({ id: 'xangi-tasks', installed: false }),
+      expect.objectContaining({ id: 'xangi-remote-desktop', installed: false }),
     ]);
     expect(result.issues).toEqual([expect.objectContaining({ code: 'manifest-invalid' })]);
   });
@@ -440,6 +467,8 @@ describe('development extension catalog', () => {
       expect.objectContaining({ id: 'xangi-terminal', installed: false }),
       expect.objectContaining({ id: 'xangi-dots', installed: false }),
       expect.objectContaining({ id: 'xangi-stopwatch', installed: false }),
+      expect.objectContaining({ id: 'xangi-tasks', installed: false }),
+      expect.objectContaining({ id: 'xangi-remote-desktop', installed: false }),
     ]);
     expect(result.extensions.some((entry) => entry.id === 'changed-id')).toBe(false);
     expect(result.issues).toEqual([
@@ -486,7 +515,7 @@ describe('development extension catalog', () => {
 
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/karaage0703/xangi-search')
-    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch']));
+    ).resolves.toEqual(new Set(['xangi-stackchan', 'xangi-even-g2', 'xangi-avatar', 'xangi-terminal', 'xangi-dots', 'xangi-stopwatch', 'xangi-tasks', 'xangi-remote-desktop']));
     await expect(
       loadExtensionIdsReservedForRepository('https://github.com/example/other')
     ).rejects.toThrow('invalid extension manifest');
@@ -753,3 +782,34 @@ describe('development extension catalog', () => {
     );
   });
 });
+
+it.each(['sample-watch', 'sample-controller'])(
+  'resolves opted-in %s without requiring a UI',
+  async (id) => {
+    const { root, manifestPath } = await fixture();
+    await expect(resolveExtensionDeviceService(id)).rejects.toThrow('not installed');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.id = id;
+    delete manifest.ui;
+    manifest.capabilities[0].id = 'device.control';
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const executable = join(root, 'extension-cli');
+    await writeFile(executable, (await readFile(executable, 'utf8')).replaceAll('demo-search', id));
+    const linked = await linkExtension(manifestPath);
+    await runExtensionAction(linked, 'start', { workspace: root });
+    await expect(resolveExtensionDeviceService(id)).rejects.toThrow(
+      'does not declare device ingress'
+    );
+    manifest.deviceIngress = { capability: 'device.control', authentication: 'extension-bearer' };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await expect(resolveExtensionDeviceService(id)).resolves.toMatchObject({
+      baseUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:/),
+      authorization: expect.stringMatching(/^Bearer /),
+    });
+    manifest.deviceIngress.capability = 'unknown';
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await expect(resolveExtensionDeviceService(id)).rejects.toThrow(
+      'invalid extension device ingress declaration'
+    );
+  }
+);

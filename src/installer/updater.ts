@@ -38,6 +38,7 @@ export interface UpdaterOptions {
 }
 
 export interface UpdateOptions {
+  onProgress?: (message: string) => void;
   allowDowngrade?: boolean;
   /** Re-activate an already-current release when provisioning its OS service. */
   forceActivate?: boolean;
@@ -111,6 +112,7 @@ export class Updater {
 
       const currentTarget = await readOptionalLink(this.layout.currentLink);
       const currentVersion = currentTarget ? basename(currentTarget) : undefined;
+      options.onProgress?.('Verifying release manifest...');
       const manifest = this.manifestVerifier.verifyManifest(manifestInput, {
         expectedPlatform: this.layout.platform,
         expectedArch: this.layout.arch,
@@ -124,14 +126,18 @@ export class Updater {
         !options.forceActivate &&
         (await pathExists(currentTarget))
       ) {
+        options.onProgress?.(`xangi is already up to date (${manifest.version}).`);
         return { version: manifest.version };
       }
 
+      options.onProgress?.(`Downloading xangi ${manifest.version}...`);
       const artifact = await this.download(manifest.asset.url, manifest.asset.size);
+      options.onProgress?.('Verifying downloaded release...');
       this.manifestVerifier.verifyArtifact(artifact, manifest);
 
       stagingPath = join(this.layout.stagingDir, `${manifest.version}-${randomUUID()}`);
       await mkdir(stagingPath, { recursive: false });
+      options.onProgress?.('Extracting release...');
       await this.extractArtifact(artifact, stagingPath);
 
       const targetPath = versionPath(this.layout, manifest.version);
@@ -144,14 +150,18 @@ export class Updater {
         stagingPath = undefined;
       }
 
+      options.onProgress?.('Switching to the updated release...');
       await atomicLink(targetPath, this.layout.currentLink);
       if (options.forceActivate) {
         try {
+          options.onProgress?.('Restarting xangi service...');
           await this.service.restart();
+          options.onProgress?.('Checking service health...');
           await this.requireHealthy();
         } catch (updateError) {
           let rollbackError: unknown;
           try {
+            options.onProgress?.('Activation failed; rolling back...');
             await this.rollback(currentTarget);
           } catch (error) {
             rollbackError = error;

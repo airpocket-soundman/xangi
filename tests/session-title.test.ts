@@ -13,6 +13,18 @@ import {
 } from '../src/session-title.js';
 
 describe('stripPromptMetadata', () => {
+  it('hides injected Team instructions and subsequent platform metadata', () => {
+    expect(stripPromptMetadata(`<system-context>internal context</system-context>
+[runtime] cwd=/tmp repo=test
+<agent-instructions>Team to use: test. Run the configured leader.</agent-instructions>
+[プラットフォーム: Discord]
+[チャンネル: #team (ID: 123)]
+[発言者: Web (ID: web)]
+[現在時刻: 2026/10/23 2:19:03(金)]
+もんじゅテスト`)).toBe('もんじゅテスト');
+    const literal = 'Explain this example:\n<agent-instructions>example</agent-instructions>';
+    expect(stripPromptMetadata(literal)).toBe(literal);
+  });
   it('Discord 形式のメタデータ4行をすべて剥がす', () => {
     const input =
       '[プラットフォーム: Discord]\n' +

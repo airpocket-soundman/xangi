@@ -60,6 +60,15 @@ type SortDirection = 'asc' | 'desc';
 type MobilePane = 'files' | 'editor';
 
 const SIDEBAR_WIDTH_KEY = 'xangi-workspace-sidebar-width';
+const LINE_NUMBERS_KEY = 'xangi-workspace-line-numbers';
+
+function initialLineNumbers(): boolean {
+  try {
+    return window.localStorage.getItem(LINE_NUMBERS_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
 
 function initialSidebarWidth(): number {
   const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
@@ -120,6 +129,12 @@ export function Workspace() {
   const [tagFilter, setTagFilter] = useState('');
   const [mobilePane, setMobilePane] = useState<MobilePane>('files');
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
+  const [showLineNumbers, setShowLineNumbers] = useState(initialLineNumbers);
+  const lineNumbers = useMemo(
+    () => Array.from({ length: draft.split('\n').length }, (_, index) => index + 1).join('\n'),
+    [draft]
+  );
+  const gutterRef = useRef<HTMLPreElement>(null);
   const resizeStart = useRef({ x: 0, width: sidebarWidth });
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const pendingLocation = useRef<{ line: number; column?: number } | undefined>(undefined);
@@ -192,8 +207,15 @@ export function Workspace() {
     editor.setSelectionRange(selection.start, selection.end);
     const lineHeight = Number.parseFloat(window.getComputedStyle(editor).lineHeight) || 21;
     editor.scrollTop = Math.max(0, (selection.line - 2) * lineHeight);
+    if (gutterRef.current) gutterRef.current.style.transform = `translateY(-${editor.scrollTop}px)`;
     pendingLocation.current = undefined;
   }, [draft, mode, selected]);
+
+  useLayoutEffect(() => {
+    if (gutterRef.current && editorRef.current) {
+      gutterRef.current.style.transform = `translateY(-${editorRef.current.scrollTop}px)`;
+    }
+  }, [draft, mode, showLineNumbers]);
 
   const reloadFile = useCallback(async () => {
     if (!selected) return;
@@ -505,6 +527,24 @@ export function Workspace() {
                   </small>
                 </div>
                 <div className="workspace-editor-actions">
+                  {mode === 'edit' && (
+                    <label className="workspace-line-numbers-option">
+                      <input
+                        type="checkbox"
+                        checked={showLineNumbers}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setShowLineNumbers(enabled);
+                          try {
+                            window.localStorage.setItem(LINE_NUMBERS_KEY, String(enabled));
+                          } catch {
+                            // Keep the option usable when browser storage is unavailable.
+                          }
+                        }}
+                      />
+                      行番号
+                    </label>
+                  )}
                   {visibleSaveState !== 'idle' && (
                     <span
                       className={`workspace-save-status ${visibleSaveState}`}
@@ -574,18 +614,30 @@ export function Workspace() {
                   </div>
                 </article>
               ) : (
-                <textarea
-                  ref={editorRef}
-                  className="workspace-editor"
-                  aria-label={`${selected.path}を編集`}
-                  spellCheck={markdown}
-                  value={draft}
-                  onChange={(event) => {
-                    setDraft(event.target.value);
-                    setSaveState('idle');
-                    setMessage('');
-                  }}
-                />
+                <div className="workspace-editor-source">
+                  {showLineNumbers && (
+                    <div className="workspace-line-numbers" aria-hidden="true">
+                      <pre ref={gutterRef}>{lineNumbers}</pre>
+                    </div>
+                  )}
+                  <textarea
+                    ref={editorRef}
+                    className="workspace-editor"
+                    wrap={showLineNumbers ? 'off' : 'soft'}
+                    onScroll={(event) => {
+                      if (gutterRef.current)
+                        gutterRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`;
+                    }}
+                    aria-label={`${selected.path}を編集`}
+                    spellCheck={markdown}
+                    value={draft}
+                    onChange={(event) => {
+                      setDraft(event.target.value);
+                      setSaveState('idle');
+                      setMessage('');
+                    }}
+                  />
+                </div>
               )}
             </>
           ) : (

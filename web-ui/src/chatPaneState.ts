@@ -6,6 +6,7 @@ const PANE_STATE_KEY = 'xangi_pane_state_v1';
 export interface PaneDescriptor {
   key: string;
   sessionId: string | null;
+  draftProjectId?: string;
 }
 
 let paneSequence = 0;

@@ -244,6 +244,7 @@ export function parsePseudoToolCall(
  */
 const READ_ONLY_RESCUE_TOOLS = new Set([
   'read',
+  'view_image',
   'glob',
   'grep',
   'tool_search',

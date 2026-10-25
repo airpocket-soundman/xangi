@@ -10,7 +10,7 @@ The recommended onboarding path uses a single-use pairing URI that expires after
 
 ```bash
 xangi tool remote_worker --action pair-create --worker my-mac \
-  --gateway-url ws://100.86.210.85:18791/api/remote-workers/connect
+  --gateway-url ws://100.64.0.1:18791/api/remote-workers/connect
 xangi worker install --pair 'xangi-pair://...' --workspace /Users/you/project
 xangi worker status
 ```
@@ -33,7 +33,7 @@ Run the node with a local configuration:
 
 ```json
 {
-  "gatewayUrl": "ws://100.86.210.85:18791/api/remote-workers/connect",
+  "gatewayUrl": "ws://100.64.0.1:18791/api/remote-workers/connect",
   "workerId": "my-mac",
   "tokenFile": "/Users/you/.config/xangi/remote-worker.token",
   "workspaceRoots": ["/Users/you/project"],

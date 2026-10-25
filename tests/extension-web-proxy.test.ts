@@ -17,13 +17,13 @@ async function listen(server: Server) {
   });
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
-async function gateway(baseUrl: string) {
+async function gateway(baseUrl: string, device = false) {
   const resolve = async (id: string) => {
-    if (!['one', 'two'].includes(id)) throw Error('not installed');
+    if (!(device ? ['sample-watch'] : ['one', 'two']).includes(id)) throw Error('not installed');
     return { baseUrl, authorization: `Bearer private-${id}` };
   };
   const server = createServer((req, res) => {
-    void proxyExtensionRequest(req, res, resolve).then((handled) => {
+    void proxyExtensionRequest(req, res, resolve, device).then((handled) => {
       if (!handled) res.writeHead(404).end();
     });
   });
@@ -169,5 +169,72 @@ describe('extension service proxy', () => {
       const error = await new Promise<Error>((done) => ws.once('error', done));
       expect(error.message).toContain('403');
     }
+  });
+});
+
+describe('extension device ingress', () => {
+  it('accepts companion origins, preserves binary/query, separates device and runtime tokens', async () => {
+    let seen: any;
+    const base = await listen(
+      createServer(async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk);
+        seen = { url: req.url, headers: req.headers, body: Buffer.concat(chunks) };
+        res.writeHead(
+          req.headers['x-xangi-device-authorization'] === 'Bearer device-secret' ? 200 : 401,
+          {
+            'content-type': 'application/octet-stream',
+            'set-cookie': 'private=value',
+          }
+        );
+        res.end(seen.body);
+      })
+    );
+    const origin = await gateway(base, true);
+    const body = Buffer.from([0, 255, 128, 13]);
+    const response = await fetch(`${origin}/api/devices/sample-watch/stt?format=pcm`, {
+      method: 'POST',
+      body,
+      headers: {
+        origin: 'https://companion.example',
+        'sec-fetch-site': 'cross-site',
+        authorization: 'Bearer device-secret',
+        cookie: 'host=secret; xangi_ext_73616d706c652d7761746368_session=private',
+        'x-xangi-device-authorization': 'Bearer forged',
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(body);
+    expect(seen.url).toBe('/device/stt?format=pcm');
+    expect(seen.headers.authorization).toBe('Bearer private-sample-watch');
+    expect(seen.headers['x-xangi-device-authorization']).toBe('Bearer device-secret');
+    expect(seen.headers.cookie).toBeUndefined();
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect((await fetch(`${origin}/api/devices/sample-watch/health`)).status).toBe(401);
+    expect((await fetch(`${origin}/api/devices/other/health`)).status).toBe(502);
+    expect(
+      (await fetch(`${origin}/api/devices/sample-watch/health`, { method: 'DELETE' })).status
+    ).toBe(405);
+  });
+  it('streams authenticated EventSource queries without buffering', async () => {
+    let seen = '';
+    const base = await listen(
+      createServer((req, res) => {
+        seen = req.url || '';
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: ready\n\n');
+      })
+    );
+    const origin = await gateway(base, true);
+    const abort = new AbortController();
+    const response = await fetch(
+      `${origin}/api/devices/sample-watch/terminal/events?token=event-secret`,
+      { signal: abort.signal }
+    );
+    const chunk = await response.body!.getReader().read();
+    expect(new TextDecoder().decode(chunk.value)).toBe('data: ready\n\n');
+    expect(seen).toBe('/device/terminal/events?token=event-secret');
+    abort.abort();
   });
 });

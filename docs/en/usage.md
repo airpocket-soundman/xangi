@@ -230,6 +230,8 @@ Monitor groups Sessions into `Working` and `Completed` without exposing the inte
 
 Monitor combines running and input-waiting conversations in Working, with a separate activity label on each card. Complete / Back to working buttons and desktop drag-and-drop switch the same Session between columns; Undo reverses the latest individual change. Mobile uses large tap controls. Running Sessions cannot be completed. Reopening (`POST /api/sessions/:id/reopen`) preserves the Session and history without starting a model turn. It rejects missing Sessions (404), scheduler runs (409), and another active Session in the same context (409), rather than replacing that conversation. Scheduler history has no manual status controls.
 
+<a id="monitor-card-actions"></a>
+
 Monitor completion and reopening are handled per card, so other cards remain actionable. Successful changes appear immediately; background list refreshes are coalesced. Duplicate operations on the same card and simultaneous bulk completion are prevented.
 
 The Monitor “Complete all waiting” action submits the selected session IDs to `POST /api/sessions/close-waiting` in one request, persisting changes and notifying subscribers once. Sessions that have started running are skipped; skipped and failed counts are shown in the UI. Conversation history is preserved.
@@ -462,6 +464,8 @@ There is no browser UI that replaces AI onboarding. Token entry alone uses the l
 `setup`, `update`, and `doctor` work in both managed distributions and Git checkouts. The common configuration saved by checkout `setup` is loaded by the PM2 service, so `WORKSPACE_PATH` does not need to be duplicated in `.env`. `doctor` checks PM2, Web Chat health, and the actual workspace reported by `/api/sessions`; it exits with an error when that workspace differs from the saved setup.
 
 In a checkout, `./bin/xangi update` first refuses uncommitted changes, detached HEAD, and a branch without an upstream, then runs `git pull --ff-only`, `npm ci`, and `npm run build`. Use `./bin/xangi update --managed` to explicitly invoke the signed managed updater from a checkout.
+
+Managed `xangi update` reports checking, downloading, verification, extraction, and switching progress on stderr, with the final result on stdout.
 
 `xangi update --help` (or `-h`) describes the update behavior and available options for both checkout and managed installations, including that the service is not restarted automatically. Run `xangi service restart` explicitly when you are ready to activate the update.
 
@@ -918,6 +922,10 @@ xangi-prod service restart
 
 ### Changing Environment Variables with pm2
 
+Checkout `service start/restart` reads the target clone's `.env`, without inheriting application settings, tokens, or unset settings from the caller. Only host facilities such as PATH, HOME, locale, PM2_HOME, XDG directories, proxies, and CA certificates are inherited. Move application settings previously supplied via shell `export` into the target `.env`. An explicit `--dir` selects a checkout even from a managed installation. Without it, the CLI uses its own checkout rather than the caller's `XANGI_DIR`. Process names resolve from `--name`, the target `.env`'s `XANGI_PROCESS_NAME`, `XANGI_INSTANCE_ID`, then the directory name.
+
+`service start/restart` recreates the PM2 registration, removing previously injected values and settings deleted from `.env`. The autostart snapshot is separate: if autostart is already configured, refresh it with `pm2 save` after recovery. Resurrecting an old dump restores its old environment. Direct `pm2 start/restart` and `--update-env` bypass this isolation; use `xangi service` for startup and configuration changes.
+
 xangi loads environment variables via `node --env-file=.env`. To change environment variables, **edit the `.env` file and then run `./bin/xangi service restart`**.
 
 ```bash
@@ -928,7 +936,7 @@ vim .env  # Add TIMEOUT_MS=60000
 
 > **Warning: Do not use `pm2 restart --update-env`!**
 > `--update-env` saves all shell environment variables to pm2. If you're running multiple xangi instances, another instance's `DISCORD_TOKEN` etc. may leak in, causing dual login with the same bot token.
-> `node --env-file=.env` does not overwrite existing environment variables, so values set by pm2 take precedence.
+> `node --env-file=.env` does not overwrite existing variables. Even when the application reloads `.env`, settings absent from that file remain inherited and can enable another instance's features.
 
 ## Docker Deployment
 
@@ -1038,7 +1046,7 @@ The proxy supports GET/HEAD/POST/PUT/PATCH/DELETE, binary request bodies up to 3
 
 Add and manage external extensions from Extensions in the Web UI. Installation, configuration, stored data, standalone UI, and update instructions remain canonical in each extension repository instead of being duplicated in xangi documentation.
 
-`xangi extension restart --help` (or `-h`) prints help without taking action. `start`, `stop`, and `restart` require an extension ID. Use explicit `--all` only when every linked extension should be affected (for example, `xangi extension restart xangi-studio` or `xangi extension restart --all`). The same guard applies to `xangi tool extension_runtime`.
+`xangi extension restart --help` (or `-h`) prints help without taking action. `start`, `stop`, and `restart` require an extension ID. Use explicit `--all` only when every linked extension should be affected (for example, `xangi extension restart xangi-search` or `xangi extension restart --all`). The same guard applies to `xangi tool extension_runtime`.
 
 Managed extension status reports `running`, `healthy`, and `ready` separately. `running` means the child process is alive, `healthy` means its health endpoint returned 2xx, and `ready` means that 2xx payload did not explicitly contain `ready: false`. Legacy extensions that omit `ready` are treated as ready. If the initial health probe times out, returns non-2xx, or reports `ready: false` during a cold start, xangi keeps the validated child running so later `status` / `doctor` calls can observe recovery. `doctor` does not succeed until the extension is ready.
 
@@ -1208,6 +1216,8 @@ The Local LLM backend supports image input. When you send a message with an imag
 #### Supported Image Formats
 
 JPEG (.jpg, .jpeg), PNG (.png), GIF (.gif), WebP (.webp)
+
+Local LLM agents can use `view_image(path)` to inspect reference photos and generated screenshots during a task. Supply the image path in the task so the model can open it with this tool. An image-capable model is required. JPEG/PNG/GIF/WebP files under the workspace or system temporary directory are supported (up to 10 MiB). Read failures return tool errors. Images are included in the next model request, without storing image bytes in tool logs.
 
 #### Supported LLM Servers
 
@@ -1617,13 +1627,13 @@ While an attachment is transferring, desktop and mobile show its name, position 
 | `WEB_CHAT_UPLOAD_MAX_MB`   | Maximum MiB per Web Chat upload request, including multipart headers                                                                                                                                    | `64`           |
 | `WEB_CHAT_DOWNLOAD_ACCEPT` | Allowed download extensions as a comma-separated `.ext` list                                                                                                                                            | all extensions |
 
-Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, and the slash-command/skill GUI. A compact status line below each pane shows the current model, the currently effective runner cwd for that Session, and context usage from the last completed turn. The cwd matches the workdir injected into each turn's runtime context; a `cd` performed only inside a one-off shell is not persistent. Unavailable values are omitted, and the path is truncated on narrow screens. Its shared navigation is Chat / Files / Schedules / Monitor; `/schedules` creates, edits, pauses, and deletes jobs for Web, Discord, Slack, and Telegram. Each Web run starts a fresh conversation and can be assigned to an optional Project. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. Every message originating from Web, Discord, or Slack has a `/chat/<appSessionId>#message-<messageId>` link action. Opening it scrolls to and highlights that message. Pasting it into Discord or Slack connected to the same xangi instance quotes only that one message as untrusted data rather than instructions. HTTP directed requests store history and provider context in one regular Web session per source instance. For a Discord session, selecting `このDiscordで続ける` mirrors Web input into the original Discord channel or thread and runs the turn with that same Discord session context. Attachments and Web-only commands are unavailable in this mode. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions remain read-only and can only branch into a Web session.
+Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, and the slash-command/skill GUI. A compact status line below each pane shows the current model, the currently effective runner cwd for that Session, and context usage from the last completed turn. The cwd matches the workdir injected into each turn's runtime context; a `cd` performed only inside a one-off shell is not persistent. Unavailable values are omitted, and the path is truncated on narrow screens. Its shared navigation is Chat / Files / Schedules / Monitor; `/schedules` creates, edits, pauses, and deletes jobs for Web, Discord, Slack, and Telegram. Each Web run starts a fresh conversation and can be assigned to an optional Project. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. Every message originating from Web, Discord, or Slack has a `/chat/<appSessionId>#message-<messageId>` link action. Opening it scrolls to and highlights that message. Pasting it into Discord or Slack connected to the same xangi instance quotes only that one message as untrusted data rather than instructions. HTTP directed requests store history and provider context in one regular Web session per source instance. For a Discord session, selecting `このDiscordで続ける` mirrors Web input into the original Discord channel or thread and runs the turn with that same Discord session context. Attachments and Web-only commands are unavailable in this mode. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions also support continuation in the original conversation using `このSlackで続ける`.
 
 Directed requests use bearer-authenticated HTTP to URLs registered in `INTER_INSTANCE_CHAT_PEERS` by default. `INTER_INSTANCE_CHAT_ALLOWED_PEERS` accepts a comma-separated inbound allowlist; when unset or `*`, any instance holding the shared token is allowed.
 
 Web Projects group conversations and shared context. See Shared projects and agents below for management and migration.
 
-The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits files up to 1 MiB, including Markdown, text, JSON/JSONL/YAML/TOML, common C/C++, Rust, Go, Astro, Vue, Svelte, and Sass-family source formats, plus logs, diffs, patches, TSV, and CFG files. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
+The same server exposes a browser/editor for the configured `WORKSPACE_PATH` at `http://localhost:<WEB_CHAT_PORT>/workspace`. It browses directories and edits files up to 1 MiB, including Markdown, text, JSON/JSONL/YAML/TOML, common C/C++, Rust, Go, Astro, Vue, Svelte, and Sass-family source formats, plus logs, diffs, patches, TSV, and CFG files. Markdown can switch between editing and preview, and `Ctrl/Cmd+S` saves. Files can be sorted ascending or descending by name or modification time and filtered by Markdown frontmatter `tags`. On desktop, the file list width can be changed with dragging or arrow keys; on phones, the file list and editor switch as full-screen views. Text-file references in Web Chat answers open this screen through `/workspace?path=...`; a `:12` or `#L12` location opens edit mode and selects that line. Edit mode shows line numbers by default. The `行番号` (line numbers) checkbox in the header toggles them and remembers the preference in the same browser. With line numbers enabled, long lines scroll horizontally instead of wrapping; disabling them restores wrapping. Markdown and HTML previews do not show line numbers. The `Open raw` header action keeps the direct-file response available. `MEDIA:` inside fenced or inline code remains explanatory text instead of becoming media.
 
 Set `WORKSPACE_BROWSER_EXCLUDE=logs,skills,hooks,tmp/web-uploads` to hide directories from the list by exact workspace-relative path. `hooks` matches only the root directory (`src/hooks` remains visible); a trailing `/` is optional. Unset or empty means no exclusions. The list shows the number of directories hidden by settings. Direct links still allow viewing and editing. Changes apply to all workspaces after restart.
 
@@ -1989,20 +1999,27 @@ Use the bundled `current/bin/xangi-antigravity-statusline` helper with `--data-d
 
 ## Shared projects and agents
 
-Projects group conversations and shared instructions. Agents independently define a name, basic instructions, workspace and AI settings. There is no project membership or project default agent. New conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Selected Agents take precedence; clear the Agent before changing individual settings.
+Projects group conversations and shared instructions. Agents independently define a name, basic instructions, workspace and AI settings. Projects can select a default Agent or Team for new conversations and connect a Discord or Slack channel. Outside a Project, new conversations can select any registered agent. Moving a conversation between projects preserves its selected agent. Selected Agents take precedence; clear the Agent before changing individual settings.
 
-Open Studio from the extensions list to choose makers and reviewers for each task. The chat toolbar no longer shows a Studio shortcut. Shared instructions and past conversations are provided explicitly (up to five, 30,000 characters each and 50,000 total source characters). Reference URLs in shared instructions are not automatically fetched.
+See [Shared projects and agents](design.md#shared-projects-and-agents).
 
-DATA_DIR/project-catalog.json stores projects and agents, managed separately through /api/projects and /api/agents. Projects do not store AI settings or membership. Agents used by open or running conversations cannot be deleted. References from closed or archived conversations do not block deletion; only the selected agent is cleared, preserving text, project and workspace. Deleting a project does not delete conversation text or Studio artifacts.
-
-Update the host and Studio together. For rollback, stop both services and restore the pre-upgrade backup as a set. The legacy file does not include edits made after migration.
+For rollback, stop xangi and restore the pre-upgrade backup as a set. The legacy file does not include edits made after migration.
 
 The Agents section in Settings supports creating, editing and deleting agents and shows their names, roles and models. The Projects screen links directly to the Agents and Workspace sections in Settings. The new-conversation selector always offers every registered agent. Agents used by open or running conversations cannot be deleted; closed conversations do not block deletion.
 
 
 ### Channel agents and precedence
 
-Projects and Agents are sibling entries in the Web sidebar. Choose an Agent to filter its conversations, or choose a new-conversation Agent before creating a chat.
+Select a Project in the Web sidebar and configure its default Agent or Team and connected Discord or Slack channel. Manage Agents and Teams in Settings.
+
+Each Project can connect one channel, and a channel cannot belong to multiple Projects. New conversations and scheduled channel runs use the Project's shared instructions and assignee. Existing conversations and past logs are not imported; existing conversations retain their settings after changes or unlinking. If no Project assignee is set, the channel Agent takes precedence over the global default. Agents and Teams assigned to a Project cannot be deleted.
+
+Send a message from New in a connected Project to create a thread in its channel. Continue the same conversation from Web or Discord/Slack; Web input also appears in the connected channel. Normal mention and auto-reply settings apply. Web supports text input only in this mode. Attachments, Web-only commands, and bidirectional edit/delete synchronization are not supported.
+
+Choose a secret conversation from the dropdown beside New. Secret conversations stay in Web and do not inherit the Project's default assignee. Use End and discard to finish them.
+
+Team and child-agent conversations appear in the same Project as their parent. Use Open in another pane in the session list to view them beside the parent conversation.
+
 
 Discord/Slack support `/agent list`, `/agent status`, `/agent set <ID>` and `/agent reset` (Discord uses the `id` option, with live choices searchable by agent name or ID). Web Settings also provides platform, channel and Agent selection. Register `/agent` in your Slack App's Slash Commands before using it.
 
@@ -2057,9 +2074,9 @@ xangi agent create --name Developer --workspace /absolute/path/to/worktree --rol
 
 `run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. Without a Team grant, children may only consult default, with no further delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
 
-Project forms contain a name and shared instructions. Agent forms contain a name, workspace, basic instructions and AI settings. There are no participant or project default agent settings.
+Project forms contain a name, shared instructions, a default Agent or Team, and an optional connected channel. Agent forms contain a name, workspace, basic instructions and AI settings.
 
-A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Agent-bound Studio runs also use that workspace; only runs without an agent accept a caller-selected workspace.
+A project groups instructions, conversations and artifacts. Avatar owns appearance and voice and uses agent-only conversations. Sessions retain their selected agent, and delegated work runs in the selected agent’s own workspace. Only runs without an agent accept a caller-selected workspace.
 
 ### Asking the default agent
 
@@ -2078,20 +2095,20 @@ The local-llm backend exposes Agent (tools enabled)/Chat (conversation only) and
 
 ### Extension favorites
 
-Use “☆ お気に入り” on installed extensions with a UI to add shortcuts to the left navigation rail. On mobile, open them from the More menu. The Favorites section at the top of Extensions provides up/down buttons and removal. Settings are saved on the xangi host and shared by devices connected to it; reopening or focusing the page refreshes them. Unavailable or removed extensions link to the catalog so their status can be checked.
+Use “☆ お気に入り” on installed extensions with a UI to add shortcuts to the left navigation rail. On mobile, open them from the More menu. The Favorites section at the top of Extensions provides up/down buttons and removal. Use “編集” to rename a favorite (up to 80 characters); save an empty name to restore the default. Default labels omit the leading `xangi-`, and extensions have distinct vector icons. Rail labels wrap to two lines and expand on hover or keyboard focus; the mobile More menu wraps the full name. Settings are saved on the xangi host and shared by devices connected to it; reopening or focusing the page refreshes them. Unavailable or removed extensions link to the catalog so their status can be checked.
+
+<a id="agent-command-guidance"></a>
 
 Delegation instructions use the absolute CLI path of the running instance, so login-shell PATH changes cannot select another xangi installation. Search controls are labeled for projects or agents and appear only on lists, not create/edit forms. Names beginning with `Avatar:` receive no special filtering.
 
-Common command guidance includes the running instance CLI absolute path and discovery, delegation and result commands. Rosters are fetched on demand. Child runs receive only the selected agent instructions and the task, never implicit parent project instructions or history. Ordinary project conversations still use their shared instructions and selected agent settings.
+See [External inbox Agent settings](design.md#external-inbox-agent-settings).
 
 The separate shared reference material field has been removed. Put descriptions and URLs in shared instructions. Existing text in the retired field is moved into shared instructions once when loaded.
 
 
 ### File changes and HTML previews in conversations
 
-HTML previews inside Studio allow only same-origin frames. External sites cannot be embedded; the preview sandbox and restrictions on external network access remain in place.
-
-Web Chat and Studio inspect only files named by editor notifications. There is no workspace scan at turn start or end. Ordinary conversation, reads and shell notifications cause no file-observation I/O. Discord/Slack replies and History do not show file changes.
+Web Chat inspects only files named by editor notifications. There is no workspace scan at turn start or end. Ordinary conversation, reads and shell notifications cause no file-observation I/O. Discord/Slack replies and History do not show file changes.
 
 - Local LLM write/edit callbacks run before tool execution. Claude Code (CLI/persistent), Cursor, Grok, Antigravity and GitHub Copilot use the same targeted comparison when their existing notifications contain a recognized editor name and path. External CLI notifications can arrive after the edit; before-content and complete coverage are not guaranteed.
 - Successful Codex exec/app-server file-change events preserve paths even without before-content. App-server diffs and successful OpenCode single-file result diffs are reused. Missing diffs are explicitly omitted without invented line counts. Failed/in-progress notifications are not proof of an edit.
@@ -2109,7 +2126,7 @@ Complete YAML multiline values and AWS credential fields are redacted before gen
 
 The shared navigation arrows traverse native browser session history. Chat session switches add entries and browser traversal restores the selected conversation. No separate URL stack or history storage is maintained. Browsers with the Navigation API disable unavailable directions; older browsers keep both controls available and the standard History API does nothing when no destination exists.
 
-### Document attachments in Web and Studio
+### Document attachments in Web
 
 Attachments provide Preview and Download original actions. Text, Markdown and CSV display their contents; PDF, Word (doc/docx), PowerPoint (ppt/pptx), Excel (xls/xlsx), OpenDocument and RTF provide paginated previews with page selection and a closable mobile fullscreen view. Office previews use print layout, not editing, recalculation, animation or embedded video playback. Other formats remain downloadable.
 
@@ -2165,9 +2182,11 @@ Read `xangi tool help team`, then use `xangi team list` / `show NAME_OR_ID`. The
 
 Use the accepted run ID with `xangi team status --id RUN_ID` / `wait --id RUN_ID` (up to 25 seconds). Do not resubmit. The original caller receives completion and synthesizes the reports. Agent Runs store progress, partial results and failures. Cancellation propagates to children and prevents queued starts. Results are scoped to the originating conversation; duplicate requests, nested delegation and deleting in-use groups are rejected.
 
+After accepting the Team results and preparing the report, use `xangi team close --id RUN_ID` to close the request, all rounds and member sessions while retaining history. Keep them open when review or follow-up work remains. Running work, delivery or queued input rejects the entire operation before any session changes. Only the originating conversation can close a request. Repeated close is safe; missing sessions are reported.
+
 `xangi agent logs --id RUN_ID` inspects standalone Agent activity. `xangi team logs --id RUN_ID` aggregates the same reader for members without duplicating stored logs. Both are scoped to the originating conversation. Team supports `--member RUN_OR_AGENT_ID`. Reports include tool counts, recorded queries/URLs, errors, explicit retries and source file/line references. `--offset N --limit N` pages events per member (default 20, maximum 100); counts cover the full file. Missing or malformed logs produce warnings. Timing-only inputs, shell-internal actions and unrecorded retries remain unknown; search-result URLs are not treated as visited pages. Grok supplements timing traces with native provider-session history. Files larger than 32 MiB are skipped with a warning.
 
-`project-catalog.json` stores Teams, `channel-agents.json` stores channel Agents. APIs are `GET/POST /api/teams` and `PATCH/DELETE /api/teams/:id`. Legacy groups migrate to caller leadership, clearing reporting lines but preserving named Agents and assignment text; a redundant built-in root is removed. Saved conversation snapshots also upgrade on resume. Old party command/API aliases are not provided. Startup backs up retired Team assignments and ambiguous duplicate Agent assignments to `channel-assignments-before-single-agent.json`, then clears them. Unique Agent assignments and registered Teams are retained.
+See [Teams (member groups)](design.md#teams-member-groups).
 
 The optional built-in `xangi:default` member is a separate worker using global AI settings and the default workspace, not the caller. Peer messaging, dependent-task scheduling and iterative improvement are not included.
 
@@ -2180,7 +2199,7 @@ The host periodically checks running work and undelivered terminal results witho
 
 Set `AGENT_PARENT_CHECK_INTERVAL_MS` (default 30000) for checks/retries and `AGENT_PARENT_PROGRESS_INTERVAL_MS` (default 180000) for running-work notices in `.env`. Both accept integers from 1000 to 86400000 milliseconds and require restart. Notices are sent on check ticks, so timing is rounded up to a check interval. Reports describe running/queued state and elapsed time, without inventing a completion percentage.
 
-Recovery and progress notices require explicit delivery tracking recorded when a task is created or deliberately rerun. Legacy untracked records are never replayed automatically. Web result delivery updates the existing session and never creates an empty conversation to replace a closed or missing routing entry.
+See [Child agent status checks and result delivery](design.md#child-agent-status-checks-and-result-delivery).
 
 ### Incomplete Local LLM tool calls
 
@@ -2231,6 +2250,8 @@ Standalone Japanese requests also control secret mode: `シークレットにし
 
 Default and named agents share the model and advanced-settings form and save their name, workspace, and AI settings with one Save action. Named agents may inherit the default agent settings. If saving default AI settings fails, the form reports which fields were already saved and preserves input for retry.
 
+<a id="agent-self-delegation"></a>
+
 Ordinary conversations may request their own agent in a new independent session without inheriting conversation history. An agent started by a self-request cannot delegate further, including consultations with default, except for explicitly granted one-level Team requests. This restriction is persisted with the run and survives restarts.
 
 Shell commands in local-llm and OpenRouter automatically pass the current conversation ID, platform, and agent workspace to the xangi CLI. No manual conversation ID is needed for `xangi agent run`.
@@ -2242,7 +2263,7 @@ In Settings → Teams → Create/Edit, select a registered Agent in the optional
 
 For a Team with a configured leader, call `xangi team run TEAM_ID --task TEXT` without member assignments or an explicit grant. The leader uses its own AI settings, instructions and workspace. It may dispatch only that Team's members using `team run --assignments-json`, collect their results, request revisions and integrate the final answer. Caller-led Teams still require complete assignments.
 
-Membership, shared instructions and member settings are captured at request time; the leader's `team show` and subsequent rounds use that snapshot even if Settings changes. Parent `team status` / `logs` include member rounds. The same shared deadline, cumulative launch cap and cancellation behavior apply. An Agent selected as a leader cannot be deleted until it is removed from the Team configuration.
+See [Optional Team leader in Settings](design.md#optional-team-leader-in-settings).
 
 Delegated leaders may list only the members needed for each round in `--assignments-json` (at least one). For example, finish four makers before dispatching only the reviewer. Omitted members do not run, and cumulative launch limits count selected members only. Empty lists, duplicate or outside-team IDs, and blank tasks are rejected. Wait for the current round before starting the next. Ordinary caller-led requests still require assignments for all members. This also applies to leaders granted Teams via `agent run --allow-teams-json`.
 
@@ -2261,6 +2282,8 @@ Monitor labels idle, open child sessions as awaiting result review (or failed, a
 
 Participating manifests may declare `"startup": {"exclusiveGroup": "gpu", "timeoutSeconds": 120}`. Override it per extension record in `extensions.json` (resolved from `XANGI_EXTENSIONS_FILE`, DATA_DIR, or the normal installation location). Relinking and updating preserve overrides.
 
+After a timeout, status/doctor clear the stale timeout message and group reservation once initialization finishes. A healthy extension does not need a restart just to refresh its status. Terminal initialization failure remains a failure; initializing or unavailable health retains the reservation.
+
 - `"startup": null` disables grouping, for example for CPU-only operation.
 - `"startup": {"exclusiveGroup": "gpu:1", "timeoutSeconds": 180}` assigns a different group. This label does not select hardware; configure the extension's actual device separately.
 - Omit `startup` to use the manifest default.
@@ -2271,8 +2294,18 @@ Only assign groups to extensions implementing health startup states. Older exten
 
 Managed macOS installations store advanced settings in `~/Library/Application Support/xangi/config/runtime.env`; Linux/WSL uses `${XDG_CONFIG_HOME:-~/.config}/xangi/runtime.env`. Startup creates an empty file if needed, and the Web startup settings editor writes to it. `WEB_CHAT_PORT=18889` controls the server, the CLI default URL, doctor, and installation health checks. Restart to apply changes. Explicit CLI URLs still take precedence.
 
-There is no automatic import from release-local `.env` files or LaunchAgents. Configure advanced settings in `runtime.env`; updates and autostart regeneration leave this file unchanged.
+When `runtime.env` has no `WEB_CHAT_PORT`, install/update or service startup persists a valid inherited `WEB_CHAT_PORT` there so subsequent service restarts use the same port. Existing saved values are never replaced. Release-local `.env` and LaunchAgent files themselves are not imported; put advanced settings in `runtime.env`.
+
+`doctor` reports the health URL and settings file. For checkouts it reads the same target checkout `.env` as `service start/restart`, using dotenv syntax and falling back to port 18888. The caller's `XANGI_ENV_PATH` and `WEB_CHAT_PORT` do not select the diagnostic endpoint. Managed install/update re-reads settings after service startup, including ports saved during startup.
 
 Setup-owned values in `xangi.json` (backend, configured model, workspace, Web Chat enablement/access) and the managed state path override `runtime.env`. Other advanced settings come from `runtime.env`. Connection credentials remain in `config/secrets.json`; channel settings remain in `state/settings.json`. Stored secrets fill only environment variables that do not already have a value.
 
 Checkout/Docker startup and settings writes both honor `XANGI_ENV_PATH`, defaulting to the working directory's `.env`. Managed loaders pin that variable to the persistent file above.
+
+### Use device extensions on the host port
+
+Configure a supported client with `http://<xangi-host>:<xangi-port>/api/devices/<extension-id>` and its extension-issued device token. No separate device port needs to be exposed. Use a host URL reachable from the client; use the HTTPS host URL when required by the client.
+
+The extension must implement the manifest `deviceIngress` declaration and device authentication/forwarding. This does not automatically enable all existing extensions. Check extension status/doctor. For 401 responses, check the device token; for connection failures, check compatible host/extension versions, registration and runtime status. See [design](design.md#shared-http-ingress-for-device-extensions) for declarations and authentication requirements.
+
+For personal devices, use your own xangi, dedicated token and tailnet-only HTTPS on the same external port as xangi. For example, Tailscale Serve can expose `https://<host>:18888/` with upstream `http://127.0.0.1:18888`, and map `https://<host>:18888/<short-path>` to `http://127.0.0.1:18888/api/devices/<extension-id>`. Preserve device Bearers, queries, POST bodies and SSE. Inspect and save existing Serve settings first; replace TCP forwarding on that port with HTTPS and update remote HTTP clients to HTTPS. Local loopback HTTP remains unchanged. The short path is a proxy alias, not an additional core API. Funnel is public-internet exposure and is unnecessary here; leave unrelated public routes unchanged. Serve and Funnel cannot have different exposure scopes by path on the same port.

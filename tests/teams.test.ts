@@ -491,7 +491,7 @@ it('starts caller Team members concurrently with no extra leader and preserves s
   const saved = f.catalog.saveTeam({ name: '並列メンバー', members: f.members.slice(0, 3) });
   const team = dispatched(f.catalog.teamAgent(saved.id)!.team!);
   team.assignments = team.members.map((m, i) => ({ agentId: m.agentId, task: `個別仕事${i}` }));
-  const parent = createWebSession({ workspacePath: root, workspaceId: 'default' });
+  const parent = createWebSession({ workspacePath: root, workspaceId: 'default', projectId: 'parent-project' });
   logPrompt(
     root,
     parent,
@@ -526,6 +526,7 @@ it('starts caller Team members concurrently with no extra leader and preserves s
   releases.forEach((r) => r());
   expect((await pending).failed).toBe(false);
   expect(f.runs.list().map((r) => r.teamPhase)).toEqual(['work', 'work', 'work']);
+  expect(f.runs.list().every(r => r.projectId === 'parent-project' && getSessionEntry(r.appSessionId)?.projectId === 'parent-project')).toBe(true);
   expect(
     f.runs
       .list()

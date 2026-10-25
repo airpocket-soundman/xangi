@@ -17,6 +17,7 @@ import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler, ToolCatalogEntry } from './types.js';
 import { buildCliEnv } from '../cli-process.js';
 import { loadSkills, type Skill } from '../skills.js';
+import { getMimeType, isImageFile } from './image-utils.js';
 import { resolveAttachmentPath } from '../file-utils.js';
 
 // child_process を遅延ロード（テストのvi.mockとの衝突を避けるため）
@@ -146,7 +147,8 @@ const execToolHandler: ToolHandler = {
 
 const readToolHandler: ToolHandler = {
   name: 'read',
-  description: 'Read the contents of a file.',
+  description:
+    'Read the text contents of a file. For photos or screenshots, use view_image instead.',
   parameters: {
     type: 'object',
     properties: {
@@ -184,6 +186,53 @@ const readToolHandler: ToolHandler = {
       return { success: true, output: readFileSync(resolved, 'utf-8') };
     } catch (err) {
       return { success: false, output: '', error: String(err) };
+    }
+  },
+};
+
+// --- image input tool ---
+
+const viewImageToolHandler: ToolHandler = {
+  name: 'view_image',
+  description:
+    'Open a local image and see its visual contents. Use this for image paths supplied in tasks and generated screenshots; read only returns text. Requires an image-capable model.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Image path under the workspace or system temp directory',
+      },
+    },
+    required: ['path'],
+  },
+  async execute(args, context): Promise<ToolResult> {
+    if (typeof args.path !== 'string' || !args.path.trim())
+      return { success: false, output: '', error: 'path is required' };
+    try {
+      const path = resolveLocalToolPath(args.path, context.workspace);
+      const stat = statSync(path);
+      if (!stat.isFile()) throw new Error('Not a file');
+      if (!isImageFile(path)) throw new Error('Supported images: JPEG, PNG, GIF, WebP');
+      if (stat.size === 0 || stat.size > 10 * 1024 * 1024)
+        throw new Error('Image must be non-empty and at most 10 MiB');
+      const bytes = readFileSync(path);
+      const mimeType = getMimeType(path);
+      const signatures: Record<string, boolean> = {
+        'image/png': bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+        'image/jpeg': bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255,
+        'image/gif': ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString()),
+        'image/webp':
+          bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP',
+      };
+      if (!signatures[mimeType]) throw new Error('Image header does not match its extension');
+      return {
+        success: true,
+        output: `Image loaded for visual inspection: ${path} (${mimeType}, ${bytes.length} bytes)`,
+        images: [{ mimeType, base64: bytes.toString('base64') }],
+      };
+    } catch (error) {
+      return { success: false, output: '', error: `Cannot view image: ${String(error)}` };
     }
   },
 };
@@ -783,6 +832,7 @@ Next steps you can try:
 const ALL_TOOLS: ToolHandler[] = [
   execToolHandler,
   readToolHandler,
+  viewImageToolHandler,
   writeToolHandler,
   editToolHandler,
   globToolHandler,
@@ -827,6 +877,7 @@ export function toLLMTools(handlers: ToolHandler[]): LLMTool[] {
  */
 const DEFAULT_ALWAYS_LOADED_TOOLS = [
   'read',
+  'view_image',
   'write',
   'edit',
   'exec',

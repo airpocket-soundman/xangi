@@ -121,6 +121,8 @@ interface Session {
 }
 
 interface Project {
+  defaultAgentId?: string;
+  channel?: { platform: 'discord' | 'slack'; channelId: string };
   role?: string;
   id: string;
   name: string;
@@ -156,6 +158,7 @@ interface Message {
 }
 
 export interface SessionDetail {
+  linkedChannel?: boolean;
   modelExecution?: ModelExecution;
   modelHistory?: ModelExecution[];
   id: string;
@@ -510,7 +513,9 @@ function ChatPane({
   onComplete,
   refreshVersion,
   onAbortReady,
+  linkedProject,
 }: {
+  linkedProject?: Project;
   pane: PaneDescriptor;
   active: boolean;
   config: Config;
@@ -527,6 +532,11 @@ function ChatPane({
   onAbortReady: (abort: (() => void) | null) => void;
 }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
+  const [remoteEcho, setRemoteEcho] = useState<{
+    sessionId: string | null;
+    text: string;
+    previousIds: Array<string | undefined>;
+  } | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -571,8 +581,14 @@ function ChatPane({
   const linkedMessageScrolledRef = useRef<string | undefined>(undefined);
   const setupStartedSessionRef = useRef<string | undefined>(undefined);
   const sessionId = pane.sessionId;
-  const editable = canComposeInSession(detail, discordComposeEnabled);
-  const discordRemoteMode = detail?.platform === 'discord' && discordComposeEnabled;
+  const linkedDraft = !sessionId && linkedProject?.channel ? linkedProject : undefined;
+  const linkedConversation = Boolean(detail?.linkedChannel);
+  const remotePlatform = detail?.platform === 'discord' || detail?.platform === 'slack';
+  const editable =
+    Boolean(linkedDraft) ||
+    canComposeInSession(detail, linkedConversation || discordComposeEnabled);
+  const discordRemoteMode =
+    Boolean(linkedDraft) || (remotePlatform && (linkedConversation || discordComposeEnabled));
 
   useEffect(() => {
     let cancelled = false;
@@ -683,6 +699,7 @@ function ChatPane({
   );
 
   useEffect(() => {
+    setRemoteEcho((current) => (current && current.sessionId !== sessionId ? null : current));
     setDetail(null);
     setError('');
     loadErrorRef.current = '';
@@ -764,6 +781,10 @@ function ChatPane({
   useEffect(() => {
     if (refreshVersion > 0 && sessionId && !busy) void loadDetail();
   }, [busy, loadDetail, refreshVersion, sessionId]);
+
+  useEffect(() => {
+    if (remoteEcho && remoteEcho.sessionId === sessionId && sessionId && !busy) void loadDetail();
+  }, [busy, loadDetail, remoteEcho, sessionId]);
 
   useEffect(() => {
     if (!active) setPaletteOpen(false);
@@ -1076,7 +1097,44 @@ function ChatPane({
 
   async function send(rawMessage?: string, displayMessage?: string, skipPermissions = false) {
     const cleanMessage = (rawMessage ?? draft).trim();
-    if (!cleanMessage || !sessionId || busy || streamRecovery || !editable) return;
+    if (!cleanMessage || (!sessionId && !linkedDraft) || busy || streamRecovery || !editable)
+      return;
+    if (linkedDraft?.channel) {
+      setRemoteEcho({
+        sessionId: null,
+        text: cleanMessage,
+        previousIds: detail?.messages.map((message) => message.id) ?? [],
+      });
+      setDraft('');
+      followBottomRef.current = true;
+      setError('');
+      setProcessing(true);
+      try {
+        const result = await requestJson<{ sessionId: string }>(
+          '/api/sessions',
+          jsonInit('POST', {
+            projectId: linkedDraft.id,
+            message: cleanMessage,
+          })
+        );
+        setRemoteEcho((current) => (current ? { ...current, sessionId: result.sessionId } : null));
+        onSessionChange(result.sessionId);
+        await requestJson(
+          `/api/sessions/${encodeURIComponent(result.sessionId)}/${linkedDraft.channel.platform}-continue`,
+          jsonInit('POST', { message: cleanMessage })
+        );
+        setDraft('');
+        await onSessionsInvalidated();
+      } catch (cause) {
+        setRemoteEcho(null);
+        setDraft(cleanMessage);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setProcessing(false);
+      }
+      return;
+    }
+    if (!sessionId) return;
     const privacyCommand = parseSecretCommand(cleanMessage);
     if (privacyCommand && !discordRemoteMode) {
       setPaletteOpen(false);
@@ -1097,15 +1155,26 @@ function ChatPane({
       return;
     }
     if (discordRemoteMode) {
+      setRemoteEcho({
+        sessionId,
+        text: cleanMessage,
+        previousIds: detail?.messages.map((message) => message.id) ?? [],
+      });
+      followBottomRef.current = true;
       setDraft('');
       setError('');
       setProcessing(true);
       try {
-        await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/discord-continue`, {
-          ...jsonInit('POST', { message: cleanMessage }),
-        });
+        await requestJson(
+          `/api/sessions/${encodeURIComponent(sessionId)}/${detail?.platform}-continue`,
+          {
+            ...jsonInit('POST', { message: cleanMessage }),
+          }
+        );
         await Promise.all([loadDetail(), loadTurnHistory(), onSessionsInvalidated()]);
       } catch (cause) {
+        setRemoteEcho(null);
+        setDraft(cleanMessage);
         setError(cause instanceof Error ? cause.message : String(cause));
         await Promise.allSettled([loadDetail(), onSessionsInvalidated()]);
       } finally {
@@ -1263,6 +1332,16 @@ function ChatPane({
     timeout.timeoutAt + timeoutRemaining > timeout.maxTimeoutAt
   );
   const processing = isPaneProcessing(busy || Boolean(streamRecovery), summary?.isActive);
+  const showRemoteEcho = Boolean(
+    remoteEcho &&
+    remoteEcho.sessionId === sessionId &&
+    !detail?.messages.some(
+      (message) =>
+        message.role === 'user' &&
+        message.content === remoteEcho.text &&
+        Boolean(message.id && !remoteEcho.previousIds.includes(message.id))
+    )
+  );
   const messageHistory = useMemo(
     () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
     [detail?.messages, detail?.platform, turnHistory]
@@ -1278,15 +1357,22 @@ function ChatPane({
       aria-labelledby={`tab-${pane.key}`}
     >
       <div className="pane-heading">
-        <header className="pane-header">
+        <header
+          className={`pane-header ${sessionId?.startsWith('secret_') ? 'secret-pane-header' : ''}`}
+        >
           <button
             type="button"
             className={sessionId ? 'pane-title' : 'pane-title empty'}
             onClick={openRenameDialog}
             disabled={!sessionId}
           >
-            {resolveDisplayedSessionTitle(summary?.title, detail?.title) || '(empty)'}
+            {resolveDisplayedSessionTitle(summary?.title, detail?.title) ||
+              linkedDraft?.name ||
+              '(empty)'}
           </button>
+          {sessionId?.startsWith('secret_') && (
+            <span className="secret-mode-label">シークレット · Webのみ</span>
+          )}
           {summary && (
             <span
               className={`pane-backend-badge source-${summary.backend?.source ?? 'session'}`}
@@ -1312,7 +1398,7 @@ function ChatPane({
               className="pane-complete"
               onClick={() => summary && onComplete(summary, pane.key)}
             >
-              完了して閉じる
+              {sessionId.startsWith('secret_') ? '終了して破棄' : '完了して閉じる'}
             </button>
           )}
           <button
@@ -1343,7 +1429,7 @@ function ChatPane({
             target.scrollHeight - target.scrollTop - target.clientHeight < 80;
         }}
       >
-        {!sessionId && (
+        {!sessionId && !linkedDraft && (
           <div className="empty-state">
             セッションを選択
             <br />
@@ -1357,9 +1443,12 @@ function ChatPane({
             </button>
           </div>
         )}
+        {linkedDraft && !showRemoteEcho && (
+          <div className="empty-state">{linkedDraft.name}の新しい会話</div>
+        )}
         {sessionId?.startsWith('secret_') && (
           <div className="secret-notice" role="status">
-            シークレット：会話の保存を抑えています。完了・削除・サーバー再起動で会話を破棄します。
+            <span>会話の保存を抑えています。終了・削除・サーバー再起動で会話を破棄します。</span>
             チャットサービス・AI提供元の記録、添付・作成ファイルは残る場合があります。
           </div>
         )}
@@ -1368,9 +1457,11 @@ function ChatPane({
             会話を読み込み中…
           </div>
         )}
-        {detail && detail.messages.length === 0 && !detail.hasMore && !liveTurn.visible && (
-          <div className="empty-state">まだメッセージがありません</div>
-        )}
+        {detail &&
+          detail.messages.length === 0 &&
+          !detail.hasMore &&
+          !liveTurn.visible &&
+          !showRemoteEcho && <div className="empty-state">まだメッセージがありません</div>}
         {detail?.hasMore && (
           <button
             type="button"
@@ -1401,6 +1492,15 @@ function ChatPane({
             }}
           />
         ))}
+        {showRemoteEcho && remoteEcho && (
+          <article className="message user" aria-label="送信したメッセージ">
+            <header>
+              <span>あなた</span>
+              <small>送信中</small>
+            </header>
+            <MessageContent content={remoteEcho.text} markdown={false} />
+          </article>
+        )}
         {liveTurn.visible && (
           <article className="message assistant live-turn" aria-live="polite">
             <header>
@@ -1465,17 +1565,17 @@ function ChatPane({
           />
         </div>
       )}
-      {shouldShowContinuationActions(detail) && detail && (
+      {!linkedConversation && shouldShowContinuationActions(detail) && detail && (
         <div className="resume-bar">
           <span>
             {detail.lifecycle === 'closed'
               ? 'このSessionはClosedです。履歴を引き継いで再開できます'
               : discordRemoteMode
-                ? 'この入力は元のDiscordへ送信されます'
+                ? `この入力は元の${platformLabel(detail.platform)}へ送信されます`
                 : `${platformLabel(detail.platform)} の会話は読み取り専用です`}
           </span>
           <div className="resume-actions">
-            {detail.platform === 'discord' && (
+            {(detail.platform === 'discord' || detail.platform === 'slack') && (
               <button
                 type="button"
                 aria-pressed={discordComposeEnabled}
@@ -1484,7 +1584,9 @@ function ChatPane({
                   requestAnimationFrame(() => draftRef.current?.focus());
                 }}
               >
-                {discordComposeEnabled ? 'Discord送信をやめる' : 'このDiscordで続ける'}
+                {discordComposeEnabled
+                  ? `${platformLabel(detail.platform)}送信をやめる`
+                  : `この${platformLabel(detail.platform)}で続ける`}
               </button>
             )}
             <button type="button" onClick={() => runPaneAction(resumeSession)}>
@@ -1559,7 +1661,7 @@ function ChatPane({
               rows={1}
               placeholder={
                 discordRemoteMode
-                  ? 'Discordへ送るメッセージを入力'
+                  ? `${platformLabel(linkedDraft?.channel?.platform || detail?.platform || '')}へ送るメッセージを入力`
                   : detail?.lifecycle === 'closed'
                     ? '再開方法を選択してください'
                     : editable
@@ -1821,6 +1923,58 @@ function SessionProjectDialog({
   );
 }
 
+function NewChatButton({ onCreate }: { onCreate: (secret?: boolean) => void }) {
+  const menu = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      if (menu.current && !menu.current.contains(event.target as Node)) menu.current.open = false;
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, []);
+  const select = (secret = false) => {
+    if (menu.current) menu.current.open = false;
+    onCreate(secret);
+  };
+  return (
+    <div className="new-chat-control">
+      <button type="button" className="button sidebar-new-chat" onClick={() => select()}>
+        ＋ 新規
+      </button>
+      <details
+        ref={menu}
+        className="new-chat-menu"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && menu.current) {
+            menu.current.open = false;
+            menu.current.querySelector('summary')?.focus();
+          }
+        }}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+            event.currentTarget.open = false;
+        }}
+      >
+        <summary
+          className="button sidebar-new-chat"
+          aria-label="新しい会話の種類"
+          title="新しい会話の種類"
+        >
+          ▾
+        </summary>
+        <div className="new-chat-options">
+          <button type="button" onClick={() => select()}>
+            通常の会話
+          </button>
+          <button type="button" onClick={() => select(true)}>
+            シークレット会話<small>Web内だけで会話</small>
+          </button>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export function Chat() {
   const restored = useMemo(restorePanes, []);
   const [panes, setPanes] = useState<PaneDescriptor[]>(restored.panes);
@@ -1845,6 +1999,41 @@ export function Chat() {
   const [editingProjectId, setEditingProjectId] = useState<string>();
   const [projectName, setProjectName] = useState('');
   const [projectPrompt, setProjectPrompt] = useState('');
+  const [projectAgentId, setProjectAgentId] = useState('');
+  const [projectPlatform, setProjectPlatform] = useState<'' | 'discord' | 'slack'>('');
+  const [projectChannelId, setProjectChannelId] = useState('');
+  const [projectChannels, setProjectChannels] = useState<
+    { id: string; name: string; group?: string }[]
+  >([]);
+  const [channelStatus, setChannelStatus] = useState('');
+  const [channelRefresh, setChannelRefresh] = useState(0);
+  const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setProjectChannels([]);
+    if (!projectPlatform || !projectFormOpen) {
+      setChannelStatus('');
+      return;
+    }
+    setChannelStatus('チャンネルを読み込み中…');
+    requestJson<{ channels: { id: string; name: string; group?: string }[]; message?: string }>(
+      `/api/runtime-settings/channels?platform=${projectPlatform}`
+    )
+      .then((result) => {
+        if (!cancelled) {
+          setProjectChannels(result.channels);
+          setChannelStatus(
+            result.message || (result.channels.length ? '' : '利用できるチャンネルがありません')
+          );
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setChannelStatus(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPlatform, projectFormOpen, channelRefresh]);
   const [savingProject, setSavingProject] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
@@ -1923,6 +2112,9 @@ export function Chat() {
       loadSessions(0, '', false),
       requestJson<Config>('/api/config').then(setConfig),
       requestJson<{ agents: Project[] }>('/api/agents').then((r) => setAgents(r.agents)),
+      requestJson<{ teams: { id: string; name: string }[] }>('/api/teams').then((r) =>
+        setTeams(r.teams)
+      ),
       requestJson<ProjectsResponse>('/api/projects').then((result) => {
         setProjects(result.projects);
         setActiveProjectId((current) =>
@@ -2100,7 +2292,9 @@ export function Chat() {
       }
     } else {
       setPanes((current) =>
-        current.map((pane) => (pane.key === activeKey ? { ...pane, sessionId } : pane))
+        current.map((pane) =>
+          pane.key === activeKey ? { ...pane, sessionId, draftProjectId: undefined } : pane
+        )
       );
     }
     setSidebarOpen(false);
@@ -2134,18 +2328,31 @@ export function Chat() {
       }
       targetKey = newPane.key;
     }
+    const project = projects.find((p) => p.id === activeProjectId);
+    if (project?.channel && !secret) {
+      setPanes((current) =>
+        current.map((p) =>
+          p.key === targetKey ? { ...p, sessionId: null, draftProjectId: project.id } : p
+        )
+      );
+      setActiveKey(targetKey);
+      setSidebarOpen(false);
+      return;
+    }
     try {
       const result = await requestJson<{ sessionId: string }>(
         '/api/sessions',
         jsonInit('POST', {
           projectId: activeProjectId || undefined,
-          agentId: selectedAgentId || undefined,
+          agentId: activeProjectId ? undefined : selectedAgentId || undefined,
           secret,
         })
       );
       setPanes((current) =>
         current.map((pane) =>
-          pane.key === targetKey ? { ...pane, sessionId: result.sessionId } : pane
+          pane.key === targetKey
+            ? { ...pane, sessionId: result.sessionId, draftProjectId: undefined }
+            : pane
         )
       );
       setActiveKey(targetKey);
@@ -2160,6 +2367,9 @@ export function Chat() {
     setEditingProjectId(undefined);
     setProjectName('');
     setProjectPrompt('');
+    setProjectAgentId('');
+    setProjectPlatform('');
+    setProjectChannelId('');
     setProjectFormOpen(true);
   }
 
@@ -2170,6 +2380,9 @@ export function Chat() {
     setEditingProjectId(project.id);
     setProjectName(project.name);
     setProjectPrompt(project.prompt);
+    setProjectAgentId(project.defaultAgentId || '');
+    setProjectPlatform(project.channel?.platform || '');
+    setProjectChannelId(project.channel?.channelId || '');
     setProjectFormOpen(true);
   }
 
@@ -2181,6 +2394,10 @@ export function Chat() {
       const body = {
         name: projectName.trim(),
         prompt: projectPrompt.trim(),
+        defaultAgentId: projectAgentId || null,
+        channel: projectPlatform
+          ? { platform: projectPlatform, channelId: projectChannelId }
+          : null,
       };
       const base = '/api/projects';
       const endpoint = editingProjectId ? `${base}/${encodeURIComponent(editingProjectId)}` : base;
@@ -2258,7 +2475,11 @@ export function Chat() {
       setSessionToComplete(null);
       if (target.paneKey) closePaneNow(target.paneKey);
       await loadSessions(0, query, false);
-      setNotice('Sessionを完了しました');
+      setNotice(
+        target.session.id.startsWith('secret_')
+          ? 'シークレット会話を破棄しました'
+          : 'Sessionを完了しました'
+      );
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409 && !force) {
         setSessionToComplete(target);
@@ -2383,20 +2604,6 @@ export function Chat() {
           <span>Projects</span>
           <span aria-hidden="true">›</span>
         </button>
-        <button
-          type="button"
-          className="projects-link"
-          aria-current={agentViewOpen ? 'page' : undefined}
-          onClick={() => {
-            setAgentViewOpen(true);
-            setProjectViewOpen(false);
-            if (compactSidebar) setSidebarOpen(false);
-          }}
-        >
-          <span aria-hidden="true">◎</span>
-          <span>Agents</span>
-          <span aria-hidden="true">›</span>
-        </button>
         {activeAgentId && (
           <button
             type="button"
@@ -2409,36 +2616,38 @@ export function Chat() {
             {agents.find((a) => a.id === activeAgentId)?.name} の会話 ×
           </button>
         )}
-        <div className="new-conversation-agent">
-          <label>
-            新規会話の担当
-            <select
-              aria-describedby="conversation-agent-help"
-              value={selectedAgentId}
-              onChange={(e) => {
-                setSelectedAgentId(e.target.value);
-                if (activeAgentId) setActiveAgentId(e.target.value);
-              }}
-            >
-              <option value="">xangiの既定設定</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <small id="conversation-agent-help">
-            {selectedAgentId
-              ? (() => {
-                  const a = agents.find((a) => a.id === selectedAgentId);
-                  return a
-                    ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
-                    : '';
-                })()
-              : '登録済みの全エージェントから選択します。'}
-          </small>
-        </div>
+        {!activeProject && (
+          <div className="new-conversation-agent">
+            <label>
+              新規会話の担当
+              <select
+                aria-describedby="conversation-agent-help"
+                value={selectedAgentId}
+                onChange={(e) => {
+                  setSelectedAgentId(e.target.value);
+                  if (activeAgentId) setActiveAgentId(e.target.value);
+                }}
+              >
+                <option value="">xangiの既定設定</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <small id="conversation-agent-help">
+              {selectedAgentId
+                ? (() => {
+                    const a = agents.find((a) => a.id === selectedAgentId);
+                    return a
+                      ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
+                      : '';
+                  })()
+                : '登録済みの全エージェントから選択します。'}
+            </small>
+          </div>
+        )}
         <div className="sidebar-actions">
           <input
             className="search"
@@ -2447,21 +2656,7 @@ export function Chat() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <button
-            type="button"
-            className="button sidebar-new-chat"
-            onClick={() => void createSession()}
-          >
-            ＋ 新規
-          </button>
-          <button
-            type="button"
-            className="button sidebar-new-chat"
-            onClick={() => void createSession(true)}
-            title="極力ログを残さない新規会話"
-          >
-            シークレット
-          </button>
+          <NewChatButton onCreate={(secret) => void createSession(secret)} />
         </div>
         <div className="session-filter" role="group" aria-label="セッションの状態で絞り込む">
           {(
@@ -2530,6 +2725,17 @@ export function Chat() {
                       </span>
                     </button>
                     <div className="session-actions">
+                      <button
+                        type="button"
+                        aria-label={`${session.title}を別ペインで開く`}
+                        title="別ペインで開く"
+                        onClick={() => {
+                          if (!addPane(session.id)) setNotice(`最大 ${MAX_PANES} ペインです。`);
+                          else setSidebarOpen(false);
+                        }}
+                      >
+                        ⊞
+                      </button>
                       {session.isActive && (
                         <button
                           type="button"
@@ -2724,7 +2930,74 @@ export function Chat() {
                     placeholder="プロジェクト全体で共有する指示"
                   />
                 </label>
-                <p>共通の指示は、このプロジェクトの通常会話に適用されます。</p>
+                <label>
+                  <span>新しい会話の担当</span>
+                  <select
+                    value={projectAgentId}
+                    onChange={(e) => setProjectAgentId(e.target.value)}
+                  >
+                    <option value="">既定の担当</option>
+                    <optgroup label="Agents">
+                      {agents.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Teams">
+                      {teams.map((t) => (
+                        <option key={t.id} value={`team:${t.id}`}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </label>
+                <label>
+                  <span>接続先</span>
+                  <select
+                    value={projectPlatform}
+                    onChange={(e) => {
+                      setProjectPlatform(e.target.value as '' | 'discord' | 'slack');
+                      setProjectChannelId('');
+                    }}
+                  >
+                    <option value="">Webのみ</option>
+                    <option value="discord">Discord</option>
+                    <option value="slack">Slack</option>
+                  </select>
+                </label>
+                {projectPlatform && (
+                  <>
+                    <label>
+                      <span>チャンネル</span>
+                      <select
+                        required
+                        value={projectChannelId}
+                        onChange={(e) => setProjectChannelId(e.target.value)}
+                      >
+                        <option value="">チャンネルを選択</option>
+                        {projectChannelId &&
+                          !projectChannels.some((c) => c.id === projectChannelId) && (
+                            <option value={projectChannelId}>{projectChannelId}（未確認）</option>
+                          )}
+                        {projectChannels.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.group ? `${c.group} / ` : ''}
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="button" onClick={() => setChannelRefresh((n) => n + 1)}>
+                      チャンネルを再読み込み
+                    </button>
+                    {channelStatus && <p role="status">{channelStatus}</p>}
+                  </>
+                )}
+                <p>
+                  保存後に始まる会話へ適用します。接続したチャンネルの新しい会話はこのProjectに表示され、Webからも続きを送信できます。過去ログは取り込みません。
+                </p>
                 <p>
                   作業場所や使用するAIは<a href="/settings#agents">エージェント設定</a>
                   で変更できます。
@@ -2944,6 +3217,9 @@ export function Chat() {
                 <ChatPane
                   key={pane.key}
                   pane={pane}
+                  linkedProject={projects.find(
+                    (p) => p.id === (pane.draftProjectId || activeProjectId)
+                  )}
                   active={pane.key === activeKey}
                   config={config}
                   projectId={activeProjectId || undefined}
@@ -2953,7 +3229,11 @@ export function Chat() {
                   onClose={() => closePane(pane.key)}
                   onSessionChange={(sessionId) =>
                     setPanes((current) =>
-                      current.map((item) => (item.key === pane.key ? { ...item, sessionId } : item))
+                      current.map((item) =>
+                        item.key === pane.key
+                          ? { ...item, sessionId, draftProjectId: undefined }
+                          : item
+                      )
                     )
                   }
                   onBusyChange={(value) =>

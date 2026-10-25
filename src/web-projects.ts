@@ -31,6 +31,8 @@ interface WebProjectBackendInput {
 }
 
 export interface WebProject {
+  defaultAgentId?: string;
+  channel?: { platform: 'discord' | 'slack'; channelId: string };
   team?: import('./teams.js').TeamSnapshot;
   id: string;
   name: string;

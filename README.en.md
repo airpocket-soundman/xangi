@@ -146,6 +146,8 @@ Use Settings in the Web UI for every runtime control and the common non-secret s
 - [xangi-terminal](https://github.com/karaage0703/xangi-terminal) - A browser terminal with direct shell access and natural-language command suggestions
 - [xangi-dots](https://github.com/karaage0703/xangi-dots) - Bidirectional requests, responses, file transfers, and progress notifications with Dots
 - [xangi-stopwatch](https://github.com/karaage0703/xangi-stopwatch) - Voice conversations through the built-in microphone, screen, and speaker over USB or Tailscale
+- [xangi-tasks](https://github.com/karaage0703/xangi-tasks) - Task and category management, with requests to xangi from tasks
+- [xangi-remote-desktop](https://github.com/karaage0703/xangi-remote-desktop) - View and control the same PC’s VNC desktop from a browser
 
 ## Related projects
 

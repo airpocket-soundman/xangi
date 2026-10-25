@@ -116,6 +116,8 @@ export interface ToolCatalogEntry {
 }
 
 export interface ToolResult {
+  /** Image inputs for the next model request; never serialize into tool output/logs. */
+  images?: LLMImageContent[];
   success: boolean;
   output: string;
   error?: string;

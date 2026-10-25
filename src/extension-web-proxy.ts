@@ -10,6 +10,7 @@ import { acceptsSameHostMutation, sendJson } from './web-http.js';
 
 type Target = { baseUrl: string; authorization: string };
 type ResolveTarget = (id: string) => Promise<Target>;
+const deviceRoute = /^\/api\/devices\/([a-zA-Z0-9._-]+)(\/.*)$/;
 const route = /^\/api\/extensions\/([a-zA-Z0-9._-]+)\/service(\/.*)$/;
 const prefix = (id: string) => `xangi_ext_${Buffer.from(id).toString('hex')}_`;
 const servicePath = (id: string) => `/api/extensions/${id}/service`;
@@ -108,15 +109,20 @@ async function requestBody(req: IncomingMessage): Promise<Buffer> {
 export async function proxyExtensionRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  resolve: ResolveTarget
+  resolve: ResolveTarget,
+  device = false
 ): Promise<boolean> {
-  const match = (req.url || '').match(route);
+  const match = (req.url || '').match(device ? deviceRoute : route);
   if (!match) return false;
-  if (!allowed(req)) {
+  if (!device && !allowed(req)) {
     sendJson(res, 403, { error: 'cross-origin extension requests are not allowed' });
     return true;
   }
-  if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '')) {
+  if (
+    !(device ? ['GET', 'POST'] : ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']).includes(
+      req.method || ''
+    )
+  ) {
     sendJson(res, 405, { error: 'method not allowed' });
     return true;
   }
@@ -126,10 +132,15 @@ export async function proxyExtensionRequest(
     const body = ['GET', 'HEAD'].includes(req.method || '') ? undefined : await requestBody(req);
     if (res.destroyed) return true;
     const address = new URL(target.baseUrl);
+    const upstreamHeaders = headers(req, target, id);
+    if (device) {
+      delete upstreamHeaders.cookie;
+      upstreamHeaders['x-xangi-device-authorization'] = req.headers.authorization || '';
+    }
     const upstream = (address.protocol === 'https:' ? httpsRequest : httpRequest)(address, {
       method: req.method,
-      path: `${address.pathname.replace(/\/$/, '')}${path}`,
-      headers: headers(req, target, id),
+      path: `${address.pathname.replace(/\/$/, '')}${device ? '/device' : ''}${path}`,
+      headers: upstreamHeaders,
     });
     const fail = (error: Error) => {
       if (res.destroyed) return;
@@ -137,13 +148,21 @@ export async function proxyExtensionRequest(
       else sendJson(res, 502, { error: error.message });
     };
     // Timeout only until response headers: SSE and downloads may run longer.
-    upstream.setTimeout(30_000, () => upstream.destroy(new Error('Extension response timed out')));
+    upstream.setTimeout(device ? 120_000 : 30_000, () =>
+      upstream.destroy(new Error('Extension response timed out'))
+    );
     upstream.on('error', fail);
     res.on('close', () => upstream.destroy());
     upstream.on('response', (response) => {
       upstream.setTimeout(0);
       try {
-        res.writeHead(response.statusCode || 502, responseHeaders(response, target, id, path));
+        const outgoing = responseHeaders(response, target, id, path);
+        if (device) {
+          delete outgoing['set-cookie'];
+          delete outgoing.location;
+          outgoing['access-control-allow-origin'] = '*';
+        }
+        res.writeHead(response.statusCode || 502, outgoing);
       } catch (error) {
         response.destroy();
         fail(error as Error);
