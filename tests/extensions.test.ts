@@ -666,3 +666,32 @@ process.stdin.on('end', () => server.close());
     }
   });
 });
+
+it('requires explicit device ingress with a declared capability and extension bearer authentication', () => {
+  const manifest = {
+    schemaVersion: 2,
+    id: 'sample-device',
+    displayName: 'Sample device',
+    version: '1.0.0',
+    entrypoint: 'extension-cli',
+    runtime: { kind: 'managed-http' },
+    capabilities: [{ id: 'device.control', protocol: 'http', healthPath: '/health' }],
+  };
+  expect(parseExtensionManifest(manifest).deviceIngress).toBeUndefined();
+  const ingress = { capability: 'device.control', authentication: 'extension-bearer' };
+  expect(parseExtensionManifest({ ...manifest, deviceIngress: ingress }).deviceIngress).toEqual(
+    ingress
+  );
+  for (const deviceIngress of [
+    null,
+    true,
+    {},
+    { capability: 'device.control' },
+    { ...ingress, capability: 'missing' },
+    { ...ingress, authentication: 'none' },
+  ]) {
+    expect(() => parseExtensionManifest({ ...manifest, deviceIngress })).toThrow(
+      /device ingress declaration/
+    );
+  }
+});

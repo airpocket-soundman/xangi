@@ -4,7 +4,7 @@ import { getBackendDisplayName } from './agent-runner.js';
 import { BackendResolver } from './backend-resolver.js';
 import { DynamicRunnerManager } from './dynamic-runner.js';
 import { loadSkills } from './skills.js';
-import { startSlackBot, isSlackConversationBusy } from './slack.js';
+import { startSlackBot, isSlackConversationBusy, type SlackRemoteInputBridge } from './slack.js';
 import { listDiscordSettingsChannels, type SettingsChannelListers } from './settings-channels.js';
 import { initSettings, loadSettings } from './settings.js';
 import { Scheduler, type Platform } from './scheduler.js';
@@ -54,6 +54,7 @@ async function main() {
   const config = loadConfig();
   const workdir = realpathSync(resolve(config.agent.config.workdir || process.cwd()));
   config.agent.config.workdir = workdir;
+  const slackRemoteInputRef: { current?: SlackRemoteInputBridge } = {};
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
   const discordTurnCoordinator = new DiscordTurnCoordinator();
   const destinationLabelResolverRef: {
@@ -183,6 +184,7 @@ async function main() {
       scheduler,
       skillsRef,
       discordRemoteInputRef,
+      slackRemoteInputRef,
       destinationLabelResolverRef,
       settingsChannelListers,
       externalChatUrlResolvers,
@@ -374,6 +376,7 @@ async function main() {
   if (config.slack.enabled) {
     platformStartupTasks.push(
       startSlackBot({
+        remoteInputRef: slackRemoteInputRef,
         config,
         agentRunner,
         resolver,

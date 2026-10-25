@@ -66,6 +66,10 @@ export interface ExtensionManifest {
     capability: string;
     path: string;
   };
+  deviceIngress?: {
+    capability: string;
+    authentication: 'extension-bearer';
+  };
   agentBackend?: ExtensionAgentBackend;
   capabilities: ExtensionCapability[];
 }
@@ -321,6 +325,19 @@ export function parseExtensionManifest(value: unknown): ExtensionManifest {
   if (new Set(parsedCapabilities.map((item) => item.id)).size !== parsedCapabilities.length) {
     throw new Error('extension capabilities must be unique');
   }
+  let parsedDeviceIngress: ExtensionManifest['deviceIngress'];
+  if (value.deviceIngress !== undefined) {
+    const ingress = value.deviceIngress;
+    if (
+      !isRecord(ingress) ||
+      typeof ingress.capability !== 'string' ||
+      !parsedCapabilities.some((item) => item.id === ingress.capability) ||
+      ingress.authentication !== 'extension-bearer'
+    ) {
+      throw new Error('invalid extension device ingress declaration');
+    }
+    parsedDeviceIngress = { capability: ingress.capability, authentication: 'extension-bearer' };
+  }
   let parsedUi: ExtensionManifest['ui'];
   if (ui !== undefined) {
     if (
@@ -373,6 +390,7 @@ export function parseExtensionManifest(value: unknown): ExtensionManifest {
     ...(parsedSetup ? { setup: parsedSetup } : {}),
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
     ...(parsedUi ? { ui: parsedUi } : {}),
+    ...(parsedDeviceIngress ? { deviceIngress: parsedDeviceIngress } : {}),
     ...(parsedAgentBackend ? { agentBackend: parsedAgentBackend } : {}),
     capabilities: parsedCapabilities,
   };
@@ -939,6 +957,28 @@ async function managedExtensionStatus(
 ): Promise<ExtensionActionResult> {
   const runtime = managedRuntimes.get(id);
   if (includeStartupMessage && startupMessages.has(id)) {
+    const message = startupMessages.get(id);
+    const generation = startupGeneration.get(id) ?? 0;
+    // A startup deadline ends the caller's wait, not the child's initialization.
+    // Probe the child before allowing a saved timeout to hide its terminal state.
+    if (runtime && [...startupOwners.values()].includes(id)) {
+      const status = await managedExtensionStatus(id, expectedWorkspace, requireReady, false);
+      if (
+        managedRuntimes.get(id) !== runtime ||
+        (startupGeneration.get(id) ?? 0) !== generation ||
+        startupMessages.get(id) !== message
+      ) {
+        return managedExtensionStatus(id, expectedWorkspace, requireReady);
+      }
+      if (initializationFinished(status)) {
+        for (const [group, owner] of startupOwners) {
+          if (owner === id) startupOwners.delete(group);
+        }
+        startupMessages.delete(id);
+        return status;
+      }
+      return { ...status, ok: false, ready: false, detail: message };
+    }
     return {
       schemaVersion: 2,
       id,
@@ -963,10 +1003,12 @@ async function managedExtensionStatus(
     // Schema-v2 health payloads may explicitly report a warming state. Older
     // extensions omit `ready`; a successful legacy health response is ready.
     const ready = healthy && (!isRecord(health) || health.ready !== false);
+    const initializationFailed =
+      isRecord(health) && isRecord(health.startup) && health.startup.state === 'failed';
     return {
       schemaVersion: 2,
       id,
-      ok: healthy && workspaceMatches && (!requireReady || ready),
+      ok: healthy && !initializationFailed && workspaceMatches && (!requireReady || ready),
       running: true,
       healthy,
       ready,

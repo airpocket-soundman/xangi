@@ -11,6 +11,7 @@ const originalPm2Log = process.env.PM2_LOG;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   Object.defineProperty(process, 'platform', { value: originalPlatform });
   Object.defineProperty(process, 'arch', { value: originalArch });
   process.env.PATH = originalPath;
@@ -197,6 +198,35 @@ describe('collectDoctorChecks', () => {
     );
   });
 
+  it.each([
+    ['target dotenv file', 'export WEB_CHAT_PORT=19993 # custom port\n', '19993'],
+    ['target default without inherited environment', '', '18888'],
+  ])('uses the runtime port from %s', async (_name, content, port) => {
+    const homeDir = join(tmpdir(), `doctor-env-${process.pid}-${Date.now()}-${port}`);
+    const checkoutDir = join(homeDir, 'checkout');
+    await mkdir(checkoutDir, { recursive: true });
+    await writeFile(join(checkoutDir, '.env'), content);
+    const envPath = join(homeDir, 'custom.env');
+    await writeFile(envPath, 'WEB_CHAT_PORT=19995\n');
+    vi.stubEnv('XANGI_ENV_PATH', envPath);
+    vi.stubEnv('WEB_CHAT_PORT', '19994');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}'));
+    const checks = await collectDoctorChecks({
+      homeDir,
+      checkoutDir,
+      platform: 'linux',
+      arch: 'x64',
+      fetchImpl,
+      serviceCheck: async () => ({ name: 'service', level: 'ok', detail: 'running' }),
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(`http://127.0.0.1:${port}/health`, expect.anything());
+    expect(checks.find((check) => check.name === 'health')?.detail).toContain(port);
+    expect(checks.find((check) => check.name === 'health-endpoint')?.detail).toContain(
+      join(checkoutDir, '.env')
+    );
+    expect(checks.find((check) => check.name === 'health-endpoint')?.detail).not.toContain(envPath);
+  });
+
   it('uses an independent checkout workspace when shared setup is explicitly disabled', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux' });
     Object.defineProperty(process, 'arch', { value: 'arm64' });
@@ -307,7 +337,7 @@ describe('collectDoctorChecks', () => {
     await writeFile(join(binDir, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     await writeFile(
       join(binDir, 'pm2'),
-      '#!/bin/sh\nprintf "pm2:%s\\n" "$*" >> "$PM2_LOG"\nexit 0\n',
+      `#!/bin/sh\nprintf "pm2:%s\\n" "$*" >> '${logPath}'\nexit 0\n`,
       { mode: 0o700 }
     );
     await writeFile(

@@ -1,5 +1,7 @@
 import {
   channelAgent,
+  channelProject,
+  projectChannelAgent,
   defaultAgentWorkspaceId,
   agentWorkspaceRegistry,
   beginAgentChannelTurn,
@@ -58,9 +60,13 @@ async function resolveSessionWithWorkspace(
   let activeId = getActiveSessionId(contextKey);
   let activeEntry = activeId ? getSessionEntry(activeId) : undefined;
   const secret = activeEntry?.secret ?? options.secret ?? false;
-  const agent = channelAgent(platform, bindingKey);
+  const project = secret ? undefined : channelProject(platform, bindingKey);
+  const agent =
+    (project && projectChannelAgent(platform, bindingKey)) || channelAgent(platform, bindingKey);
   if (
     activeId &&
+    !project &&
+    !activeEntry?.projectId &&
     (activeEntry?.selectedAgentId !== agent?.id || activeEntry?.selectedAgentConfig?.team)
   ) {
     retireAgentSession(contextKey);
@@ -77,7 +83,7 @@ async function resolveSessionWithWorkspace(
       : registeredWorkspace;
     if (
       getActiveSessionId(contextKey) !== activeId ||
-      channelAgent(platform, bindingKey)?.id !== agent?.id
+      (!project && !activeEntry.projectId && channelAgent(platform, bindingKey)?.id !== agent?.id)
     )
       return resolveSessionWithWorkspace(options);
     return { appSessionId: activeId, workspace };
@@ -89,15 +95,21 @@ async function resolveSessionWithWorkspace(
       : await registry.resolveById(
           registry.getBinding(platform, bindingKey) || defaultAgentWorkspaceId()
         );
-  if (channelAgent(platform, bindingKey)?.id !== agent?.id)
+  if (!project && channelAgent(platform, bindingKey)?.id !== agent?.id)
     return ensureSessionWithWorkspace(options);
   const appSessionId = ensureSession(contextKey, {
     platform,
     secret,
     scope,
+    projectId: project?.id,
     selectedAgentId: agent?.id,
     selectedAgentConfig: agent
-      ? { ...agent, prompt: [agent.role, agent.prompt].filter(Boolean).join('\n\n') }
+      ? {
+          ...agent,
+          prompt: ['role' in agent ? agent.role : undefined, agent.prompt]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
       : undefined,
     agentBindingKey: bindingKey,
     workspaceId: workspace.id,

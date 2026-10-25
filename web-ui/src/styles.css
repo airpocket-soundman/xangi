@@ -2716,6 +2716,13 @@ details.settings-card[open] > summary::before {
 
 .workspace-editor-actions .button,
 .workspace-editor-tabs button,
+.workspace-line-numbers-option {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.workspace-editor-actions .button,
+.workspace-editor-tabs button,
 .workspace-editor-message button {
   min-height: 36px;
   border: 1px solid var(--border);
@@ -2776,6 +2783,48 @@ details.settings-card[open] > summary::before {
   line-height: 1.45;
 }
 
+.workspace-line-numbers-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.workspace-editor-source {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-line-numbers {
+  flex: 0 0 auto;
+  margin: 0;
+  border-right: 1px solid var(--border);
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--ink-muted);
+  background: var(--surface-muted);
+  text-align: right;
+  user-select: none;
+}
+
+.workspace-line-numbers pre {
+  margin: 0;
+  padding: 20px 0 32px;
+  font: inherit;
+}
+
+.workspace-editor,
+.workspace-line-numbers {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 .workspace-editor {
   width: 100%;
   min-width: 0;
@@ -2787,9 +2836,6 @@ details.settings-card[open] > summary::before {
   padding: 20px 22px 32px;
   color: #2f2e2b;
   background: var(--surface);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  font-size: 13px;
-  line-height: 1.65;
   tab-size: 2;
 }
 
@@ -5933,6 +5979,10 @@ video.media-preview {
     font-size: 16px;
   }
 
+  .workspace-line-numbers {
+    font-size: 16px;
+  }
+
   .workspace-markdown-preview {
     padding-top: 24px;
     padding-right: max(16px, var(--safe-right));
@@ -6450,6 +6500,8 @@ video.media-preview {
 }
 .app-navigation-favorites {
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -6459,10 +6511,71 @@ video.media-preview {
   flex-shrink: 0;
 }
 .app-navigation-favorites a span {
+  flex-shrink: 0;
   max-width: 100%;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
   line-height: 1.3;
+}
+.app-navigation-favorites a:focus-visible span,
+.app-navigation-favorites a:hover span {
+  -webkit-line-clamp: unset;
+}
+.extension-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.extension-favorite-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.extension-favorite-identity small {
+  display: block;
+  color: var(--ink-secondary);
+}
+.extension-favorites-list li {
+  flex-wrap: wrap;
+}
+.extension-name-editor {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  order: 1;
+}
+.extension-name-editor input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.extension-name-editor input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.extension-original-id {
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.extension-title-row h2 {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.app-more-links .extension-favorite-link span {
+  white-space: normal;
 }
 .extension-favorites {
   margin-bottom: 24px;
@@ -6850,4 +6963,97 @@ video.media-preview {
 
 .catalog-row-actions button.danger {
   color: var(--danger);
+}
+
+.new-chat-control {
+  display: flex;
+  gap: 1px;
+  position: relative;
+}
+.new-chat-control > button {
+  border-radius: 6px 0 0 6px;
+}
+.new-chat-menu > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  border-radius: 0 6px 6px 0;
+  list-style: none;
+  cursor: pointer;
+}
+.new-chat-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.new-chat-menu > summary:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+.new-chat-options {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  width: 220px;
+  max-width: calc(100vw - 32px);
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px #0002;
+}
+.new-chat-options button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+}
+.new-chat-options button:hover,
+.new-chat-options button:focus-visible {
+  background: var(--surface-subtle);
+}
+.new-chat-options small {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-muted);
+}
+.secret-notice span {
+  display: block;
+}
+
+.secret-mode-label {
+  flex-shrink: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--ink);
+  background: var(--surface-subtle);
+  font-size: 11px;
+}
+
+@media (max-width: 768px), (max-height: 500px) and (hover: none) {
+  .pane-header.secret-pane-header {
+    min-height: 48px;
+    height: auto;
+    overflow: visible;
+    visibility: visible;
+    padding: 4px 9px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .secret-pane-header .pane-title,
+  .secret-pane-header .pane-backend-badge,
+  .secret-pane-header .pane-external-chat,
+  .secret-pane-header .pane-close {
+    display: none;
+  }
+  .new-chat-menu > summary {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }

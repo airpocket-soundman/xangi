@@ -66,15 +66,19 @@ export function closeAgentWork(platform: string, threadId: string): 'closed' | '
 }
 
 /** Shared idle guard for parent acknowledgement and work-thread close. */
-export function closeAgentRun(run: AgentRun | undefined): 'closed' | 'busy' | 'missing' {
-  if (!run || !getSessionEntry(run.appSessionId)) return 'missing';
-  if (
+export function agentRunBusy(run: AgentRun): boolean {
+  return !!(
     ['queued', 'running'].includes(run.status) ||
     active.has(run.id) ||
     resuming.has(run.id) ||
     run.pendingWorkInputs?.length
-  )
-    return 'busy';
+  );
+}
+
+export function closeAgentRun(run: AgentRun | undefined): 'closed' | 'busy' | 'missing' {
+  if (!run) return 'missing';
+  if (agentRunBusy(run)) return 'busy';
+  if (!getSessionEntry(run.appSessionId)) return 'missing';
   closeSession(run.appSessionId, 'leave');
   return 'closed';
 }

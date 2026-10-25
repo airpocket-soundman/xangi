@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ExtensionIcon } from './ExtensionIcon';
 import { getJson, requestJson } from './api';
 
 export interface ExtensionFavorite {
   id: string;
   displayName: string;
   available: boolean;
+  defaultDisplayName?: string;
 }
 const changedEvent = 'xangi-extension-favorites-changed';
 
@@ -43,19 +45,25 @@ export function useExtensionFavorites() {
       window.removeEventListener('focus', reload);
     };
   }, [refresh]);
-  const update = async (id: string, action: 'add' | 'remove' | 'up' | 'down') => {
+  const update = async (
+    id: string,
+    action: 'add' | 'remove' | 'up' | 'down' | 'rename',
+    displayName?: string
+  ) => {
     if (pending.current) return;
     pending.current = true;
     setSaving(true);
     try {
       await requestJson('/api/extension-favorites', {
         method: 'POST',
-        body: JSON.stringify({ id, action }),
+        body: JSON.stringify({ id, action, displayName }),
       });
       window.dispatchEvent(new Event(changedEvent));
       await refresh();
+      return true;
     } catch {
       setError('お気に入りを保存できませんでした。再確認してからやり直してください。');
+      return false;
     } finally {
       pending.current = false;
       setSaving(false);
@@ -69,6 +77,8 @@ export function FavoriteLinks({ favorites }: { favorites: ExtensionFavorite[] })
     <>
       {favorites.map((favorite) => (
         <a
+          className="extension-favorite-link"
+          aria-label={favorite.displayName}
           key={favorite.id}
           href={
             favorite.available
@@ -77,9 +87,7 @@ export function FavoriteLinks({ favorites }: { favorites: ExtensionFavorite[] })
           }
           title={`${favorite.displayName}${favorite.available ? '' : '（拡張一覧で状態を確認）'}`}
         >
-          <svg className="app-navigation-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9Z" />
-          </svg>
+          <ExtensionIcon id={favorite.id} />
           <span>{favorite.displayName}</span>
         </a>
       ))}

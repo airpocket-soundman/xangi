@@ -105,6 +105,7 @@ export function stripPromptMetadata(text: string): string {
   while (changed) {
     const before = s;
     for (const re of PROMPT_METADATA_PATTERNS) s = s.replace(re, '');
+    s = s.replace(/^<agent-instructions\b[^>]*>[\s\S]*?<\/agent-instructions>\s*/, '');
     s = s.replace(DISCORD_CONTEXT_BLOCK, '');
     s = s.trimStart();
     changed = s !== before;

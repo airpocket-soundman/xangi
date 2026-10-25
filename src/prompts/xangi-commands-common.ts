@@ -35,7 +35,7 @@ Agents can be called from any conversation. Use these absolute paths:
 
 ## Team
 
-Teams are separate from individual agent listings. Read ${instanceCliCommand} team --help and use ${teamCli} list/show/run/status/wait. The caller checks prerequisites, divides independent work, and submits it together in parallel. Wait for completion notifications, verify, and consolidate results.
+Teams have a separate list. Read ${instanceCliCommand} team --help; use ${teamCli} list/show/run/status/wait/close. Check prerequisites; dispatch independent work in parallel. Await results, verify and report. Then close --id <RUN_ID> retaining history; keep open for follow-ups or running work.
 
 ## Progress cards
 

@@ -1,4 +1,6 @@
-import { managedHealthUrl } from '../installer/managed-env.js';
+import { readEnvFile } from '../env-file.js';
+import { resolveWebChatPort } from '../web-endpoint-config.js';
+import { managedEnvPath, managedHealthUrl } from '../installer/managed-env.js';
 import { spawnSync } from 'node:child_process';
 import { access, constants, readFile, realpath, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -237,10 +239,14 @@ async function checkHealth(url: string, fetchImpl: typeof fetch): Promise<Doctor
   try {
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(3000) });
     return response.ok
-      ? { name: 'health', level: 'ok', detail: `HTTP ${response.status}` }
-      : { name: 'health', level: 'error', detail: `HTTP ${response.status}` };
+      ? { name: 'health', level: 'ok', detail: `${url}: HTTP ${response.status}` }
+      : { name: 'health', level: 'error', detail: `${url}: HTTP ${response.status}` };
   } catch {
-    return { name: 'health', level: 'warn', detail: 'service is not reachable' };
+    return {
+      name: 'health',
+      level: 'warn',
+      detail: `${url}: service is not reachable; check WEB_CHAT_PORT in the reported settings file`,
+    };
   }
 }
 
@@ -252,7 +258,11 @@ async function checkRuntimeWorkspace(
   try {
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
-      return { name: 'runtime-workspace', level: 'error', detail: `HTTP ${response.status}` };
+      return {
+        name: 'runtime-workspace',
+        level: 'error',
+        detail: `${url}: HTTP ${response.status}`,
+      };
     }
     const body = (await response.json()) as { meta?: { workdir?: unknown } };
     if (typeof body.meta?.workdir !== 'string') {
@@ -290,35 +300,13 @@ function sourceCheckoutDir(): string | undefined {
 }
 
 async function checkoutHealthUrl(dir: string): Promise<string> {
-  let port = '18888';
-  const env = await readCheckoutEnv(dir);
-  if (env.WEB_CHAT_PORT) port = env.WEB_CHAT_PORT;
+  const { port } = resolveWebChatPort(undefined, await readCheckoutEnv(dir));
   return `http://127.0.0.1:${port}/health`;
 }
 
-async function readCheckoutEnv(dir: string): Promise<Record<string, string>> {
-  const env: Record<string, string> = {};
-  let content: string;
-  try {
-    content = await readFile(join(dir, '.env'), 'utf8');
-  } catch {
-    return env;
-  }
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!match) continue;
-    let value = match[2].trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    env[match[1]] = value;
-  }
-  return env;
+async function readCheckoutEnv(dir: string): Promise<NodeJS.ProcessEnv> {
+  // Diagnose the same checkout that service start/restart will launch.
+  return readEnvFile(join(dir, '.env'));
 }
 
 async function checkoutRuntimeWorkspace(dir: string, configuredWorkspace: string): Promise<string> {
@@ -406,6 +394,17 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
     (checkoutDir
       ? await checkoutHealthUrl(checkoutDir)
       : managedHealthUrl(options.configPath ?? layout.configFile));
+  checks.push({
+    name: 'health-endpoint',
+    level: 'ok',
+    detail: `${healthUrl} (settings: ${
+      options.healthUrl
+        ? 'explicit healthUrl'
+        : checkoutDir
+          ? join(checkoutDir, '.env')
+          : managedEnvPath(options.configPath ?? layout.configFile)
+    }; ${checkoutDir ? 'checkout WEB_CHAT_PORT > 18888' : 'saved WEB_CHAT_PORT > inherited environment > 18888'})`,
+  });
   if (configResult.config?.webChatEnabled && configResult.config.webChatAccess === 'tailscale') {
     const port = Number.parseInt(new URL(healthUrl).port || '80', 10);
     checks.push(await (options.tailscaleServeCheck ?? checkTailscaleServe)(port));

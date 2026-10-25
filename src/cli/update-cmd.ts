@@ -33,6 +33,7 @@ const execFileAsync = promisify(execFile);
 export type InstallerFlags = Record<string, string | boolean>;
 
 export interface ManagedCommandDependencies {
+  onProgress?: (message: string) => void;
   layout?: AppLayout;
   manifestVerifier?: ManifestVerifier;
   publicKey?: ManifestPublicKey;
@@ -59,7 +60,10 @@ export async function updateCmd(
   flags: InstallerFlags,
   dependencies: ManagedCommandDependencies = {}
 ): Promise<string> {
-  const result = await executeManagedUpdate(flags, dependencies);
+  const result = await executeManagedUpdate(flags, {
+    ...dependencies,
+    onProgress: dependencies.onProgress ?? ((message) => console.error(message)),
+  });
   return `Updated xangi to ${result.version}${result.previousVersion ? ` (previous ${result.previousVersion})` : ''}`;
 }
 
@@ -67,9 +71,9 @@ export async function executeManagedUpdate(
   flags: InstallerFlags,
   dependencies: ManagedCommandDependencies = {}
 ): Promise<UpdateResult> {
+  dependencies.onProgress?.('Checking for xangi updates...');
   const runtime = await resolveManagedRuntime(flags, dependencies);
   ensureManagedEnv(runtime.layout.configFile);
-  const healthUrl = managedHealthUrl(runtime.layout.configFile);
   const manifestUrl = await resolveManifestUrl(flags, runtime.layout);
   const manifest = await (dependencies.fetchManifest ?? fetchJson)(manifestUrl);
   const updater = new Updater({
@@ -78,13 +82,16 @@ export async function executeManagedUpdate(
     download: dependencies.download ?? downloadBytes,
     extractArtifact: dependencies.extractArtifact ?? extractTarGzip,
     service: runtime.service,
-    healthCheck: dependencies.healthCheck ?? ((signal) => checkLocalHealth(signal, healthUrl)),
+    healthCheck:
+      dependencies.healthCheck ??
+      ((signal) => checkLocalHealth(signal, managedHealthUrl(runtime.layout.configFile))),
     healthTimeoutMs: dependencies.healthTimeoutMs,
     healthRetryIntervalMs: dependencies.healthRetryIntervalMs,
   });
   return updater.update(manifest, {
     allowDowngrade: booleanFlag(flags, 'allow-downgrade'),
     forceActivate: dependencies.forceActivate,
+    onProgress: dependencies.onProgress,
   });
 }
 

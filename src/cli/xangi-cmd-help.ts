@@ -45,7 +45,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     topic: 'team',
     summary: 'Create, delete and inspect Teams, submit tasks, and retrieve results',
     usage:
-      'xangi team create --name NAME --members-json JSON [--prompt TEXT] [--leader-agent-id ID] [--max-concurrency N] [--serialize-workspaces true|false]\nxangi team delete NAME_OR_ID\nxangi team list\nxangi team show NAME_OR_ID\nxangi team run NAME_OR_ID --task TEXT\nxangi team status --id RUN_ID\nxangi team wait --id RUN_ID\nxangi team logs --id RUN_ID [--member RUN_OR_AGENT_ID] [--offset N] [--limit N]',
+      'xangi team create --name NAME --members-json JSON [--prompt TEXT] [--leader-agent-id ID] [--max-concurrency N] [--serialize-workspaces true|false]\nxangi team delete NAME_OR_ID\nxangi team list\nxangi team show NAME_OR_ID\nxangi team run NAME_OR_ID --task TEXT\nxangi team status --id RUN_ID\nxangi team wait --id RUN_ID\nxangi team close --id RUN_ID\nxangi team logs --id RUN_ID [--member RUN_OR_AGENT_ID] [--offset N] [--limit N]',
     notes: [
       CREATION_NOTES,
       'Use xangi team show/run/delete NAME_OR_ID. Names must match exactly; use IDs for duplicate names.',
@@ -57,6 +57,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
       'In caller-led mode, the current conversation is the leader. Put shared context in --task and assignments for all members in --assignments-json as [{"agentId":"ID","task":"independent task"}]. Start all members together in parallel; the caller aggregates results. Ask for missing required information before starting.',
       'run sends a one-time request to the Team without changing the channel assignee. It preserves the composition at request time. Include required context in --task.',
       'Use the run ID for status/wait. wait lasts up to 25 seconds. Do not resubmit run while unfinished. Completion notifies the original conversation. status/wait only retrieve requests from this conversation, returning each member stage and the final result.',
+      'After reviewing and accepting the Team result and preparing the report, use team close --id RUN_ID. It closes the request and all descendant sessions, retaining history. Any running work, delivery or queued follow-up rejects the entire close; keep requests open while revisions are needed. Repeated close is safe; missing sessions are reported.',
       'logs aggregates member Agent logs from the requesting conversation. It returns tool counts, recorded search terms and URLs, errors, explicit retries, and source files with line numbers. Filter with --member; paginate events per member with --offset/--limit (default 20, maximum 100).',
       'A leader dispatched with agent run --allow-teams-json may call only those Teams, one level deep. Nested members cannot delegate (including default consultations). Leaders must collect results with team wait. Agent and Team requests share a default concurrency limit of 16 (AGENT_MAX_CONCURRENT_REQUESTS allows 1-64). Duplicate requests to the same Team are rejected.',
       'Each member uses its registered Workspace. The default assignee is also available. Choose shared or isolated workspaces for the task; prepare a dedicated worktree when needed.',

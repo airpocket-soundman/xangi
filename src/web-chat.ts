@@ -20,7 +20,11 @@ import {
 import { DocumentAttachments, AttachmentError, attachmentPaths } from './document-attachments.js';
 import { registerProjectAgents } from './project-agent-command.js';
 import { ProjectCatalog } from './project-catalog.js';
-import { ExtensionFavorites, parseFavoriteAction } from './extension-favorites.js';
+import {
+  ExtensionFavorites,
+  parseFavoriteAction,
+  defaultExtensionName,
+} from './extension-favorites.js';
 import { latestModelExecution } from './model-execution-display.js';
 /**
  * Web チャット UI — 複数スレッド並存・並列ストリーミング対応版
@@ -43,6 +47,7 @@ import { join, dirname, extname, basename, isAbsolute, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import type { AgentRunner } from './agent-runner.js';
+import type { SlackRemoteInputBridge } from './slack.js';
 import type { DiscordRemoteInputBridge } from './discord/message-handler.js';
 import {
   getSession,
@@ -146,6 +151,7 @@ import {
   listDevelopmentExtensionCatalog,
   loadExtensionIdsReservedForRepository,
   resolveDevelopmentExtensionService,
+  resolveExtensionDeviceService,
   uninstallDevelopmentExtension,
 } from './extension-catalog.js';
 import {
@@ -305,6 +311,7 @@ interface WebChatOptions {
   };
   settingsChannelListers?: SettingsChannelListers;
   skillsRef?: { current: Skill[] };
+  slackRemoteInputRef?: { current?: SlackRemoteInputBridge };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
   discoverModels?: typeof discoverBackendModels;
@@ -523,7 +530,19 @@ export function startWebChat(options: WebChatOptions) {
     if (!options.resolver) {
       throw new AgentRunError('この環境ではAgent Runを利用できません', 503);
     }
-    const projectId = typeof body.projectId === 'string' ? body.projectId : undefined;
+    const parentKey = typeof body.parentContextKey === 'string' ? body.parentContextKey : undefined;
+    const parentId = parentKey?.startsWith(WEB_CHAT_CONTEXT_PREFIX)
+      ? parentKey.slice(WEB_CHAT_CONTEXT_PREFIX.length)
+      : parentKey
+        ? getActiveSessionId(parentKey)
+        : undefined;
+    const parentProjectId = parentId ? getSessionEntry(parentId)?.projectId : undefined;
+    const projectId =
+      typeof body.projectId === 'string'
+        ? body.projectId
+        : parentProjectId && webProjects.get(parentProjectId)
+          ? parentProjectId
+          : undefined;
     if (projectId && !webProjects.get(projectId))
       throw new AgentRunError('Projectが見つかりません', 404);
     const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
@@ -1323,6 +1342,8 @@ ${delegatedTeam.prompt}`
       return;
     }
 
+    if (await proxyExtensionRequest(req, res, resolveExtensionDeviceService, true)) return;
+
     if (url === '/api/remote-platform/turn') {
       try {
         const handled = await handleRemotePlatformRequest(req, res, {
@@ -1902,13 +1923,15 @@ ${delegatedTeam.prompt}`
 
     if (url === '/api/extension-favorites' && req.method === 'GET') {
       try {
-        const ids = extensionFavorites.list();
+        const entries = extensionFavorites.entries();
+        const ids = entries.map((entry) => entry.id);
         const catalog = ids.length ? await listDevelopmentExtensionCatalog() : undefined;
-        const favorites = ids.map((id) => {
+        const favorites = entries.map(({ id, displayName }) => {
           const entry = catalog?.extensions.find((candidate) => candidate.id === id);
           return {
             id,
-            displayName: entry?.displayName || id,
+            displayName: displayName || defaultExtensionName(entry?.displayName || id),
+            defaultDisplayName: defaultExtensionName(entry?.displayName || id),
             available: Boolean(
               entry?.installed && entry.uiAvailable && entry.healthy && entry.actionsAvailable
             ),
@@ -1923,7 +1946,9 @@ ${delegatedTeam.prompt}`
 
     if (url === '/api/extension-favorites' && req.method === 'POST') {
       await handleExtensionMutation(req, res, async () => {
-        const { id, action } = parseFavoriteAction(JSON.parse(await readRawBody(req, 4096)));
+        const { id, action, displayName } = parseFavoriteAction(
+          JSON.parse(await readRawBody(req, 4096))
+        );
         if (action === 'add') {
           const catalog = await listDevelopmentExtensionCatalog();
           if (
@@ -1934,7 +1959,7 @@ ${delegatedTeam.prompt}`
             throw new Error('画面のあるインストール済み拡張を選んでください');
           }
         }
-        sendJson(res, 200, { ids: extensionFavorites.update(id, action) });
+        sendJson(res, 200, { ids: extensionFavorites.update(id, action, displayName) });
       });
       return;
     }
@@ -2882,6 +2907,9 @@ ${delegatedTeam.prompt}`
             ) ||
             appSessionId,
           platform: entry?.platform,
+          linkedChannel: Boolean(
+            entry?.projectId && (entry.platform === 'discord' || entry.platform === 'slack')
+          ),
           lifecycle: entry ? getSessionLifecycle(entry.id) : 'closed',
           isActive: activity?.active === true,
           activity,
@@ -2968,7 +2996,35 @@ ${delegatedTeam.prompt}`
         if (body.secret !== undefined && typeof body.secret !== 'boolean')
           throw new WebProjectError('secret must be a boolean', 400);
         const project = resolveProject(body.projectId);
-        const selectedAgentId = body.agentId ? String(body.agentId) : undefined;
+        if (project?.channel && body.secret !== true) {
+          if (typeof body.message !== 'string' || !body.message.trim())
+            throw new WebProjectError('最初のメッセージを入力してください', 400);
+          const { platform, channelId } = project.channel;
+          const bridge =
+            platform === 'discord'
+              ? options.discordRemoteInputRef?.current
+              : options.slackRemoteInputRef?.current;
+          if (!bridge?.createSession)
+            throw new WebProjectError(`${platform}接続が利用できません`, 503);
+          const lister = options.settingsChannelListers?.[platform];
+          if (!lister || !(await lister()).some((c) => c.id === channelId))
+            throw new WebProjectError(
+              '接続先チャンネルを確認できません。Project設定を確認してください',
+              409
+            );
+          const result = await bridge.createSession(
+            channelId,
+            truncateSessionTitle(body.message.trim().replace(/\s+/g, ' '))
+          );
+          invalidateSessionSnapshots();
+          sendJson(res, 200, { ok: true, sessionId: result.sessionId });
+          return;
+        }
+        const selectedAgentId = body.agentId
+          ? String(body.agentId)
+          : body.secret === true
+            ? undefined
+            : project?.defaultAgentId;
         const execution = webProjects.execution(project?.id, selectedAgentId);
         const workspace = await resolveWorkspace(
           selectedAgentId ? execution?.workspaceId : body.workspaceId
@@ -3017,19 +3073,27 @@ ${delegatedTeam.prompt}`
       return;
     }
 
-    // POST /api/sessions/:id/discord-continue — Web UI から元の Discord 会話へ投稿する
-    if (url.match(/^\/api\/sessions\/[^/]+\/discord-continue$/) && req.method === 'POST') {
+    // POST /api/sessions/:id/{discord,slack}-continue — 元の会話へ投稿する
+    if (url.match(/^\/api\/sessions\/[^/]+\/(discord|slack)-continue$/) && req.method === 'POST') {
       const sourceId = decodeURIComponent(
-        url.replace('/api/sessions/', '').replace('/discord-continue', '')
+        url.replace('/api/sessions/', '').replace(/\/(discord|slack)-continue$/, '')
       );
       const sourceEntry = getSessionEntry(sourceId);
-      if (!sourceEntry || sourceEntry.platform !== 'discord') {
-        sendJson(res, 404, { error: 'Discordセッションが見つかりません' });
+      const platform = url.endsWith('/slack-continue') ? 'slack' : 'discord';
+      if (!sourceEntry || sourceEntry.platform !== platform) {
+        sendJson(res, 404, {
+          error: `${platform === 'discord' ? 'Discord' : 'Slack'}セッションが見つかりません`,
+        });
         return;
       }
-      const bridge = options.discordRemoteInputRef?.current;
+      const bridge =
+        platform === 'discord'
+          ? options.discordRemoteInputRef?.current
+          : options.slackRemoteInputRef?.current;
       if (!bridge) {
-        sendJson(res, 503, { error: 'Discordが起動していません' });
+        sendJson(res, 503, {
+          error: `${platform === 'discord' ? 'Discord' : 'Slack'}が起動していません`,
+        });
         return;
       }
       try {

@@ -111,5 +111,48 @@ describe.each(['linux', 'darwin'] as const)(
         XANGI_SETUP_STATE_DIR: '',
       });
     });
+    it('does not inherit runtime settings, credentials or future settings absent from the target', () => {
+      const { dir, config } = fixture();
+      rmSync(config);
+      Object.assign(process.env, {
+        REMOTE_WORKER_ENABLED: 'true',
+        REMOTE_WORKER_PORT: '18791',
+        DISCORD_TOKEN: 'caller-secret',
+        FUTURE_FEATURE_ENABLED: 'true',
+        WORKSPACE_PATH: '/caller/workspace',
+        DATA_DIR: '/caller/state',
+        XANGI_PROCESS_NAME: 'caller',
+        XANGI_TOOL_SERVER: 'http://caller',
+      });
+      const env = checkoutRuntimeEnv({ dir });
+      for (const key of [
+        'REMOTE_WORKER_ENABLED',
+        'REMOTE_WORKER_PORT',
+        'DISCORD_TOKEN',
+        'FUTURE_FEATURE_ENABLED',
+        'WORKSPACE_PATH',
+        'DATA_DIR',
+        'XANGI_TOOL_SERVER',
+      ]) {
+        expect(env[key], key).toBeUndefined();
+      }
+      expect(env.XANGI_PROCESS_NAME).toBe('checkout');
+      expect(env.PATH).toBe(process.env.PATH);
+    });
+    it('loads the complete target env with dotenv syntax and keeps supervisor routing', () => {
+      const { dir, config } = fixture();
+      rmSync(config);
+      process.env.PM2_HOME = '/isolated/pm2';
+      writeFileSync(
+        join(dir, '.env'),
+        'export XANGI_PROCESS_NAME="target"\nREMOTE_WORKER_PORT=19999 # target\nDISCORD_TOKEN="target-secret"\n'
+      );
+      expect(checkoutRuntimeEnv({ dir })).toMatchObject({
+        XANGI_PROCESS_NAME: 'target',
+        REMOTE_WORKER_PORT: '19999',
+        DISCORD_TOKEN: 'target-secret',
+        PM2_HOME: '/isolated/pm2',
+      });
+    });
   }
 );

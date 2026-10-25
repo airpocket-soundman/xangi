@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -162,15 +162,20 @@ afterAll(async () => {
 });
 
 describe('xangi user-facing CLI', () => {
-  function createFakePm2(): { dir: string; logFile: string } {
+  function createFakePm2(options: Record<string, string> = {}): { dir: string; logFile: string } {
     const dir = mkdtempSync(join(tmpdir(), 'xangi-cli-pm2-'));
     const logFile = join(dir, 'pm2.log');
     const pm2Path = join(dir, 'pm2');
     writeFileSync(
       pm2Path,
       `#!/bin/sh
+PM2_LOG='${logFile}'
+${Object.entries(options)
+  .map(([key, value]) => `${key}='${value.replaceAll("'", "'\\''")}'`)
+  .join('\n')}
 echo "$@" >> "$PM2_LOG"
 echo "runtime=$XANGI_SETUP_CONFIG_PATH|$XANGI_SETUP_STATE_DIR" >> "$PM2_LOG"
+echo "caller=$FUTURE_FEATURE_ENABLED|$REMOTE_WORKER_PORT|$XANGI_ENV_PATH" >> "$PM2_LOG"
 if [ "$1" = "--version" ]; then
   echo "5.0.0"
   exit 0
@@ -475,7 +480,6 @@ exit 0
     writeFileSync(join(xangiDir, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
 
     const result = await runCli(['service', 'restart', '--dir', xangiDir], {
-      PM2_LOG: fakePm2.logFile,
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -484,6 +488,59 @@ exit 0
     expect(log).toContain('describe xangi-prod');
     expect(log).toContain('delete xangi-prod');
     expect(log).toContain('start ecosystem.config.cjs --only xangi-prod');
+  });
+
+  it('selects an explicit checkout before loading the caller env or managed configuration', async () => {
+    const fakePm2 = createFakePm2();
+    const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
+    const callerEnv = join(fakePm2.dir, 'caller.env');
+    writeFileSync(callerEnv, 'XANGI_PROCESS_NAME=wrong\nFUTURE_FEATURE_ENABLED=true\n');
+    writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=target\n');
+    writeFileSync(join(xangiDir, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
+    try {
+      for (const mode of ['checkout', 'managed']) {
+        const result = await runCli(['service', 'start', '--dir', xangiDir], {
+          XANGI_SKIP_ENV_FILE: 'false',
+          XANGI_ENV_PATH: callerEnv,
+          XANGI_INSTALLATION_KIND: mode,
+          XANGI_PROCESS_NAME: 'caller',
+          REMOTE_WORKER_PORT: '18791',
+          FUTURE_FEATURE_ENABLED: 'true',
+          PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+        });
+        expect(result.code, result.stderr).toBe(0);
+      }
+      const log = readFileSync(fakePm2.logFile, 'utf8');
+      expect(log).toContain('start ecosystem.config.cjs --only target');
+      expect(log).not.toContain('wrong');
+      expect(log).not.toContain('18791');
+      expect(log).not.toContain('true');
+      expect(log).not.toContain(callerEnv);
+    } finally {
+      rmSync(xangiDir, { recursive: true, force: true });
+      rmSync(fakePm2.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses its own checkout when no dir is passed, regardless of inherited directory and mode', async () => {
+    const fakePm2 = createFakePm2();
+    writeFileSync(join(fakePm2.dir, '.env'), 'XANGI_PROCESS_NAME=wrong\n');
+    try {
+      const result = await runCli(['service', 'status'], {
+        XANGI_SKIP_ENV_FILE: 'false',
+        XANGI_INSTALLATION_KIND: 'managed',
+        XANGI_DIR: fakePm2.dir,
+        XANGI_PROCESS_NAME: 'caller',
+        PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
+      });
+      expect(result.code, result.stderr).toBe(0);
+      const log = readFileSync(fakePm2.logFile, 'utf8');
+      expect(log).toContain(`describe ${basename(join(__dirname, '..'))}`);
+      expect(log).not.toContain('wrong');
+      expect(log).not.toContain('describe caller');
+    } finally {
+      rmSync(fakePm2.dir, { recursive: true, force: true });
+    }
   });
 
   it('uses the checkout workspace state with the saved setup config', async () => {
@@ -507,7 +564,6 @@ exit 0
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: join(homeDir, 'data'),
       XDG_STATE_HOME: join(homeDir, 'state'),
-      PM2_LOG: fakePm2.logFile,
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -541,7 +597,6 @@ exit 0
     const result = await runCli(['service', 'restart', '--dir', xangiDir], {
       HOME: homeDir,
       XDG_CONFIG_HOME: configHome,
-      PM2_LOG: fakePm2.logFile,
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -552,14 +607,12 @@ exit 0
   });
 
   it('starts from PM2 config when the PM2 service is not registered yet', async () => {
-    const fakePm2 = createFakePm2();
+    const fakePm2 = createFakePm2({ PM2_DESCRIBE_EXIT: '1' });
     const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
     writeFileSync(join(xangiDir, '.env'), 'XANGI_INSTANCE_ID=xangi-dev\n');
     writeFileSync(join(xangiDir, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
 
     const result = await runCli(['service', 'restart', '--dir', xangiDir], {
-      PM2_LOG: fakePm2.logFile,
-      PM2_DESCRIBE_EXIT: '1',
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -575,7 +628,6 @@ exit 0
     writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
 
     const result = await runCli(['service', 'autostart', 'enable', '--dir', xangiDir], {
-      PM2_LOG: fakePm2.logFile,
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -587,15 +639,14 @@ exit 0
   });
 
   it('accepts PM2 startup sudo guidance even when pm2 exits non-zero', async () => {
-    const fakePm2 = createFakePm2();
+    const fakePm2 = createFakePm2({
+      PM2_STARTUP_EXIT: '1',
+      PM2_STARTUP_OUTPUT: 'sudo env PATH=$PATH:/node/bin pm2 startup systemd',
+    });
     const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
     writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
 
     const result = await runCli(['service', 'autostart', 'enable', '--dir', xangiDir], {
-      PM2_LOG: fakePm2.logFile,
-      PM2_STARTUP_EXIT: '1',
-      PM2_STARTUP_OUTPUT:
-        'sudo env PATH=$PATH:/node/bin /node/lib/node_modules/pm2/bin/pm2 startup systemd -u karaage --hp /home/karaage',
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -613,7 +664,6 @@ exit 0
     writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
 
     const result = await runCli(['service', 'autostart', 'disable', '--dir', xangiDir], {
-      PM2_LOG: fakePm2.logFile,
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 
@@ -625,15 +675,14 @@ exit 0
   });
 
   it('accepts PM2 unstartup sudo guidance even when pm2 exits non-zero', async () => {
-    const fakePm2 = createFakePm2();
+    const fakePm2 = createFakePm2({
+      PM2_UNSTARTUP_EXIT: '1',
+      PM2_UNSTARTUP_OUTPUT: 'sudo env PATH=$PATH:/node/bin pm2 unstartup systemd',
+    });
     const xangiDir = mkdtempSync(join(tmpdir(), 'xangi-dir-'));
     writeFileSync(join(xangiDir, '.env'), 'XANGI_PROCESS_NAME=xangi-prod\n');
 
     const result = await runCli(['service', 'autostart', 'disable', '--dir', xangiDir], {
-      PM2_LOG: fakePm2.logFile,
-      PM2_UNSTARTUP_EXIT: '1',
-      PM2_UNSTARTUP_OUTPUT:
-        'sudo env PATH=$PATH:/node/bin /node/lib/node_modules/pm2/bin/pm2 unstartup systemd -u karaage --hp /home/karaage',
       PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
     });
 

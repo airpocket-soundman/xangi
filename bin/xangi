@@ -52,6 +52,10 @@ if { [ -d "$ROOT_DIR/.git" ] || [ -f "$ROOT_DIR/.git" ]; } && [ -f "$source_cli"
     echo "Error: this xangi checkout needs local dependencies. Run npm ci first." >&2
     exit 1
   fi
+  # Service routing belongs to this launcher, not to a parent instance's mode.
+  if [ "${1:-}" = "service" ]; then
+    export XANGI_INSTALLATION_KIND=checkout
+  fi
   exec "$local_tsx" "$source_cli" "$@"
 fi
 

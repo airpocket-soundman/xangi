@@ -943,6 +943,8 @@ export interface DiscordRemoteInput {
 }
 
 export interface DiscordRemoteInputBridge {
+  createSession?(channelId: string, title: string): Promise<{ sessionId: string }>;
+
   continueSession(input: DiscordRemoteInput): Promise<{ response: string | null }>;
 }
 
@@ -954,6 +956,7 @@ export interface DiscordRemoteInputBridge {
 export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): DiscordRemoteInputBridge {
   const { client, config, agentRunner, workdir, workspaceRegistry } = deps;
   const turnCoordinator = deps.turnCoordinator ?? new DiscordTurnCoordinator();
+  const pendingThreadTitles = new Map<string, string>();
 
   // 同じ bot からの連続返信を制限するためのカウンタ (channelId → {lastBotId, count})。
   // 別 bot や人間のメッセージが入ったらリセット。RESPOND_TO_BOTS_MAX_CONSECUTIVE で上限制御。
@@ -1199,6 +1202,23 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
   });
 
   return {
+    async createSession(channelId, title) {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || !('threads' in channel) || channel.type !== 0)
+        throw new Error('Discordのテキストチャンネルを選択してください');
+      const thread = await channel.threads.create({
+        name: title.slice(0, 100),
+        autoArchiveDuration: 1440,
+      });
+      const result = await ensureSessionWithWorkspace({
+        platform: 'discord',
+        contextKey: thread.id,
+        bindingKey: channelId,
+        registry: workspaceRegistry,
+      });
+      pendingThreadTitles.set(result.appSessionId, title);
+      return { sessionId: result.appSessionId };
+    },
     async continueSession({ appSessionId, message: inputMessage }) {
       const text = inputMessage.trim();
       if (!text) throw new Error('メッセージを入力してください');
@@ -1219,6 +1239,8 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
           name?: string;
           parent?: { name?: string } | null;
           send: (options: unknown) => Promise<Message>;
+          fetch?: () => Promise<{ name?: string }>;
+          setName?: (title: string) => Promise<unknown>;
         };
         const isThread = typeof sourceChannel.isThread === 'function' && sourceChannel.isThread();
         const settingsChannelId = resolveDiscordSettingsChannelId(entry.contextKey, sourceChannel);
@@ -1236,10 +1258,21 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
           if (topic) prompt += `\n\n[チャンネルルール（必ず従うこと）]\n${topic}`;
         }
         prompt = prependDiscordTimestamp(prompt, config.discord.injectTimestamp !== false);
+        const createdThreadName = pendingThreadTitles.get(appSessionId) ?? null;
+        pendingThreadTitles.delete(appSessionId);
         const target: DiscordMessageTarget = {
           conversationChannelId: entry.contextKey,
           settingsChannelId,
-          createdThreadName: null,
+          createdThreadName,
+          getCurrentThreadName: isThread
+            ? async () => ((await sourceChannel.fetch?.()) ?? sourceChannel).name ?? null
+            : undefined,
+          renameThread:
+            isThread && sourceChannel.setName
+              ? async (title) => {
+                  await sourceChannel.setName!(title);
+                }
+              : undefined,
           threadName: isThread ? (sourceChannel.name ?? null) : null,
           parentChannelName: isThread ? (sourceChannel.parent?.name ?? null) : null,
           isThread,

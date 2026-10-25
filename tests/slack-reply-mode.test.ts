@@ -1535,3 +1535,45 @@ describe('processMessage', () => {
     expect(runStream).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('Slack Web continuation', () => {
+  it('AI-names a new linked conversation instead of freezing its provisional title', async () => {
+    const { createSlackRemoteInputBridge } = await import('../src/slack.js');
+    const client = { chat: { postMessage: vi.fn().mockResolvedValue({ ts: '123.456' }), update: vi.fn().mockResolvedValue({}) }, conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) } } as unknown as WebClient;
+    const runner = { run: vi.fn().mockResolvedValue({ result: 'AIのタイトル', sessionId: 'title' }), runStream: vi.fn().mockImplementation(async (_p, callbacks) => { callbacks.onBackendReady?.(); return { result: 'ok', sessionId: 'main' }; }), getTimeoutState: () => undefined } as unknown as AgentRunner;
+    const config = { agent: { config: { workdir: tempDir } }, slack: { streaming: false, showThinking: false, replySuggestions: false }, sessionTitle: { mode: 'ai' } } as Config;
+    const bridge = createSlackRemoteInputBridge(client, runner, config);
+    const { sessionId } = await bridge.createSession!('C_WEB', '仮の本文');
+    expect(getSessionEntry(sessionId)?.title).toBeFalsy();
+    await bridge.continueSession({ appSessionId: sessionId, message: '仮の本文' });
+    await vi.waitFor(() => expect(getSessionEntry(sessionId)?.title).toBe('AIのタイトル'));
+  });
+
+  it('mirrors one input, executes once in the same session, and rejects simultaneous input', async () => {
+    const { createSlackRemoteInputBridge } = await import('../src/slack.js');
+    const key = 'C_WEB:123.456';
+    const id = ensureSession(key, { platform: 'slack' });
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    let running!: () => void;
+    const started = new Promise<void>(resolve => { running = resolve; });
+    const runStream = vi.fn().mockImplementation(async () => { running(); await hold; return { result: 'done', sessionId: 'provider-web' }; });
+    const postMessage = vi.fn().mockResolvedValue({ ts: '789.123' });
+    const client = { chat: { postMessage, update: vi.fn().mockResolvedValue({}) }, conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'test' } }) } } as unknown as WebClient;
+    const runner = { runStream, getTimeoutState: () => undefined } as unknown as AgentRunner;
+    const config = { agent: { config: { workdir: tempDir } }, slack: { streaming: false, showThinking: false, replySuggestions: false } } as Config;
+    const bridge = createSlackRemoteInputBridge(client, runner, config);
+    await withoutMinimumDisplayDelay(async () => {
+      const first = bridge.continueSession({ appSessionId: id, message: 'hello' });
+      await started;
+      try {
+        await expect(bridge.continueSession({ appSessionId: id, message: 'duplicate' })).rejects.toThrow('処理中');
+      } finally { release(); }
+      await first;
+    });
+    expect(runStream).toHaveBeenCalledTimes(1);
+    expect(getActiveSessionId(key)).toBe(id);
+    expect(postMessage.mock.calls.filter(([p]) => p.text.startsWith('🌐 Webから:'))).toHaveLength(1);
+    expect(postMessage.mock.calls[0][0]).toMatchObject({ channel: 'C_WEB', thread_ts: '123.456', text: '🌐 Webから: hello', mrkdwn: false });
+  });
+});

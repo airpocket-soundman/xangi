@@ -41,7 +41,8 @@ export async function channelAgentSnapshot(
 ) {
   const release = beginAgentChannelTurn(platform, channel);
   try {
-    const agent = channelAgent(platform, channel);
+    const project = channelProject(platform, channel);
+    const agent = projectChannelAgent(platform, channel) || channelAgent(platform, channel);
     if (agent && !registry) throw new Error('Workspace registry is unavailable');
     const workspace = registry
       ? agent
@@ -51,12 +52,18 @@ export async function channelAgentSnapshot(
           )
       : undefined;
     return {
+      projectId: project?.id,
       workspaceId: workspace?.id,
       workspacePath: workspace?.path,
       selectedAgentId: agent?.id,
       agentBindingKey: channel,
       selectedAgentConfig: agent
-        ? { ...agent, prompt: [agent.role, agent.prompt].filter(Boolean).join('\n\n') }
+        ? {
+            ...agent,
+            prompt: ['role' in agent ? agent.role : undefined, agent.prompt]
+              .filter(Boolean)
+              .join('\n\n'),
+          }
         : undefined,
     };
   } finally {
@@ -138,6 +145,16 @@ export function defaultAgentWorkspaceId(): string {
 }
 export function agentWorkspaceRegistry(): WorkspaceRegistry | undefined {
   return active?.registry;
+}
+export function channelProject(platform: string, channel: string) {
+  return active?.catalog.forChannel(platform, channel);
+}
+export function projectChannelAgent(platform: string, channel: string) {
+  const project = channelProject(platform, channel);
+  if (!project) return undefined;
+  const id = project.defaultAgentId || bindings[key(platform, channel)] || DEFAULT_TEAM_AGENT_ID;
+  const execution = active!.catalog.execution(project.id, id)!;
+  return { ...execution, id };
 }
 export function channelAgent(platform: string, channel: string) {
   const id = bindings[key(platform, channel)];
@@ -289,6 +306,8 @@ export function removeRegisteredAgent(
 ): void {
   if (id === DEFAULT_TEAM_AGENT_ID)
     throw new WebProjectError('既定のエージェントは削除できません', 400);
+  if (catalog.list().some((p) => p.defaultAgentId === id))
+    throw new WebProjectError('Projectの担当に設定されています', 409);
   if (!catalog.agent(id)) throw new WebProjectError('エージェントが見つかりません', 404);
   const channels = Object.entries(bindings)
     .filter(([, value]) => value === id)
@@ -315,6 +334,8 @@ export function teamSelectionAgent(id: string) {
 }
 export function removeRegisteredTeam(id: string, catalog: ProjectCatalog): void {
   const selection = `team:${id}`;
+  if (catalog.list().some((p) => p.defaultAgentId === selection))
+    throw new WebProjectError('Projectの担当に設定されています', 409);
   if (
     Object.values(bindings).includes(selection) ||
     Object.values(teamBindings).includes(id) ||

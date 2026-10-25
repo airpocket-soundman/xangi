@@ -23,7 +23,13 @@ async function setup() {
   process.env.XANGI_EXTENSIONS_FILE = join(root, 'extensions.json');
   const events = join(root, 'events');
   await writeFile(events, '');
-  const add = async (id: string, group: string | undefined, delay = 250, state = 'complete') => {
+  const add = async (
+    id: string,
+    group: string | undefined,
+    delay = 250,
+    state = 'complete',
+    readyOnComplete = false
+  ) => {
     const executable = join(root, id);
     await writeFile(
       executable,
@@ -37,7 +43,7 @@ const timer = setTimeout(() => { state = ${JSON.stringify(state)}; event('finish
 const server = http.createServer((req, res) => {
  if (req.headers.authorization !== 'Bearer ' + process.env.XANGI_EXTENSION_AUTH_TOKEN) { res.writeHead(401).end(); return; }
  res.writeHead(200, { 'Content-Type': 'application/json' });
- res.end(JSON.stringify(state === 'unknown' ? {ready: true} : {ready: false, startup: {state}}));
+ res.end(JSON.stringify(state === 'unknown' ? {ready: true} : {ready: ${readyOnComplete} && state === 'complete', startup: {state}}));
 });
 server.listen(0, '127.0.0.1', () => console.log(JSON.stringify({schemaVersion:2,event:'ready',id:${JSON.stringify(id)},workspace:process.argv[process.argv.indexOf('--workspace')+1],baseUrl:'http://127.0.0.1:'+server.address().port})));
 process.stdin.resume();
@@ -87,6 +93,7 @@ it('retains the group after timeout; reports the blocker and permits retry after
   const timed = await runExtensionAction(a.linked, 'start', { workspace: f.root });
   expect(timed.ok).toBe(false);
   expect(timed.detail).toContain('timed out');
+  expect((await runExtensionAction(a.linked, 'status')).detail).toContain('timed out');
   const blocked = await runExtensionAction(b.linked, 'start', { workspace: f.root });
   expect(blocked.detail).toContain('blocked by slow');
   expect(await readFile(f.events, 'utf8')).not.toContain('next:start');
@@ -177,6 +184,7 @@ it('keeps a missing initialization signal blocked even when HTTP is healthy', as
   const a = await f.add('unknown', 'gpu', 100, 'unknown');
   const result = await runExtensionAction(a.linked, 'start', { workspace: f.root });
   expect(result.detail).toContain('timed out');
+  expect((await runExtensionAction(a.linked, 'status')).detail).toContain('timed out');
   const b = await f.add('next', 'gpu');
   expect((await runExtensionAction(b.linked, 'start', { workspace: f.root })).detail).toContain(
     'blocked by unknown'
@@ -222,3 +230,34 @@ it('cancels initialization and queued starts during host shutdown', async () => 
   expect(await readFile(f.events, 'utf8')).not.toContain('two:start');
   expect((await runExtensionAction(a.linked, 'status')).running).toBe(false);
 });
+
+it.each(['complete', 'failed'])(
+  'reconciles status after a timed-out owner reaches %s',
+  async (state) => {
+    const f = await setup();
+    const a = await f.add('late-status', 'gpu', 1600, state, true);
+    const b = await f.add('after-status', 'gpu');
+    expect((await runExtensionAction(a.linked, 'start', { workspace: f.root })).detail).toContain(
+      'timed out'
+    );
+    await vi.waitFor(
+      async () => expect(await readFile(f.events, 'utf8')).toContain('late-status:finish'),
+      { timeout: 3000, interval: 20 }
+    );
+    const status = await runExtensionAction(a.linked, 'status');
+    expect(status).toMatchObject({
+      running: true,
+      healthy: true,
+      ready: state === 'complete',
+      ok: state === 'complete',
+      health: { startup: { state } },
+    });
+    expect(status.detail ?? '').not.toContain('timed out');
+    expect((await runExtensionAction(a.linked, 'doctor', { workspace: f.root })).ok).toBe(
+      state === 'complete'
+    );
+    await runExtensionAction(b.linked, 'start', { workspace: f.root });
+    expect(await readFile(f.events, 'utf8')).toContain('after-status:finish');
+    expect((await readFile(f.events, 'utf8')).match(/late-status:start/g)).toHaveLength(1);
+  }
+);

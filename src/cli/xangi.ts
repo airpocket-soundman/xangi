@@ -147,7 +147,7 @@ Usage:
   xangi worker install --pair CODE [--workspace PATH]
   xangi worker <run|start|stop|restart|status|uninstall>
   xangi workspace <list|create|delete>  作業場所の一覧・登録
-  xangi team <create|delete|list|show|run|status|wait|logs>  Teamの確認・依頼・結果取得
+  xangi team <create|delete|list|show|run|status|wait|logs|close>  Teamの確認・依頼・結果取得
   xangi agent <create|list|delete|run|status|wait|logs> [--agent ID --task TEXT] [--id RUN_ID]
   xangi tool <operation> [--key value ...]
   xangi service <start|stop|restart|status> [--name NAME] [--dir DIR]
@@ -521,6 +521,16 @@ async function chat(config: CliConfig, flags: Record<string, string | boolean>):
 }
 
 export async function run(argv = process.argv): Promise<void> {
+  // Service commands select their target before loading application settings.
+  // Loading the caller's .env here can even redirect the PM2 supervisor or mode.
+  if (argv[2] === 'service') {
+    const parsed = parseArgs(argv);
+    if (!parsed.flags.dir && process.env.XANGI_INSTALLATION_KIND === 'managed') loadEnvFiles();
+    console.log(
+      await serviceCmd(parsed.positionals[0] || 'help', parsed.flags, {}, parsed.positionals[1])
+    );
+    return;
+  }
   loadEnvFiles();
   if (argv[2] === '--version' || argv[2] === '-V' || argv[2] === 'version') {
     printVersion();
@@ -555,13 +565,6 @@ export async function run(argv = process.argv): Promise<void> {
   const parsed = parseArgs(argv);
   if (!parsed.command || parsed.command === 'help' || parsed.command === '--help') {
     printHelp();
-    return;
-  }
-
-  if (parsed.command === 'service') {
-    console.log(
-      await serviceCmd(parsed.positionals[0] || 'help', parsed.flags, {}, parsed.positionals[1])
-    );
     return;
   }
 

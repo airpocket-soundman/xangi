@@ -62,6 +62,34 @@ describe('managed settings persistence', () => {
     expect(() => updateWebStartupSetting({ key: 'WEB_CHAT_PORT', value: '65536' })).toThrow();
   });
 
+  it('matches runtime inheritance when runtime.env has no port', async () => {
+    const { root, config } = fixture();
+    process.env.WEB_CHAT_PORT = '19995';
+    await runConfiguredRuntime(config, join(root, 'state'), join(root, 'index.js'), async () => {
+      expect(managedHealthUrl(config)).toBe(`http://127.0.0.1:${process.env.WEB_CHAT_PORT}/health`);
+      return {};
+    });
+  });
+
+  it('persists an inherited port for service restarts without the original environment', () => {
+    const { config } = fixture();
+    process.env.WEB_CHAT_PORT = '23456';
+    const path = ensureManagedEnv(config);
+    delete process.env.WEB_CHAT_PORT;
+    expect(readEnvFile(path).WEB_CHAT_PORT).toBe('23456');
+    expect(managedHealthUrl(config)).toBe('http://127.0.0.1:23456/health');
+    process.env.WEB_CHAT_PORT = '34567';
+    ensureManagedEnv(config);
+    expect(readEnvFile(path).WEB_CHAT_PORT).toBe('23456');
+  });
+
+  it.each(['', 'invalid', '65536'])('does not persist an invalid inherited port: %s', (port) => {
+    const { config } = fixture();
+    process.env.WEB_CHAT_PORT = port;
+    expect(readEnvFile(ensureManagedEnv(config)).WEB_CHAT_PORT).toBeUndefined();
+    expect(managedHealthUrl(config)).toBe('http://127.0.0.1:18888/health');
+  });
+
   it('keeps saved values across version switches and service regeneration', async () => {
     const { root, config, current } = fixture();
     const path = ensureManagedEnv(config);

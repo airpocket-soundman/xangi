@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ExtensionFavorites, parseFavoriteAction } from '../src/extension-favorites.js';
+import { ExtensionFavorites, parseFavoriteAction, defaultExtensionName } from '../src/extension-favorites.js';
 
 const roots: string[] = [];
 function fixture() {
@@ -46,4 +46,27 @@ describe('extension favorites', () => {
     { id: 'valid', action: ['add'] },null, [], {}, { id: '../bad', action: 'add' }, { id: 'valid', action: 'toggle' }, { id: 'a'.repeat(129), action: 'add' }])('rejects malformed input %j', (input) => {
     expect(() => parseFavoriteAction(input)).toThrow();
   });
+});
+
+it('migrates legacy favorites, preserves names while sorting, and resets names', () => {
+  const { path, store } = fixture();
+  writeFileSync(path, JSON.stringify(['xangi-mail', 'xangi-tasks']));
+  store.update('xangi-mail', 'rename', '  メール  ');
+  store.update('xangi-mail', 'down');
+  const other = new ExtensionFavorites(path);
+  expect(other.entries()).toEqual([{id: 'xangi-tasks'}, {id: 'xangi-mail', displayName: 'メール'}]);
+  other.update('xangi-mail', 'add');
+  expect(store.entries()[1].displayName).toBe('メール');
+  other.update('xangi-mail', 'rename', '  ');
+  expect(store.entries()[1]).toEqual({id: 'xangi-mail'});
+  expect(defaultExtensionName('xangi-mail')).toBe('mail');
+  expect(defaultExtensionName('My xangi-mail')).toBe('My xangi-mail');
+  expect(() => store.update('absent', 'rename', 'name')).toThrow();
+});
+it.each([undefined, null, 1, 'x'.repeat(81), 'line\nbreak', 'tab\tname'])('rejects invalid names without modifying the saved file: %j', (displayName) => {
+  const { path, store } = fixture();
+  store.update('xangi-mail', 'add');
+  const before = readFileSync(path, 'utf8');
+  expect(() => parseFavoriteAction({id:'xangi-mail', action:'rename', displayName})).toThrow();
+  expect(readFileSync(path, 'utf8')).toBe(before);
 });

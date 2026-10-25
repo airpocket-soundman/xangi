@@ -46,6 +46,7 @@ import {
   updateActivityTool,
 } from '../src/activity-store.js';
 import { events } from '../src/events-emitter.js';
+import type { SlackRemoteInputBridge } from '../src/slack.js';
 import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
 import { logError, logPrompt, logResponse, readSessionMessages } from '../src/transcript-logger.js';
 import { finalizeActiveStreams } from '../src/stream-finalizer.js';
@@ -337,6 +338,7 @@ describe('web-chat HTTP API', () => {
   let server: Server | null = null;
   let baseUrl = '';
   let runner: FakeRunner;
+  let slackRemoteInputRef: { current?: SlackRemoteInputBridge };
   let discordRemoteInputRef: { current?: DiscordRemoteInputBridge };
   let destinationLabelResolverRef: {
     current?: (
@@ -390,6 +392,7 @@ describe('web-chat HTTP API', () => {
       defaultWorkspacePath: testDir,
     });
     discordRemoteInputRef = {};
+    slackRemoteInputRef = {};
     destinationLabelResolverRef = {};
     externalChatUrlResolvers = {};
     const port = await freePort();
@@ -402,6 +405,7 @@ describe('web-chat HTTP API', () => {
       port,
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
+      slackRemoteInputRef,
       destinationLabelResolverRef,
       settingsChannelListers: {
         discord: async () => [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
@@ -686,7 +690,8 @@ describe('web-chat HTTP API', () => {
       appSessionId: run.appSessionId,
     });
     expect(run.appSessionId).not.toBe(sessionId);
-    expect(getSessionEntry(run.appSessionId)?.projectId).toBeUndefined();
+    expect(getSessionEntry(run.appSessionId)?.projectId).toBe(project.id);
+    expect(run.projectId).toBe(project.id);
     expect(getSessionEntry(run.appSessionId)).toMatchObject({
       selectedAgentId: agent.id,
       workspacePath: realpathSync(childPath),
@@ -2352,6 +2357,22 @@ describe('web-chat HTTP API', () => {
           uiAvailable: true,
           setupRepositoryUrl: 'https://github.com/karaage0703/xangi-stopwatch',
         }),
+        expect.objectContaining({
+          id: 'xangi-tasks',
+          displayName: 'xangi-tasks',
+          capabilities: ['xangi-tasks.manage'],
+          installed: false,
+          uiAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-tasks',
+        }),
+        expect.objectContaining({
+          id: 'xangi-remote-desktop',
+          displayName: 'xangi-remote-desktop',
+          capabilities: ['desktop.open'],
+          installed: false,
+          uiAvailable: true,
+          setupRepositoryUrl: 'https://github.com/karaage0703/xangi-remote-desktop',
+        }),
       ],
       issues: [],
     });
@@ -2402,6 +2423,8 @@ describe('web-chat HTTP API', () => {
         expect.objectContaining({ id: 'xangi-terminal' }),
         expect.objectContaining({ id: 'xangi-dots' }),
         expect.objectContaining({ id: 'xangi-stopwatch' }),
+        expect.objectContaining({ id: 'xangi-tasks' }),
+        expect.objectContaining({ id: 'xangi-remote-desktop' }),
       ],
       issues: [expect.objectContaining({ code: 'manifest-invalid' })],
     });
@@ -2571,9 +2594,15 @@ process.stdin.on('end', () => server.close());
     expect((await mutate({ id: '../invalid', action: 'remove' })).status).toBe(400);
     writeFileSync(join(process.env.DATA_DIR!, 'extension-favorites.json'), JSON.stringify(['removed', 'other']));
     expect(await (await fetch(url)).json()).toEqual({ favorites: [
-      { id: 'removed', displayName: 'removed', available: false },
-      { id: 'other', displayName: 'other', available: false },
+      { id: 'removed', displayName: 'removed', defaultDisplayName: 'removed', available: false },
+      { id: 'other', displayName: 'other', defaultDisplayName: 'other', available: false },
     ] });
+    expect((await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' }, 'https://attacker.example')).status).toBe(403);
+    expect((await mutate({ id: 'other', action: 'rename', displayName: 'x'.repeat(81) })).status).toBe(400);
+    expect((await mutate({ id: 'other', action: 'rename', displayName: '新しい名前' })).status).toBe(200);
+    expect((await (await fetch(url)).json()).favorites[1].displayName).toBe('新しい名前');
+    expect((await mutate({ id: 'other', action: 'rename', displayName: '' })).status).toBe(200);
+    expect((await (await fetch(url)).json()).favorites[1].displayName).toBe('other');
     expect(await (await mutate({ id: 'other', action: 'up' })).json()).toEqual({ ids: ['other', 'removed'] });
     expect(await (await mutate({ id: 'removed', action: 'remove' })).json()).toEqual({ ids: ['other'] });
   });
@@ -2651,7 +2680,7 @@ process.stdin.on('end', () => process.exit(0));
       });
       expect(favorite.status).toBe(200);
       expect(await (await fetch(`${baseUrl}/api/extension-favorites`)).json()).toEqual({ favorites: [
-        { id: 'ui-extension', displayName: 'UI Extension', available: true },
+        { id: 'ui-extension', displayName: 'UI Extension', defaultDisplayName: 'UI Extension', available: true },
       ] });
       const page = await fetch(`${baseUrl}/api/extensions/ui-extension/ui`);
       expect(page.status).toBe(200);
@@ -2724,6 +2753,58 @@ process.stdin.on('end', () => process.exit(0));
       `${baseUrl}/api/workspace/file?path=${encodeURIComponent('/etc/hosts')}`
     );
     expect(absolute.status).toBe(400);
+  });
+
+  it('uses a Project default Agent only for new ordinary Web conversations', async () => {
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const { agent } = await (await post('/api/agents', { name: 'Project writer', prompt: 'Write' })).json();
+    const { project } = await (await post('/api/projects', { name: 'Writing', defaultAgentId: agent.id })).json();
+    const ordinary = await (await post('/api/sessions', { projectId: project.id })).json();
+    expect(getSessionEntry(ordinary.sessionId)?.selectedAgentId).toBe(agent.id);
+    const secret = await (await post('/api/sessions', { projectId: project.id, secret: true })).json();
+    expect(getSessionEntry(secret.sessionId)?.selectedAgentId).toBeUndefined();
+  });
+
+  it('creates linked conversations through the bridge, keeps secret sessions local and continues Slack', async () => {
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const remoteId = createSession('C123:1.2', { platform: 'slack' });
+    const create = vi.fn().mockResolvedValue({ sessionId: remoteId });
+    const continuation = vi.fn().mockResolvedValue({ response: null });
+    slackRemoteInputRef.current = { createSession: create, continueSession: continuation };
+    const { project } = await (await post('/api/projects', { name: 'Linked', channel: { platform: 'slack', channelId: 'C123' } })).json();
+    expect((await post('/api/sessions', { projectId: project.id })).status).toBe(400);
+    expect((await post('/api/sessions', { projectId: project.id, message: '  ' })).status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
+    const linkedId = createSession('C123:linked', { platform: 'slack', projectId: project.id });
+    const detail = await (await fetch(`${baseUrl}/api/sessions/${linkedId}`)).json();
+    expect(detail.linkedChannel).toBe(true);
+    const result = await post('/api/sessions', { projectId: project.id, message: 'Start' });
+    expect(result.status).toBe(200);
+    expect((await result.json()).sessionId).toBe(remoteId);
+    expect(create).toHaveBeenCalledExactlyOnceWith('C123', 'Start');
+    const secret = await (await post('/api/sessions', { projectId: project.id, secret: true })).json();
+    expect(getSessionEntry(secret.sessionId)?.platform).toBe('web');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'Continue' })).status).toBe(200);
+    expect(continuation).toHaveBeenCalledExactlyOnceWith({ appSessionId: remoteId, message: 'Continue' });
+    expect((await post(`/api/sessions/${remoteId}/discord-continue`, { message: 'wrong platform' })).status).toBe(404);
+    slackRemoteInputRef.current = undefined;
+    expect((await post(`/api/sessions/${remoteId}/slack-continue`, { message: 'offline' })).status).toBe(503);
+    expect((await post('/api/sessions', { projectId: project.id, message: 'Start' })).status).toBe(503);
+  });
+
+  it.each(['discord', 'slack'] as const)('titles new %s Project conversations from the first message', async (platform) => {
+    const channelId = platform === 'discord' ? 'discord-channel-id' : 'C123';
+    const ref = platform === 'discord' ? discordRemoteInputRef : slackRemoteInputRef;
+    const create = vi.fn().mockResolvedValue({ sessionId: 'new-conversation' });
+    ref.current = { createSession: create, continueSession: vi.fn() };
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const { project } = await (await post('/api/projects', { name: 'task', channel: { platform, channelId } })).json();
+    for (const [message, title] of [[' タスクのテスト\n詳細 ', 'タスクのテスト 詳細'], ['別の相談', '別の相談'], ['😀'.repeat(40), '😀'.repeat(25)]]) {
+      expect((await post('/api/sessions', { projectId: project.id, message })).status).toBe(200);
+      expect(create).toHaveBeenLastCalledWith(channelId, title);
+    }
+    ref.current = undefined;
   });
 
   it('POST /api/sessions/:id/discord-continue forwards input to the Discord bridge', async () => {
@@ -3603,7 +3684,7 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(chatSource).toContain('会話を読み込み中…');
     expect(chatSource).toMatch(
-      /detail && detail\.messages\.length === 0 && !detail\.hasMore && !liveTurn\.visible[\s\S]*まだメッセージがありません/
+      /detail\s*&&\s*detail\.messages\.length === 0\s*&&\s*!detail\.hasMore\s*&&\s*!liveTurn\.visible\s*&&\s*!showRemoteEcho[\s\S]*まだメッセージがありません/
     );
     expect(chatSource).toContain("if (activeProjectId) params.set('projectId', activeProjectId)");
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');

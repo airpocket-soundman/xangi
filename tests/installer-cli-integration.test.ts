@@ -22,6 +22,7 @@ const roots: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   const { rm } = await import('node:fs/promises');
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -105,29 +106,47 @@ function fakeUpdateScheduler(installed = false): UpdateSchedulerAdapter & {
 }
 
 describe('managed installer CLI integration', () => {
-  it('uses the persisted port for the default install health check', async () => {
-    const { layout, manifest, artifact, verifier } = await fixture();
-    await mkdir(layout.configDir, { recursive: true });
-    await writeFile(join(layout.configDir, 'runtime.env'), 'WEB_CHAT_PORT=18889\n');
-    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
-    await installCmd(
-      { manifest: 'https://releases.example/manifest.json' },
-      {
-        layout,
-        manifestVerifier: verifier,
-        fetchManifest: async () => manifest,
-        download: async () => artifact,
-        extractArtifact: async (_bytes, destination) => {
-          await writeFile(join(destination, 'version'), '1');
-        },
-        service: fakeService(),
-        updateScheduler: fakeUpdateScheduler(),
-        ensureConfigured: async () => undefined,
-        initializeWorkspace: async () => ({ workspacePath: layout.workspaceDir }),
-      }
-    );
-    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:18889/health', expect.anything());
-  });
+  it.each(['persisted', 'inherited', 'service startup'])(
+    'uses the %s port for the default install health check',
+    async (source) => {
+      const { layout, manifest, artifact, verifier } = await fixture();
+      await mkdir(layout.configDir, { recursive: true });
+      vi.stubEnv(
+        'WEB_CHAT_PORT',
+        source === 'inherited' ? '18889' : source === 'persisted' ? '19999' : ''
+      );
+      await writeFile(
+        join(layout.configDir, 'runtime.env'),
+        source === 'persisted' ? 'WEB_CHAT_PORT=18889\n' : ''
+      );
+      const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+      await installCmd(
+        { manifest: 'https://releases.example/manifest.json' },
+        {
+          layout,
+          manifestVerifier: verifier,
+          fetchManifest: async () => manifest,
+          download: async () => artifact,
+          extractArtifact: async (_bytes, destination) => {
+            await writeFile(join(destination, 'version'), '1');
+          },
+          service:
+            source === 'service startup'
+              ? {
+                  ...fakeService(),
+                  install: async () => {
+                    await writeFile(join(layout.configDir, 'runtime.env'), 'WEB_CHAT_PORT=18889\n');
+                  },
+                }
+              : fakeService(),
+          updateScheduler: fakeUpdateScheduler(),
+          ensureConfigured: async () => undefined,
+          initializeWorkspace: async () => ({ workspacePath: layout.workspaceDir }),
+        }
+      );
+      expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:18889/health', expect.anything());
+    }
+  );
 
   it.each([
     ['darwin', 'arm64', '.nvm/versions/node/v22.16.0/bin/codex'],
@@ -239,7 +258,55 @@ describe('managed installer CLI integration', () => {
     expect(updateScheduler.uninstalls).toBe(1);
   });
 
+  it('reports an already-current release without downloading or restarting', async () => {
+    const { layout, manifest, verifier } = await fixture();
+    const service = fakeService(true);
+    const onProgress = vi.fn();
+    const download = vi.fn();
+    await mkdir(join(layout.versionsDir, '1.0.0'), { recursive: true });
+    const { symlink } = await import('node:fs/promises');
+    await symlink(join(layout.versionsDir, '1.0.0'), layout.currentLink, 'dir');
+
+    await updateCmd(
+      { manifest: 'https://releases.example/manifest.json' },
+      {
+        layout,
+        manifestVerifier: verifier,
+        fetchManifest: async () => manifest,
+        service,
+        download,
+        onProgress,
+      }
+    );
+
+    expect(onProgress).toHaveBeenLastCalledWith('xangi is already up to date (1.0.0).');
+    expect(download).not.toHaveBeenCalled();
+    expect(service.restarts).toBe(0);
+  });
+
+  it('reports the download stage before a failed download without reporting extraction', async () => {
+    const { layout, manifest, verifier } = await fixture();
+    const onProgress = vi.fn();
+    await expect(
+      updateCmd(
+        { manifest: 'https://releases.example/manifest.json' },
+        {
+          layout,
+          manifestVerifier: verifier,
+          fetchManifest: async () => manifest,
+          service: fakeService(),
+          onProgress,
+          download: async () => {
+            throw new Error('download unavailable');
+          },
+        }
+      )
+    ).rejects.toThrow('download unavailable');
+    expect(onProgress).toHaveBeenLastCalledWith('Downloading xangi 1.0.0...');
+  });
+
   it('updates without restarting the service and preserves personal data', async () => {
+    const progress = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const first = await fixture();
     const service = fakeService(true);
     await mkdir(join(first.layout.versionsDir, '0.9.0'), { recursive: true });
@@ -256,9 +323,16 @@ describe('managed installer CLI integration', () => {
         {
           layout: first.layout,
           manifestVerifier: first.verifier,
-          fetchManifest: async () => first.manifest,
-          download: async () => first.artifact,
+          fetchManifest: async () => {
+            expect(progress).toHaveBeenCalledWith('Checking for xangi updates...');
+            return first.manifest;
+          },
+          download: async () => {
+            expect(progress).toHaveBeenLastCalledWith('Downloading xangi 1.0.0...');
+            return first.artifact;
+          },
           extractArtifact: async (_bytes, destination) => {
+            expect(progress).toHaveBeenLastCalledWith('Extracting release...');
             await writeFile(join(destination, 'version.txt'), '1.0.0');
           },
           service,
@@ -269,6 +343,14 @@ describe('managed installer CLI integration', () => {
       )
     ).resolves.toBe('Updated xangi to 1.0.0 (previous 0.9.0)');
 
+    expect(progress.mock.calls.map(([message]) => message)).toEqual([
+      'Checking for xangi updates...',
+      'Verifying release manifest...',
+      'Downloading xangi 1.0.0...',
+      'Verifying downloaded release...',
+      'Extracting release...',
+      'Switching to the updated release...',
+    ]);
     expect(service.installs).toBe(0);
     expect(service.restarts).toBe(0);
     expect(await readlink(first.layout.currentLink)).toBe(join(first.layout.versionsDir, '1.0.0'));

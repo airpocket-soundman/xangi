@@ -224,3 +224,49 @@ it('scopes log inspection to the parent and selected Team members', async () => 
   const { executeProjectAgentCommand } = await import('../src/project-agent-command.js');
   await expect(executeProjectAgentCommand({ action: 'logs', id: child.id }, { channelId: 'another-channel', platform: 'discord' }, deps)).rejects.toThrow('見つかりません');
 });
+
+it('closes reviewed Team rounds and members, preserves results, and isolates other requests', async () => {
+  const { call, runs, team } = setup();
+  const run = await call({ action: 'run', team: team.id, task: 'review' });
+  const child = (parentContextKey: string, delegationRootId?: string) => runs.create({
+    task: 'round', backend: 'codex', workspaceId: 'default', workspacePath: root,
+    appSessionId: createWebSession({}), parentContextKey, delegationRootId,
+  });
+  const round = child(`web-chat:${run.appSessionId}`);
+  const member = child(`web-chat:${round.appSessionId}`, run.id);
+  const laterRound = child(`web-chat:${run.appSessionId}`);
+  const unrelated = child('other');
+  for (const entry of [run, round, member, laterRound])
+    runs.markSucceeded(entry.id, { result: 'retained evidence', sessionId: 'provider' });
+  await expect(call({ action: 'close', id: run.id }, 'other')).rejects.toThrow('見つかりません');
+  const { getSessionEntry } = await import('../src/sessions.js');
+  expect(getSessionEntry(run.appSessionId)?.lifecycle).toBe('open');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await call({ action: 'close', id: run.id });
+    expect(result.ok).toBe(true);
+    expect(result.sessions).toHaveLength(4);
+    for (const entry of [run, round, member, laterRound]) {
+      expect(getSessionEntry(entry.appSessionId)?.lifecycle).toBe('closed');
+      expect(runs.get(entry.id)?.result).toBe('retained evidence');
+    }
+  }
+  expect(getSessionEntry(unrelated.appSessionId)?.lifecycle).toBe('open');
+  expect((await call({ action: 'status', id: run.id })).result).toBe('retained evidence');
+});
+
+it.each(['queued', 'running', 'pending-input'])('rejects the entire close for %s descendants', async state => {
+  const { call, runs, team } = setup();
+  const run = await call({ action: 'run', team: team.id, task: 'review' });
+  runs.markSucceeded(run.id, { result: 'done', sessionId: '' });
+  const member = runs.create({ task: 'child', backend: 'codex', workspaceId: 'default', workspacePath: root,
+    appSessionId: createWebSession({}), parentContextKey: `web-chat:${run.appSessionId}` });
+  if (state === 'running') runs.markRunning(member.id);
+  if (state === 'pending-input') {
+    runs.markSucceeded(member.id, { result: 'done', sessionId: '' });
+    runs.enqueueWorkInput(member.id, { id: 'follow-up', text: 'revise' });
+  }
+  await expect(call({ action: 'close', id: run.id })).rejects.toThrow('追加指示待ち');
+  const { getSessionEntry } = await import('../src/sessions.js');
+  expect(getSessionEntry(run.appSessionId)?.lifecycle).toBe('open');
+  expect(getSessionEntry(member.appSessionId)?.lifecycle).toBe('open');
+});
