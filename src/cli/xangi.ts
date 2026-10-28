@@ -146,7 +146,7 @@ Usage:
   xangi extension <start|stop|restart> --all
   xangi worker install --pair CODE [--workspace PATH]
   xangi worker <run|start|stop|restart|status|uninstall>
-  xangi workspace <list|create|delete>  作業場所の一覧・登録
+  xangi workspace <list|create|set-path|delete>  作業場所の一覧・登録
   xangi team <create|delete|list|show|run|status|wait|logs|close>  Teamの確認・依頼・結果取得
   xangi agent <create|list|delete|run|status|wait|logs> [--agent ID --task TEXT] [--id RUN_ID]
   xangi tool <operation> [--key value ...]
@@ -547,7 +547,11 @@ export async function run(argv = process.argv): Promise<void> {
       console.log(await runToolCommand(['help', command]));
     } else {
       const args = argv.slice(4);
-      if (['run', 'delete', 'show'].includes(action) && args[0] && !args[0].startsWith('--'))
+      if (
+        ['run', 'delete', 'show', 'set-path'].includes(action) &&
+        args[0] &&
+        !args[0].startsWith('--')
+      )
         args.unshift(
           command === 'team' ? '--team' : command === 'workspace' ? '--workspace' : '--agent'
         );

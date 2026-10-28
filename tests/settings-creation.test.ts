@@ -21,7 +21,7 @@ async function fixture() {
   const dataDir = join(workspace, 'state');
   await mkdir(workspace); await mkdir(outside);
   initSessions(dataDir);
-  const workspaces = await WorkspaceRegistry.open({dataDir, defaultWorkspacePath: workspace, allowedRoots: [workspace]});
+  const workspaces = await WorkspaceRegistry.open({dataDir, defaultWorkspacePath: workspace});
   const catalog = new ProjectCatalog(dataDir);
   const runs = AgentRunStore.fromDataDir(dataDir);
   const start = vi.fn();
@@ -33,7 +33,9 @@ it('uses Settings path restrictions and keeps successful registrations after a l
   const context = {channelId: 'parent'};
   const flags = {action: 'create', name: '資料用', path: f.workspace};
   const created = JSON.parse(await executeWorkspaceCommand(flags, context, f.deps));
-  for (const path of [f.outside, f.dataDir, 'relative', join(f.workspace, 'missing')]) {
+  const outside = JSON.parse(await executeWorkspaceCommand({...flags, name: '外部', path: f.outside}, context, f.deps));
+  expect(outside.workspace.path).toBe(f.outside);
+  for (const path of [f.dataDir, 'relative', join(f.workspace, 'missing')]) {
     await expect(executeWorkspaceCommand({...flags, name: 'invalid', path}, context, f.deps)).rejects.toThrow();
   }
   expect(f.deps.workspaces.list()).toContainEqual(created.workspace);

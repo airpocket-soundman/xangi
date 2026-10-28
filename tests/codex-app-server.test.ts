@@ -6,6 +6,10 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 vi.mock('../src/cli-process.js', () => ({ buildCliEnv: () => ({}) }));
 vi.mock('../src/setup/backend-executable.js', () => ({ configuredBackendCommand: () => 'codex' }));
 import { spawn } from 'node:child_process';
+import { stripReplySuggestionMarkup } from '../src/reply-suggestions.js';
+import { StreamSession } from '../src/stream-session.js';
+import { addToolHistory } from '../src/tool-history.js';
+import { CodexRunner } from '../src/codex-cli.js';
 import { CodexAppServerRunner } from '../src/codex-app-server.js';
 
 class Server extends EventEmitter {
@@ -50,6 +54,8 @@ class Server extends EventEmitter {
         this.send({ id, result: { turn: { id: turnId } } });
         if (this.autoComplete) this.complete(turnId);
       }
+      if (method === 'turn/steer')
+        this.send({ id, result: { turnId: request.params.expectedTurnId } });
       if (method === 'turn/interrupt') {
         this.send({ id, result: {} });
         if (this.interruptCompletes)
@@ -169,14 +175,90 @@ describe('persistent Codex transport', () => {
     expect(turns[0].params.effort).toBe('medium');
     expect(turns[0].params.sandboxPolicy.type).toBe('workspaceWrite');
   });
+  it('keeps command details and distinct tool calls visible through the shared renderer', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const session = new StreamSession({
+      formatToolLine: (name, input) => {
+        const lines: string[] = [];
+        addToolHistory(lines, name, input);
+        return lines[0];
+      },
+      render: async () => {},
+    });
+    const onToolUse = vi.fn();
+    const pending = r.runStream('check', session.callbacks({ onToolUse }), opts);
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    const items = [
+      { id: 'one', type: 'commandExecution', command: 'git status --short' },
+      { id: 'two', type: 'commandExecution', command: 'npm run build' },
+      {
+        id: 'mcp',
+        type: 'mcpToolCall',
+        server: 'docs',
+        tool: 'search',
+        arguments: { query: 'test' },
+      },
+      {
+        id: 'dynamic',
+        type: 'dynamicToolCall',
+        tool: 'Read',
+        arguments: { file_path: '/tmp/example.ts' },
+      },
+    ];
+    for (const item of items) {
+      // Events from other conversations must not leak commands into this view.
+      server.send({
+        method: 'item/started',
+        params: { threadId: 'other', turnId: 'turn-1', item },
+      });
+      for (const method of ['item/started', 'item/completed'])
+        server.send({ method, params: { threadId: server.thread, turnId: 'turn-1', item } });
+    }
+    server.complete();
+    await pending;
+    const lines = session.view().toolLines;
+    session.finish();
+    expect(lines).toContain('🔧 Bash実行: `git status --short`');
+    expect(lines).toContain('🔧 Bash実行: `npm run build`');
+    expect(onToolUse).toHaveBeenCalledWith('mcp__docs__search', { query: 'test' });
+    expect(onToolUse).toHaveBeenCalledWith('Read', { file_path: '/tmp/example.ts' });
+    expect(onToolUse.mock.calls.filter(([name]) => name === 'Bash')).toHaveLength(2);
+  });
   it('forwards completed file changes and ignores rejected edits', async () => {
-    const r = runner(); await r.warm(); server.autoComplete = false;
-    const onFileChanges = vi.fn(); const pending = r.runStream('edit',{onFileChanges},opts);
-    await vi.waitFor(()=>expect(server.turns).toBe(1));
-    for (const status of ['inProgress','failed','completed']) server.send({method:'item/completed',params:{threadId:server.thread,turnId:'turn-1',item:{id:status,type:'fileChange',status,changes:[{path:'a',kind:{type:'update',move_path:null},diff:'@@ -1 +1 @@\n-old\n+new'}]}}});
-    server.complete(); await pending;
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const onFileChanges = vi.fn();
+    const pending = r.runStream('edit', { onFileChanges }, opts);
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    for (const status of ['inProgress', 'failed', 'completed'])
+      server.send({
+        method: 'item/completed',
+        params: {
+          threadId: server.thread,
+          turnId: 'turn-1',
+          item: {
+            id: status,
+            type: 'fileChange',
+            status,
+            changes: [
+              {
+                path: 'a',
+                kind: { type: 'update', move_path: null },
+                diff: '@@ -1 +1 @@\n-old\n+new',
+              },
+            ],
+          },
+        },
+      });
+    server.complete();
+    await pending;
     expect(onFileChanges).toHaveBeenCalledTimes(1);
-    expect(onFileChanges).toHaveBeenCalledWith([{path:'a',operation:'modified',diff:'@@ -1 +1 @@\n-old\n+new'}]);
+    expect(onFileChanges).toHaveBeenCalledWith([
+      { path: 'a', operation: 'modified', diff: '@@ -1 +1 @@\n-old\n+new' },
+    ]);
   });
   it('resumes existing thread once and forwards image attachment prompt', async () => {
     const r = runner();
@@ -192,12 +274,59 @@ describe('persistent Codex transport', () => {
     await r.warm();
     server.autoComplete = false;
     const first = r.run('hello', opts);
-    const rejected = expect(first).rejects.toThrow();
+    const rejected = expect(first).rejects.toThrow('Request cancelled by user');
     await vi.waitFor(() => expect(server.turns).toBe(1));
     expect(r.cancel()).toBe(true);
     await rejected;
     server.autoComplete = true;
     expect((await r.run('next', { ...opts, sessionId: 'thread-a' })).result).toBe('hello');
+  });
+  it('reports a user cancellation when the app server is destroyed immediately afterwards', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    server.interruptCompletes = false;
+    const pending = r.run('hello', opts);
+    const rejected = expect(pending).rejects.toThrow('Request cancelled by user');
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    expect(r.cancel()).toBe(true);
+    r.shutdown();
+    await rejected;
+  });
+  it('keeps an unrelated server shutdown distinct from user cancellation', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const pending = r.run('hello', opts);
+    const rejected = expect(pending).rejects.toThrow('App-server shut down');
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    r.shutdown();
+    await rejected;
+  });
+  it('reports cancellation while preparing and releases the runner', async () => {
+    vi.mocked(spawn).mockImplementation(() => {
+      server = new Server();
+      server.holdInitialize = true;
+      return server as never;
+    });
+    const r = runner();
+    const pending = r.run('hello', opts);
+    const rejected = expect(pending).rejects.toThrow('Request cancelled by user');
+    expect(r.cancel()).toBe(true);
+    await rejected;
+    expect(r.cancel()).toBe(false);
+  });
+  it('keeps provider failures distinct from user cancellation', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const pending = r.run('hello', opts);
+    const rejected = expect(pending).rejects.toThrow('Codex turn interrupted or failed');
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    server.send({ method: 'turn/completed', params: {
+      threadId: server.thread, turn: { id: 'turn-1', status: 'failed' },
+    } });
+    await rejected;
   });
   it('rejects active work on disconnect and starts a new process next time without replay', async () => {
     const r = runner();
@@ -273,5 +402,294 @@ describe('persistent Codex transport', () => {
     });
     await rejected;
     expect(server.requests.some((x) => x.id === 99 && x.error)).toBe(true);
+  });
+});
+
+describe('provider retry status', () => {
+  it('delivers bounded stderr warnings only to the matching active turn and clears on recovery', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const onStatus = vi.fn();
+    const pending = r.runStream('hello', { onStatus }, opts);
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    const warning = (turnId: string) =>
+      `WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 318s)... turn_id=${turnId} retries=1 max_retries=5 sampling_error=429 Too Many Requests SECRET\n`;
+    server.stderr.write(warning('foreign-turn'));
+    expect(onStatus).not.toHaveBeenCalled();
+    const line = warning('turn-1');
+    server.stderr.write(line.slice(0, 30));
+    server.stderr.write(line.slice(30));
+    expect(onStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'rate_limit', retryAt: expect.any(Number) })
+    );
+    server.complete();
+    await pending;
+    expect(onStatus).toHaveBeenLastCalledWith(null);
+    const count = onStatus.mock.calls.length;
+    server.stderr.write(warning('turn-1'));
+    expect(onStatus).toHaveBeenCalledTimes(count);
+    expect(JSON.stringify(onStatus.mock.calls)).not.toContain('SECRET');
+  });
+  it('handles protocol retry and exposes terminal 429 without raw provider text', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const onStatus = vi.fn();
+    const pending = r.runStream('hello', { onStatus }, opts);
+    const rejected = expect(pending).rejects.toThrow('429');
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    const error = {
+      message: 'SECRET',
+      codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } },
+    };
+    server.send({
+      method: 'error',
+      params: { threadId: server.thread, turnId: 'turn-1', willRetry: true, error },
+    });
+    expect(onStatus).toHaveBeenCalledWith({ reason: 'rate_limit' });
+    server.send({
+      method: 'turn/completed',
+      params: { threadId: server.thread, turn: { id: 'turn-1', status: 'failed', error } },
+    });
+    await rejected;
+  });
+});
+
+describe('Codex user questions', () => {
+  it('returns answers to the same pending request and resumes the turn', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const onUserInput = vi.fn(async () => ({ answers: { choice: ['B'] } }));
+    const result = r.runStream('ask', { onUserInput }, opts);
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    server.send({
+      id: 'question-1',
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: server.thread,
+        turnId: 'turn-1',
+        questions: [{ id: 'choice', question: 'Pick', options: [{ label: 'A' }, { label: 'B' }] }],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(server.requests.find((x) => x.id === 'question-1')?.result).toEqual({
+        answers: { choice: { answers: ['B'] } },
+      })
+    );
+    server.complete();
+    expect((await result).result).toBe('hello');
+  });
+  it('rejects foreign turn questions without presenting them', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    const onUserInput = vi.fn();
+    const result = r.runStream('ask', { onUserInput }, opts);
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    server.send({
+      id: 'foreign',
+      method: 'item/tool/requestUserInput',
+      params: { threadId: 'other', turnId: 'turn-1', questions: [] },
+    });
+    expect(onUserInput).not.toHaveBeenCalled();
+    expect(server.requests.find((x) => x.id === 'foreign')?.error).toBeTruthy();
+    server.complete();
+    await result;
+  });
+  it('aborts the question when the backend resolves it before the user', async () => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    let signal: AbortSignal | undefined;
+    const result = r.runStream(
+      'ask',
+      {
+        onUserInput: async (_q, s) => {
+          signal = s;
+          return new Promise((resolve) =>
+            s.addEventListener('abort', () => resolve({ cancelled: true }))
+          );
+        },
+      },
+      opts
+    );
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    server.send({
+      id: 'gone',
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: server.thread,
+        turnId: 'turn-1',
+        questions: [{ id: 'q', question: '?' }],
+      },
+    });
+    server.send({
+      method: 'serverRequest/resolved',
+      params: { threadId: server.thread, requestId: 'gone' },
+    });
+    expect(signal?.aborted).toBe(true);
+    server.complete();
+    await result;
+    expect(server.requests.find((x) => x.id === 'gone')).toBeUndefined();
+  });
+});
+
+describe('Codex async question delivery', () => {
+  function question(turnId = 'turn-1') {
+    return {
+      method: 'item/completed',
+      params: {
+        threadId: server.thread,
+        turnId,
+        item: {
+          type: 'agentMessage',
+          id: 'async-q',
+          delivery: 'async',
+          phase: 'final_answer',
+          text: 'Pick',
+          questions: [{ title: 'Pick', options: ['Red', 'Blue'] }],
+        },
+      },
+    };
+  }
+  it.each([false, true])(
+    'delivers async questions and answers after completion=%s',
+    async (completeFirst) => {
+      const r = runner();
+      await r.warm();
+      server.autoComplete = false;
+      let answer!: (value: { answers: Record<string, string[]> }) => void;
+      let signal!: AbortSignal;
+      const onUserInput = vi.fn(async (_request, s) => {
+        signal = s;
+        return new Promise<{ answers: Record<string, string[]> }>((resolve) => {
+          answer = resolve;
+        });
+      });
+      const onText = vi.fn();
+      const result = r.runStream('ask', { onUserInput, onText }, opts);
+      await vi.waitFor(() => expect(server.turns).toBe(1));
+      server.send(question('foreign-turn'));
+      expect(onUserInput).not.toHaveBeenCalled();
+      server.send(question());
+      server.send(question());
+      expect(onUserInput).toHaveBeenCalledTimes(1);
+      expect(onUserInput.mock.calls[0][0].questions[0]).toMatchObject({
+        question: 'Pick',
+        allowFreeText: true,
+      });
+      let resolved = false;
+      void result.then(() => {
+        resolved = true;
+      });
+      const before =
+        'フォームを出しました。\n\n<xangi_reply_suggestions>["選択1","選択2","選択3"]</xangi_reply_suggestions>';
+      server.send({
+        method: 'item/completed',
+        params: {
+          threadId: server.thread,
+          turnId: 'turn-1',
+          item: { type: 'agentMessage', id: 'before-answer', phase: 'final_answer', text: before },
+        },
+      });
+      if (completeFirst)
+        server.send({
+          method: 'turn/completed',
+          params: {
+            threadId: server.thread,
+            turn: { id: 'turn-1', status: 'completed' },
+          },
+        });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(signal.aborted).toBe(false);
+      expect(resolved).toBe(false);
+      answer({ answers: { '0': ['Blue'] } });
+      await vi.waitFor(() =>
+        expect(
+          server.requests.some(
+            (x) =>
+              x.method === (completeFirst ? 'turn/start' : 'turn/steer') &&
+              x.params.input?.[0]?.text.includes('questionItemId')
+          )
+        ).toBe(true)
+      );
+      expect(server.turns).toBe(completeFirst ? 2 : 1);
+      for (const delta of ['回答を受け', '取りました。']) {
+        server.send({
+          method: 'item/agentMessage/delta',
+          params: {
+            threadId: server.thread,
+            turnId: `turn-${server.turns}`,
+            itemId: 'after-answer',
+            delta,
+          },
+        });
+      }
+      const full = onText.mock.calls.at(-1)![1];
+      expect(full).toBe(before + '\n\n回答を受け取りました。');
+      // Both Slack and Discord stream through this sanitizer. Keep the marker
+      // on its own line so it cannot become a visible inline quotation.
+      const visible = stripReplySuggestionMarkup(full);
+      expect(visible).not.toContain('xangi_reply_suggestions');
+      expect(visible).toContain('フォームを出しました。');
+      expect(visible).toContain('回答を受け取りました。');
+      server.complete();
+      expect((await result).result).toBe('hello');
+    }
+  );
+  it.each([false, true])('cancels an async question with providerCompleted=%s', async (completed) => {
+    const r = runner();
+    await r.warm();
+    server.autoComplete = false;
+    let answer!: (v: { cancelled: true }) => void;
+    const result = r.runStream(
+      'ask',
+      {
+        onUserInput: async () =>
+          new Promise<{ cancelled: true }>((resolve) => {
+            answer = resolve;
+          }),
+      },
+      opts
+    );
+    const rejected = expect(result).rejects.toThrow('Request cancelled by user');
+    await vi.waitFor(() => expect(server.turns).toBe(1));
+    server.send(question());
+    if (completed) server.complete();
+    answer({ cancelled: true });
+    await rejected;
+    expect(server.turns).toBe(1);
+  });
+});
+
+describe('Codex wrapper timeout events', () => {
+  it('forwards start, extend and clear once per turn for a reused app server', async () => {
+    const r = new CodexRunner({ workdir: '/tmp', timeoutMs: 60000 });
+    const started = vi.fn(),
+      extended = vi.fn(),
+      cleared = vi.fn();
+    r.on('timeout-started', started);
+    r.on('timeout-extended', extended);
+    r.on('timeout-cleared', cleared);
+    try {
+      for (let i = 1; i <= 2; i++) {
+        const result = r.runStream('hello', {}, { ...opts, codexLineTransport: 'app-server' });
+        await result;
+        expect(started).toHaveBeenCalledTimes(i);
+        expect(cleared).toHaveBeenCalledTimes(i);
+      }
+      server.autoComplete = false;
+      const result = r.runStream('wait', {}, { ...opts, codexLineTransport: 'app-server' });
+      await vi.waitFor(() => expect(server.turns).toBe(3));
+      r.extendTimeout(opts.channelId, 1000);
+      expect(extended).toHaveBeenCalledTimes(1);
+      expect(started.mock.calls[0][0].channelId).toBe(opts.channelId);
+      server.complete();
+      await result;
+    } finally {
+      r.shutdown();
+    }
   });
 });

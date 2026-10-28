@@ -1,3 +1,4 @@
+import { handleQuestionInteraction } from './user-input.js';
 import { closeAgentWork, findAgentWork } from '../agent-work.js';
 import { handleSecretConversationCommand } from '../secret-conversation-command.js';
 import { channelAgent, listSelectableAgents, listSelectableTeams } from '../agent-selection.js';
@@ -807,7 +808,7 @@ export async function handleSkillCommand(
         const content =
           view.phase === 'thinking'
             ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
-            : appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌').slice(
+            : `${view.statusLine ? `${view.statusLine}\n\n` : ''}${appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌')}`.slice(
                 0,
                 DISCORD_MAX_LENGTH
               );
@@ -1078,6 +1079,10 @@ export function createInteractionHandler(
   }
 
   return async (interaction: Interaction) => {
+    if ('customId' in interaction && interaction.customId.startsWith('question:')) {
+      await handleQuestionInteraction(interaction);
+      return;
+    }
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
       if (

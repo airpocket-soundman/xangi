@@ -1,3 +1,5 @@
+import { answerUserInput, listUserInputs, requestUserInput } from './user-input.js';
+import { configuredChannelsSnapshot } from './configured-channels.js';
 import { proxyExtensionRequest, attachExtensionWebSockets } from './extension-web-proxy.js';
 import { instanceCliCommand } from './instance-cli.js';
 import { runDelegatingLeader } from './team-delegation.js';
@@ -334,7 +336,7 @@ export function startWebChat(options: WebChatOptions) {
   const workdir = process.env.WORKSPACE_PATH || process.cwd();
   const dataDir = process.env.DATA_DIR || join(workdir, '.xangi');
   const workspaceRegistry = options.workspaceRegistry;
-  const workspaceBrowsers = new Map<string, WorkspaceBrowser>();
+  const workspaceBrowsers = new Map<string, { path: string; browser: WorkspaceBrowser }>();
   const resolveWorkspace = async (workspaceId?: unknown): Promise<WorkspaceEntry> => {
     const id =
       typeof workspaceId === 'string' && workspaceId.trim()
@@ -348,16 +350,17 @@ export function startWebChat(options: WebChatOptions) {
   };
   const resolveWorkspaceBrowser = async (workspaceId?: unknown) => {
     const workspace = await resolveWorkspace(workspaceId);
-    let browser = workspaceBrowsers.get(workspace.id);
-    if (!browser) {
-      browser = new WorkspaceBrowser(
+    let cached = workspaceBrowsers.get(workspace.id);
+    if (!cached || cached.path !== workspace.path) {
+      const browser = new WorkspaceBrowser(
         workspace.path,
         undefined,
         options.config?.web?.workspaceBrowserExclude
       );
-      workspaceBrowsers.set(workspace.id, browser);
+      cached = { path: workspace.path, browser };
+      workspaceBrowsers.set(workspace.id, cached);
     }
-    return { workspace, browser };
+    return { workspace, browser: cached.browser };
   };
   const resolveRequestedWorkspaceFile = async (rawUrl: string) => {
     const url = new URL(rawUrl, 'http://localhost');
@@ -1209,6 +1212,7 @@ ${delegatedTeam.prompt}`
   };
 
   const sessionSnapshotListeners = new Set<() => void>();
+  const stopWebStreams = new Map<string, () => void>();
   const invalidateSessionSnapshots = () => {
     if (sessionSnapshotListeners.size === 0) return;
     try {
@@ -1524,6 +1528,29 @@ ${delegatedTeam.prompt}`
       sendJson(res, 200, webRuntimeSettingsSnapshot(options.config, options.resolver), {
         'Cache-Control': 'no-store',
       });
+      return;
+    }
+
+    if (url === '/api/runtime-settings/configured-channels' && req.method === 'GET') {
+      const platform = new URL(rawUrl, 'http://localhost').searchParams.get('platform');
+      if (platform !== 'discord' && platform !== 'slack') {
+        sendJson(res, 400, { error: 'platform must be discord or slack' });
+        return;
+      }
+      if (!options.resolver) {
+        sendJson(res, 503, { error: 'runtime settings are not available' });
+        return;
+      }
+      sendJson(
+        res,
+        200,
+        await configuredChannelsSnapshot(
+          platform,
+          options.resolver,
+          options.settingsChannelListers?.[platform]
+        ),
+        { 'Cache-Control': 'no-store' }
+      );
       return;
     }
 
@@ -2281,12 +2308,11 @@ ${delegatedTeam.prompt}`
         return;
       }
       try {
-        const roots = workspaceRegistry?.browseRoots() ?? [];
         const requestedPath = new URL(req.url || '/', 'http://localhost').searchParams.get('path');
         if (requestedPath && !isAbsolute(requestedPath)) {
           throw new Error('絶対パスを指定してください');
         }
-        const directory = realpathSync(requestedPath || roots[0] || homedir());
+        const directory = realpathSync(requestedPath || homedir());
         if (!statSync(directory).isDirectory()) throw new Error('ディレクトリではありません');
         workspaceRegistry?.assertBrowsableDirectory(directory);
         const directories = readdirSync(directory, { withFileTypes: true })
@@ -2304,11 +2330,7 @@ ${delegatedTeam.prompt}`
           .sort((left, right) => left.name.localeCompare(right.name));
         sendJson(res, 200, {
           path: directory,
-          parent:
-            dirname(directory) === directory || roots.includes(directory)
-              ? null
-              : dirname(directory),
-          roots,
+          parent: dirname(directory) === directory ? null : dirname(directory),
           directories,
         });
       } catch (error) {
@@ -3209,6 +3231,7 @@ ${delegatedTeam.prompt}`
     if (url.match(/^\/api\/sessions\/[^/]+\/stop$/) && req.method === 'POST') {
       const targetId = decodeURIComponent(url.replace('/api/sessions/', '').replace('/stop', ''));
       const entry = getSessionEntry(targetId);
+      stopWebStreams.get(targetId)?.();
       let stopped = false;
       if (entry?.contextKey) {
         // 進行中の処理があれば cancel、その上で runner プロセスを破棄
@@ -3624,6 +3647,39 @@ ${delegatedTeam.prompt}`
       return;
     }
 
+    const questionRoute = url.match(/^\/api\/user-input\/([a-zA-Z0-9_-]+)$/);
+    if (questionRoute && (req.method === 'GET' || req.method === 'POST')) {
+      res.removeHeader('Access-Control-Allow-Origin');
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin answers are not allowed' });
+        return;
+      }
+      const sessionId = questionRoute[1];
+      const entry = getSessionEntry(sessionId);
+      if (!entry || entry.platform !== 'web') {
+        sendJson(res, 404, { error: 'Session not found' });
+        return;
+      }
+      const scope = `web:${sessionId}`;
+      if (req.method === 'GET')
+        sendJson(
+          res,
+          200,
+          { questions: listUserInputs(scope, 'web') },
+          { 'Cache-Control': 'no-store' }
+        );
+      else {
+        try {
+          const body = await readBody(req);
+          answerUserInput(String(body.id), scope, 'web', body.answer);
+          sendJson(res, 200, { ok: true });
+        } catch (error) {
+          sendJson(res, 409, { error: error instanceof Error ? error.message : 'Invalid answer' });
+        }
+      }
+      return;
+    }
+
     // POST /api/chat — メッセージ送信（SSE）
     // body: { appSessionId?: string, message: string }
     if (url === '/api/chat' && req.method === 'POST') {
@@ -3796,6 +3852,7 @@ ${delegatedTeam.prompt}`
             threadLabel,
             platform: 'web' as const,
             userText: message,
+            isShutdownInterrupted: () => unregisterStreamFinalizer.isFinalized(),
           };
           const latency = new TurnLatencyRecorder({
             platform: 'web',
@@ -3821,6 +3878,13 @@ ${delegatedTeam.prompt}`
           };
 
           let lastStreamText = '';
+          const saveStoppedResponse = () => {
+            const partialText = stripReplySuggestionMarkup(lastStreamText).trimEnd();
+            const text = partialText ? `${partialText}\n\n🛑 停止しました` : '🛑 停止しました';
+            ensureVisibleAssistantResponse(workdir, appSessionId, undefined, text);
+            invalidateSessionSnapshots();
+          };
+          stopWebStreams.set(appSessionId, saveStoppedResponse);
           const unregisterStreamFinalizer = registerStreamFinalizer(() => {
             const note = '⏸ プロセス再起動により中断されました';
             const partialText = stripReplySuggestionMarkup(lastStreamText).trimEnd();
@@ -3932,6 +3996,10 @@ ${delegatedTeam.prompt}`
               prompt,
               eventCtx,
               {
+                onUserInput: (request, signal) =>
+                  requestUserInput(`web:${appSessionId}`, 'web', request, signal, async () => {
+                    sendSSE('question', { pending: true });
+                  }),
                 onBackendReady: () => {
                   latency.markBackendReady();
                   startTitleIfNeeded();
@@ -3950,6 +4018,7 @@ ${delegatedTeam.prompt}`
                       : '';
                   sendSSE('tool', { toolName, inputSummary });
                 },
+                onStatus: (status) => sendSSE('backend_status', { status }),
                 onTraceEvent: (event) => latency.markTraceEvent(event),
                 onComplete: (completedResult) => {
                   latency.markAgentComplete();
@@ -3984,6 +4053,11 @@ ${delegatedTeam.prompt}`
                 skipPermissions: body.skipPermissions === true ? true : undefined,
               }
             );
+
+            if (unregisterStreamFinalizer.isFinalized()) {
+              latency.finish('cancelled');
+              return;
+            }
 
             updateLatestMessageUsage(workdir, appSessionId, ['assistant'], {
               duration_ms: Math.max(1, Date.now() - startedAt),
@@ -4034,10 +4108,16 @@ ${delegatedTeam.prompt}`
             latency.finish('complete');
           } catch (err) {
             latency.markAgentComplete();
+            if (unregisterStreamFinalizer.isFinalized()) {
+              latency.finish('cancelled');
+              return;
+            }
             const errorMsg = err instanceof Error ? err.message : String(err);
             sendSSE('error', { message: errorMsg });
             latency.finish(errorMsg === 'Request cancelled by user' ? 'cancelled' : 'error');
           } finally {
+            if (stopWebStreams.get(appSessionId) === saveStoppedResponse)
+              stopWebStreams.delete(appSessionId);
             unregisterStreamFinalizer();
             // timeout listener を必ず解除 (res.end 前のリーク防止)
             if (runnerEmitter) {
@@ -4045,8 +4125,8 @@ ${delegatedTeam.prompt}`
                 runnerEmitter.off(l.event, l.handler);
               }
             }
+            res.end();
           }
-          res.end();
         } finally {
           busySessions.delete(appSessionId);
         }

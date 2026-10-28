@@ -15,6 +15,7 @@ import {
   initSessions,
 } from '../src/sessions.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
+import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 import {
   _resetSlackStateForTest,
   addSlackCloseReaction,
@@ -983,6 +984,44 @@ describe('resolveSlackDeleteReactionTarget', () => {
 });
 
 describe('processMessage', () => {
+  it.each([true, false])('keeps shutdown interruptions separate from ordinary errors (shutdown=%s)', async (shutdown) => {
+    const postMessage = vi.fn().mockResolvedValue({ ts: 'progress-ts' });
+    const update = vi.fn().mockResolvedValue({});
+    const client = {
+      chat: { postMessage, update },
+      conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'dev' } }) },
+      reactions: { remove: vi.fn().mockResolvedValue({}) },
+    } as unknown as WebClient;
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks) => {
+      callbacks.onText?.('途中の回答', '途中の回答');
+      callbacks.onToolUse?.('Bash', { command: 'pwd' });
+      if (shutdown) await finalizeActiveStreams();
+      const error = new Error('Runner is shutting down');
+      callbacks.onError?.(error);
+      throw error;
+    });
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await processMessageWithoutMinimumDisplayDelay(
+        AUTO_REPLY_CHANNEL, slackConversationKey(AUTO_REPLY_CHANNEL, THREAD_TS), THREAD_TS,
+        '確認', 'shutdown-request', client, { runStream } as unknown as AgentRunner,
+        { agent: { config: { workdir: tempDir } }, slack: { streaming: true, showThinking: true, showButtons: false, replySuggestions: false } } as Config
+      );
+      if (shutdown) {
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({
+          text: '途中の回答\n\n⏸ プロセス再起動により中断されました', blocks: [],
+        });
+        expect(postMessage).toHaveBeenCalledTimes(1);
+        expect(errorLog).not.toHaveBeenCalled();
+      } else {
+        expect(postMessage.mock.calls.at(-1)?.[0].text).toContain('❌ エラーが発生しました');
+        expect(errorLog).toHaveBeenCalled();
+      }
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it.each(['stream', 'timeout', 'cancel'])('drains delayed %s edits before the terminal answer', async (mode) => {
     let release!: () => void;
     let started!: () => void;
@@ -1026,6 +1065,10 @@ describe('processMessage', () => {
       { agent: { config: { workdir: tempDir } }, slack: { streaming: true, showThinking: true, replySuggestions: false } } as Config
     );
     expect(finalOvertookProgress).toBe(false);
+    if (mode === 'cancel') {
+      expect(update.mock.calls.at(-1)![0].blocks).toEqual([]);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    }
     expect(update.mock.calls.at(-1)![0].text).toBe(mode === 'cancel' ? '🛑 停止しました' : '完了');
     const count = update.mock.calls.length;
     await refreshSlackProcessingBlocks(client, agentRunner, runKey);

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyPublishedLiveEvent,
   decideStreamRecovery,
+  hasPersistedRemoteEcho,
   isPaneProcessing,
   liveThreadId,
   selectLiveTurn,
@@ -10,6 +11,12 @@ import {
 } from '../web-ui/src/liveTurn.js';
 
 describe('Web Chat live turn', () => {
+  it('matches a new remote message by visible text, without matching an older copy', () => {
+    const echo = { text: 'テスト', previousIds: ['old'] };
+    expect(hasPersistedRemoteEcho([{ id: 'old', role: 'user', content: 'テスト' }], echo)).toBe(false);
+    expect(hasPersistedRemoteEcho([{ id: 'new', role: 'user', content: 'テスト\n\n[USER PROMPT HOOK CONTEXT: hook]\ncontext\n[END USER PROMPT HOOK CONTEXT: hook]\n' }], echo)).toBe(true);
+    expect(hasPersistedRemoteEcho([{ id: 'new', role: 'assistant', content: 'テスト' }], echo)).toBe(false);
+  });
   it('keeps a reopened pane in processing state while the server session is active', () => {
     expect(isPaneProcessing(false, true)).toBe(true);
     expect(isPaneProcessing(false, false)).toBe(false);

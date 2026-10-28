@@ -78,12 +78,12 @@ describe('AppNavigation', () => {
     expect(monitorOverride).toBeUndefined();
   });
 
-  it('lets the workspace browser fill the viewport after navigation leaves document flow', () => {
+  it('keeps the workspace toolbar compact and gives remaining height to the browser', () => {
     const styles = readFileSync(new URL('../web-ui/src/styles.css', import.meta.url), 'utf8');
     const workspaceShell = styles.match(/\.workspace-browser-shell\s*\{([^}]*)\}/)?.[1];
 
-    expect(workspaceShell).toMatch(/grid-template-rows:\s*minmax\(0,\s*1fr\);/);
-    expect(workspaceShell).not.toMatch(/grid-template-rows:\s*auto/);
+    expect(workspaceShell).toMatch(/grid-template-rows:\s*auto minmax\(0,\s*1fr\);/);
+    expect(workspaceShell).toMatch(/height:\s*100dvh/);
   });
 
   it('uses a compact theme menu in the rail and direct choices in the mobile sheet', () => {

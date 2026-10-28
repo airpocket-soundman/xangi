@@ -1,4 +1,9 @@
-import { CatalogCreateButton, CatalogRow, CatalogFormActions } from './CatalogControls';
+import {
+  CatalogCreateButton,
+  CatalogRow,
+  CatalogFormActions,
+  useCatalogFormFocus,
+} from './CatalogControls';
 import { useEffect, useState, type FormEvent } from 'react';
 import { requestJson } from './api';
 import { jsonInit } from './chatPresentation';
@@ -54,6 +59,7 @@ export function AgentSettings({
   };
   onDefaultAISaved?: () => Promise<void>;
 }) {
+  const formRef = useCatalogFormFocus();
   const [channels, setChannels] = useState<
     Array<{ platform: string; id: string; name: string; group?: string }>
   >([]);
@@ -326,7 +332,12 @@ export function AgentSettings({
       />
       {agentFormOpen ? (
         <>
-          <form className="project-form" onSubmit={(event) => void saveAgent(event)}>
+          <form
+            ref={formRef}
+            tabIndex={-1}
+            className="project-form"
+            onSubmit={(event) => void saveAgent(event)}
+          >
             <h3>{editingAgentId ? 'エージェントを編集' : '新しいエージェント'}</h3>
             {editingAgentId && (
               <fieldset disabled={savingChannel || savingAgent}>

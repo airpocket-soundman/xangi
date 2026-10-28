@@ -143,13 +143,9 @@ async function main() {
   // セッション永続化を初期化
   initSessions(dataDir);
 
-  const configuredWorkspaceRoots = process.env.XANGI_WORKSPACE_ALLOWED_ROOTS?.split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
   const workspaceRegistry = await WorkspaceRegistry.open({
     dataDir,
     defaultWorkspacePath: workdir,
-    allowedRoots: configuredWorkspaceRoots?.length ? configuredWorkspaceRoots : undefined,
   });
 
   // 外部イベントストリーム (pull 型 SSE) の設定をログ出力。

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
@@ -14,7 +14,13 @@ import { executeRuntimeSettingsCommand } from '../src/runtime-settings-command.j
 import { DynamicRunnerManager } from '../src/dynamic-runner.js';
 
 let root: string;
-beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'agent-selection-')); initSessions(root); });
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'agent-selection-'));
+  // Session storage does not control BackendResolver's .env persistence path.
+  vi.stubEnv('XANGI_ENV_PATH', join(root, '.env'));
+  writeFileSync(join(root, '.env'), '');
+  initSessions(root);
+});
 afterEach(() => { clearSessions(); vi.unstubAllEnvs(); rmSync(root, {recursive: true, force: true}); });
 async function setup() {
   const catalog = new ProjectCatalog(root);
@@ -152,6 +158,9 @@ it('does not persist a selection whose backend is unavailable',async()=>{
 it.each(['discord', 'slack'])('binds the reserved default agent on %s and restores individual settings on reset', async platform => {
   const f = await setup();
   f.resolver.setChannelOverride('C-default', { backend: 'claude-code', model: 'channel-model' });
+  expect(readFileSync(join(root, '.env'), 'utf8')).toContain(
+    'CHANNEL_OVERRIDES={"C-default":{"backend":"claude-code","model":"channel-model"}}'
+  );
   await changeChannelAgent(platform, 'C-default', 'xangi:default');
   expect(channelAgent(platform, 'C-default')).toMatchObject({ id: 'xangi:default', workspaceId: 'default' });
   const snapshot = await channelAgentSnapshot(platform, 'C-default');

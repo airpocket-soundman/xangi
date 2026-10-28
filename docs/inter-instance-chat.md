@@ -14,6 +14,7 @@ xangi の複数インスタンスが、Discord/Slackを介さず認証付きHTTP
 ```
 
 同一マシン・別マシンの両方に対応する。別マシン間ではTailscale内での利用を推奨する。
+同じxangiインスタンス内の担当に依頼するときは `xangi agent list` と `xangi agent run` を使う。既定の担当には `xangi agent run default --task "依頼と必要な背景"` を使う。`inter_chat_ask` の宛先は別インスタンスのIDであり、agent名ではない。
 
 ## 設定
 

@@ -1,3 +1,4 @@
+import type { UserInputCallback } from './user-input.js';
 import type { BackendFileChange } from './file-changes.js';
 import type { AgentBackend, AgentConfig, EffortLevel, LocalLlmReasoningEffort } from './config.js';
 import type { LocalLlmMode } from './backend-resolver.js';
@@ -138,6 +139,8 @@ export interface ExtendTimeoutResult {
 }
 
 export interface StreamCallbacks {
+  onStatus?: (status: import('./backend-status.js').BackendStatus | null) => void;
+  onUserInput?: UserInputCallback;
   /** Successful native file changes; requested edits alone are not confirmation. */
   onFileChanges?: (changes: BackendFileChange[]) => void;
   /** Provider-confirmed main-conversation model, including changes during a turn. */

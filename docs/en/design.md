@@ -77,6 +77,7 @@ Based on `discord.js` v14. Split into modules by responsibility:
 - `scheduler-bridge.ts` — Registers the scheduler's Discord sender and agent-runner functions. It submits schedule / trigger turns to the shared coordinator and registers their processing messages with the processing-message UI so Stop / extend / remaining-time controls match the normal message path
 - `ui.ts` — Button rows (Stop / extend / remaining-time display) and processing-message management
 - `tool-history.ts` — Tool history formatting/accumulation (display lines capped via `TOOL_HISTORY_MAX_LINES`)
+- Codex app-server execution notifications map commands to `Bash` with `command`, MCP calls to `mcp__server__tool`, and dynamic calls to their tool names and arguments before shared rendering. This preserves command details and distinct execution history without adding inputs to timing logs.
 - `message-utils.ts` — Discord message link expansion, reply quoting, thread-starter quoting, channel-mention expansion
 
 - On error, preserve partial text and tool history, display the failure, and finish the turn. Do not invoke agentRunner.run for a report or keep the coordinator busy with a follow-up turn.
@@ -92,6 +93,7 @@ Behavior:
 - Threads, attachments, and reactions supported
 - Streaming display uses `stream-session.ts` (a core shared with Slack / Web) to unify thinking display and update throttling, and refreshes the button UI at 1-second granularity via `message.edit`
 - On process shutdown (SIGTERM), `stream-finalizer.ts` finalizes in-flight streaming displays into a "⏸ interrupted by process restart" notice (registered on both the message-handler and scheduler-bridge paths)
+- Normal Discord / Slack / Web turns retain whether shutdown finalization has started, so subsequent runner errors or completion cannot overwrite the interruption notice. These interruptions use `aborted` for activity/events and `cancelled` for latency; ordinary errors and user-stop displays retain their existing behavior.
 
 ### Slack Integration (slack.ts)
 
@@ -399,6 +401,9 @@ adapter only implements "command argument building" and "JSONL event interpretat
   spurious error notifications
 - **Stale session auto-recovery**: resume failures with an invalidated sessionId are detected
   and retried once with a fresh session (all runners: claude-code / codex / cursor / grok)
+
+
+`cancel` immediately rejects the target request and does not turn late stdout or a zero exit code into successful completion. Process exit is tracked separately: `processManager` rejects another process for the same channel until `close`. `tests/backend-lifecycle.test.ts` mocks the process boundary and applies the same execution, continuation, cancellation, and channel-isolation checks to the actual Codex and Claude adapters, without calling agent CLIs or model APIs.
 
 #### Local LLM Adapter Detailed Design
 
@@ -1396,3 +1401,9 @@ Undeclared, disabled, unregistered or stopped extensions cannot receive these re
 POST bodies are limited to 32 MiB. The response-header timeout is 120 seconds; after headers, SSE and other responses stream incrementally. This is an HTTP GET/POST interface, not a generic WebSocket, arbitrary external API authentication, or device TCP relay. Redirect-dependent clients are unsupported. Allocating internal bridge/STT ports is the extension runtime's responsibility, not the ingress route's.
 
 Even G2 is one consumer and declares `deviceIngress.capability` as `device.even-g2`. Other extensions implementing the same authentication and forwarding protocol can also avoid exposing a separate device port.
+
+### Codex user questions and shared UI
+
+`StreamCallbacks.onUserInput(request, signal)` connects the Codex adapter to shared presentation. Other backend adapters and Claude Code execution remain unchanged. `user-input.ts` normalizes questions, validates answers, and stores single-use requests scoped to conversation and actor for at most ten minutes. Turn termination aborts outstanding input; late answers are discarded. Codex `serverRequest/resolved` also closes a pending question. Unsupported paths omit the callback.
+
+Web polls `GET /api/user-input/:appSessionId` every 1.5 seconds during active Web conversations and answers through POST, behind the existing HTTP boundary with same-host and session-platform checks. Discord uses buttons/modals; Slack uses Bolt action/view handlers. Authenticated chat user IDs must match the initiating actor. Synchronous answers resolve the waiting provider RPC. Async Codex questions arrive as agentMessage items with delivery=async and questions. Answers use turn/steer while active, or turn/start on the same thread after completion. Pending forms keep the outer run alive; thread/turn checks and item-ID deduplication prevent cross-turn delivery. The startup switch `AGENT_USER_INPUT` defaults to true.

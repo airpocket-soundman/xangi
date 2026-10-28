@@ -1,3 +1,4 @@
+import { UserQuestions } from './UserQuestions';
 import { parseSecretCommand } from '../../src/secret-command-parser';
 import { DocumentAttachment } from './DocumentAttachment';
 import { FileChanges } from './FileChanges';
@@ -5,16 +6,20 @@ import { CatalogFilter } from './CatalogFilter';
 import { ModelHistory, modelExecutionLabel, type ModelExecution } from './modelExecution';
 import {
   ChangeEvent,
+  ReactNode,
   FormEvent,
   KeyboardEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
 import { ApiError, clearRecoveredReadError, requestJson } from './api';
 import { AppTopbar } from './AppTopbar';
+import { NavigationIcon } from './AppNavigation';
+import { SidebarProjects } from './SidebarProjects';
 import {
   extensionConversationPrompt,
   extensionSetupStorageKey,
@@ -51,6 +56,7 @@ import {
   liveThreadId,
   selectLiveTurn,
   syncObservedLiveTurn,
+  hasPersistedRemoteEcho,
   type LiveActivity,
   type ObservedLiveTurn,
   type PublishedLiveEvent,
@@ -72,7 +78,6 @@ import { replaceUserPromptVisibleContent, splitUserPromptHookContexts } from './
 
 const PROJECT_STATE_KEY = 'xangi_active_project_v1';
 const SIDEBAR_COLLAPSED_KEY = 'xangi_sidebar_collapsed_v1';
-const SESSION_FILTER_KEY = 'xangi_session_filter_v1';
 const LEGACY_INTERNAL_PROMPT_SENTINEL = '[__XANGI_AUTOTALK_INTERNAL__]';
 
 interface Activity extends LiveActivity {
@@ -147,6 +152,7 @@ interface Usage {
 
 interface Message {
   id?: string;
+  pending?: boolean;
   role: string;
   content: string;
   createdAt?: string;
@@ -197,10 +203,10 @@ interface SessionsResponse {
   };
 }
 
-type SessionLifecycleFilter = 'open' | 'closed' | 'all';
+type CompletableSession = Pick<Session, 'id' | 'isActive'>;
 
 interface SessionCompletionTarget {
-  session: Session;
+  session: CompletableSession;
   paneKey?: string;
 }
 
@@ -387,11 +393,7 @@ function MessageView({
         </div>
       ) : (
         <>
-          <MessageContent
-            sessionId={sessionId}
-            content={promptDisplay.content}
-            markdown={message.role === 'assistant'}
-          />
+          <MessageContent sessionId={sessionId} content={promptDisplay.content} markdown />
           {promptDisplay.contexts.length > 0 && (
             <details className="message-tools message-hook-contexts">
               <summary>
@@ -417,7 +419,12 @@ function MessageView({
           {message.attachments?.length ? (
             <div className="message-attachments">
               {message.attachments.map((path) => (
-                <DocumentAttachment sessionId={sessionId} key={path} path={path} />
+                <DocumentAttachment
+                  sessionId={sessionId}
+                  key={path}
+                  path={path}
+                  pending={message.pending}
+                />
               ))}
             </div>
           ) : null}
@@ -527,7 +534,7 @@ function ChatPane({
   onSessionChange: (sessionId: string | null) => void;
   onBusyChange: (busy: boolean) => void;
   onSessionsInvalidated: () => Promise<void>;
-  onComplete: (session: Session, paneKey: string) => void;
+  onComplete: (session: CompletableSession, paneKey: string) => void;
   refreshVersion: number;
   onAbortReady: (abort: (() => void) | null) => void;
 }) {
@@ -542,6 +549,9 @@ function ChatPane({
   const [error, setError] = useState('');
   const [streamText, setStreamText] = useState('');
   const [toolLines, setToolLines] = useState<string[]>([]);
+  const [backendStatus, setBackendStatus] = useState<{ reason: string; retryAt?: number } | null>(
+    null
+  );
   const [observedLiveTurn, setObservedLiveTurn] = useState<ObservedLiveTurn>();
   const [liveToolsOpen, setLiveToolsOpen] = useState(true);
   const [turnHistory, setTurnHistory] = useState<TurnHistoryEntry[]>([]);
@@ -581,6 +591,15 @@ function ChatPane({
   const linkedMessageScrolledRef = useRef<string | undefined>(undefined);
   const setupStartedSessionRef = useRef<string | undefined>(undefined);
   const sessionId = pane.sessionId;
+  // React can change the draft without an input event (send, restore, suggestions).
+  // Measure before paint so clearing a long message also shrinks the composer.
+  useLayoutEffect(() => {
+    const textarea = draftRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    if (draft) textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
+  }, [draft, sessionId, active]);
+
   const linkedDraft = !sessionId && linkedProject?.channel ? linkedProject : undefined;
   const linkedConversation = Boolean(detail?.linkedChannel);
   const remotePlatform = detail?.platform === 'discord' || detail?.platform === 'slack';
@@ -707,6 +726,7 @@ function ChatPane({
     setStreamRecovery(undefined);
     setStreamText('');
     setToolLines([]);
+    setBackendStatus(null);
     setObservedLiveTurn(undefined);
     setLiveToolsOpen(true);
     setTurnHistory([]);
@@ -783,7 +803,10 @@ function ChatPane({
   }, [busy, loadDetail, refreshVersion, sessionId]);
 
   useEffect(() => {
-    if (remoteEcho && remoteEcho.sessionId === sessionId && sessionId && !busy) void loadDetail();
+    if (!remoteEcho || remoteEcho.sessionId !== sessionId || !sessionId || busy) return;
+    void loadDetail().then((result) => {
+      if (result) setRemoteEcho((current) => (current === remoteEcho ? null : current));
+    });
   }, [busy, loadDetail, remoteEcho, sessionId]);
 
   useEffect(() => {
@@ -866,6 +889,7 @@ function ChatPane({
     setProcessing(false);
     setStreamText('');
     setToolLines([]);
+    setBackendStatus(null);
   }, [onBusyChange]);
 
   useEffect(() => {
@@ -999,6 +1023,18 @@ function ChatPane({
         await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {
           method: 'POST',
         });
+        // Discord may finish writing its interrupted response just after /stop returns.
+        const previousAssistantId = [...(detail?.messages ?? [])]
+          .reverse()
+          .find((message) => message.role === 'assistant')?.id;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const updated = await loadDetail();
+          const latest = [...(updated?.messages ?? [])]
+            .reverse()
+            .find((message) => message.role === 'assistant');
+          if (latest?.id && latest.id !== previousAssistantId) break;
+          if (attempt < 5) await new Promise((resolve) => window.setTimeout(resolve, 250));
+        }
       }
       await onSessionsInvalidated();
     } catch (cause) {
@@ -1206,9 +1242,11 @@ function ChatPane({
     setError('');
     setStreamText('');
     setToolLines([]);
+    setBackendStatus(null);
     followBottomRef.current = true;
     const optimistic: Message = {
       role: 'user',
+      pending: true,
       content: shownMessage,
       createdAt: new Date().toISOString(),
       attachments: shownFiles.map((file) => file.path),
@@ -1250,8 +1288,20 @@ function ChatPane({
             .join('\n');
           if (!dataText) continue;
           const data = JSON.parse(dataText) as Record<string, unknown>;
-          if (eventName === 'text') setStreamText(String(data.fullText || ''));
+          if (eventName === 'backend_status') {
+            const status = data.status as { reason: string; retryAt?: number } | null;
+            setBackendStatus((current) =>
+              status && !status.retryAt && current?.reason === status.reason
+                ? { ...current, ...status }
+                : status
+            );
+          }
+          if (eventName === 'text') {
+            setBackendStatus(null);
+            setStreamText(String(data.fullText || ''));
+          }
           if (eventName === 'tool') {
+            setBackendStatus(null);
             setToolLines((current) => [
               ...current,
               [data.toolName, data.inputSummary].filter(Boolean).join(': '),
@@ -1268,6 +1318,7 @@ function ChatPane({
       await Promise.all([loadDetail(), loadTurnHistory(), onSessionsInvalidated()]);
       setStreamText('');
       setToolLines([]);
+      setBackendStatus(null);
     } catch (cause) {
       const interruptedByUser = cause instanceof DOMException && cause.name === 'AbortError';
       if (interruptedByUser) {
@@ -1287,6 +1338,7 @@ function ChatPane({
       await Promise.allSettled([loadDetail(false, !interruptedByUser), onSessionsInvalidated()]);
     } finally {
       abortRef.current = undefined;
+      setBackendStatus(null);
       setProcessing(false);
       if (activeRef.current) {
         requestAnimationFrame(() => draftRef.current?.focus());
@@ -1335,12 +1387,7 @@ function ChatPane({
   const showRemoteEcho = Boolean(
     remoteEcho &&
     remoteEcho.sessionId === sessionId &&
-    !detail?.messages.some(
-      (message) =>
-        message.role === 'user' &&
-        message.content === remoteEcho.text &&
-        Boolean(message.id && !remoteEcho.previousIds.includes(message.id))
-    )
+    !hasPersistedRemoteEcho(detail?.messages ?? [], remoteEcho)
   );
   const messageHistory = useMemo(
     () => associateToolHistory(detail?.messages ?? [], detail?.platform, turnHistory),
@@ -1392,15 +1439,25 @@ function ChatPane({
               {platformLabel(externalChatLink.platform)} ↗
             </a>
           )}
-          {summary?.lifecycle !== 'closed' && sessionId && (
-            <button
-              type="button"
-              className="pane-complete"
-              onClick={() => summary && onComplete(summary, pane.key)}
-            >
-              {sessionId.startsWith('secret_') ? '終了して破棄' : '完了して閉じる'}
-            </button>
-          )}
+          {(summary || detail) &&
+            (summary?.lifecycle ?? detail?.lifecycle) !== 'closed' &&
+            sessionId && (
+              <button
+                type="button"
+                className="pane-complete"
+                onClick={() =>
+                  onComplete(
+                    {
+                      id: sessionId,
+                      isActive: busy || Boolean(summary?.isActive ?? detail?.isActive),
+                    },
+                    pane.key
+                  )
+                }
+              >
+                {sessionId.startsWith('secret_') ? '終了して破棄' : '完了して閉じる'}
+              </button>
+            )}
           <button
             type="button"
             className="pane-close"
@@ -1498,7 +1555,7 @@ function ChatPane({
               <span>あなた</span>
               <small>送信中</small>
             </header>
-            <MessageContent content={remoteEcho.text} markdown={false} />
+            <MessageContent content={remoteEcho.text} markdown />
           </article>
         )}
         {liveTurn.visible && (
@@ -1507,6 +1564,15 @@ function ChatPane({
               <span>xangi</span>
               <small>{`${liveTurn.statusLabel} ${liveElapsed}秒`}</small>
             </header>
+            {backendStatus && (
+              <p role="status">
+                ⏳ {backendStatus.reason === 'rate_limit' ? 'リクエスト制限（429）' : '通信エラー'}
+                ・
+                {backendStatus.retryAt && backendStatus.retryAt > Date.now()
+                  ? `再試行まで${Math.ceil((backendStatus.retryAt - Date.now()) / 1000)}秒`
+                  : '再接続・応答待ち'}
+              </p>
+            )}
             {liveTurn.toolLines.length > 0 && (
               <section className="live-tools">
                 <button
@@ -1612,6 +1678,11 @@ function ChatPane({
           ))}
         </div>
       )}
+      <UserQuestions
+        key={sessionId}
+        sessionId={sessionId}
+        active={processing && summary?.platform === 'web'}
+      />
       <form
         className={processing ? 'pane-input-area busy' : 'pane-input-area'}
         onSubmit={(event: FormEvent) => {
@@ -1672,8 +1743,6 @@ function ChatPane({
               value={draft}
               onChange={(event) => {
                 setDraft(event.target.value);
-                event.target.style.height = 'auto';
-                event.target.style.height = `${Math.min(event.target.scrollHeight, 120)}px`;
                 setPaletteOpen(event.target.value.startsWith('/'));
               }}
               onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1923,7 +1992,13 @@ function SessionProjectDialog({
   );
 }
 
-function NewChatButton({ onCreate }: { onCreate: (secret?: boolean) => void }) {
+function NewChatButton({
+  onCreate,
+  children,
+}: {
+  onCreate: (secret?: boolean) => void;
+  children?: ReactNode;
+}) {
   const menu = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
@@ -1939,7 +2014,7 @@ function NewChatButton({ onCreate }: { onCreate: (secret?: boolean) => void }) {
   return (
     <div className="new-chat-control">
       <button type="button" className="button sidebar-new-chat" onClick={() => select()}>
-        ＋ 新規
+        ＋ 新しい会話
       </button>
       <details
         ref={menu}
@@ -1951,18 +2026,28 @@ function NewChatButton({ onCreate }: { onCreate: (secret?: boolean) => void }) {
           }
         }}
         onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node))
             event.currentTarget.open = false;
         }}
       >
         <summary
           className="button sidebar-new-chat"
-          aria-label="新しい会話の種類"
-          title="新しい会話の種類"
+          aria-label="新しい会話の種類と担当"
+          title="新しい会話の種類と担当"
         >
-          ▾
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="m4 6 4 4 4-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </summary>
         <div className="new-chat-options">
+          {children}
           <button type="button" onClick={() => select()}>
             通常の会話
           </button>
@@ -2038,10 +2123,6 @@ export function Chat() {
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
   const [query, setQuery] = useState('');
-  const [sessionFilter, setSessionFilter] = useState<SessionLifecycleFilter>(() => {
-    const saved = window.localStorage.getItem(SESSION_FILTER_KEY);
-    return saved === 'closed' || saved === 'all' ? saved : 'open';
-  });
   const [searching, setSearching] = useState(false);
   const [nextOffset, setNextOffset] = useState<number>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -2080,7 +2161,6 @@ export function Chat() {
       if (q.trim()) params.set('q', q.trim());
       if (activeProjectId) params.set('projectId', activeProjectId);
       if (activeAgentId) params.set('agentId', activeAgentId);
-      if (sessionFilter !== 'all') params.set('lifecycle', sessionFilter);
       setSearching(true);
       try {
         const data = await requestJson<SessionsResponse>(`/api/sessions?${params}`);
@@ -2104,7 +2184,7 @@ export function Chat() {
         if (requestId === loadRequestRef.current) setSearching(false);
       }
     },
-    [activeProjectId, activeAgentId, query, sessionFilter]
+    [activeProjectId, activeAgentId, query]
   );
 
   useEffect(() => {
@@ -2127,10 +2207,6 @@ export function Chat() {
   useEffect(() => {
     window.localStorage.setItem(PROJECT_STATE_KEY, activeProjectId);
   }, [activeProjectId]);
-
-  useEffect(() => {
-    window.localStorage.setItem(SESSION_FILTER_KEY, sessionFilter);
-  }, [sessionFilter]);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed));
@@ -2172,20 +2248,11 @@ export function Chat() {
     source.addEventListener('sessions', (event) => {
       const data = JSON.parse((event as MessageEvent<string>).data) as SessionsResponse;
       if (queryRef.current.trim()) return;
-      const filteredSessions = data.sessions.filter(
-        (session) => sessionFilter === 'all' || session.lifecycle === sessionFilter
-      );
-      const hadAdditionalPages = sessionsRef.current.length > filteredSessions.length;
+      const hadAdditionalPages = sessionsRef.current.length > data.sessions.length;
       setSessions((current) => {
-        const incoming = new Map(filteredSessions.map((session) => [session.id, session]));
-        const retained = current
-          .filter(
-            (session) =>
-              !incoming.has(session.id) &&
-              (sessionFilter === 'all' || session.lifecycle === sessionFilter)
-          )
-          .map((session) => session);
-        const next = [...filteredSessions, ...retained];
+        const incoming = new Map(data.sessions.map((session) => [session.id, session]));
+        const retained = current.filter((session) => !incoming.has(session.id));
+        const next = [...data.sessions, ...retained];
         sessionsRef.current = next;
         return next;
       });
@@ -2227,7 +2294,7 @@ export function Chat() {
     source.onopen = () => setNotice('');
     source.onerror = () => setNotice('更新ストリームを再接続しています');
     return () => source.close();
-  }, [activeProjectId, activeAgentId, sessionFilter]);
+  }, [activeProjectId, activeAgentId]);
 
   useEffect(() => {
     if (skipInitialSearchRef.current) {
@@ -2237,7 +2304,7 @@ export function Chat() {
     window.clearTimeout(searchTimerRef.current);
     searchTimerRef.current = window.setTimeout(() => void loadSessions(0, query, false), 180);
     return () => window.clearTimeout(searchTimerRef.current);
-  }, [activeProjectId, activeAgentId, query, sessionFilter]);
+  }, [activeProjectId, activeAgentId, query]);
 
   function addPane(sessionId: string | null = null): PaneDescriptor | null {
     if (panes.length >= MAX_PANES) return null;
@@ -2278,6 +2345,9 @@ export function Chat() {
   }
 
   function openSession(sessionId: string) {
+    setAgentViewOpen(false);
+    setProjectViewOpen(false);
+    setProjectFormOpen(false);
     const existing = panes.find((pane) => pane.sessionId === sessionId);
     if (existing) {
       setActiveKey(existing.key);
@@ -2315,6 +2385,9 @@ export function Chat() {
   });
 
   async function createSession(secret = false) {
+    setAgentViewOpen(false);
+    setProjectViewOpen(false);
+    setProjectFormOpen(false);
     const active = panes.find((pane) => pane.key === activeKey);
     const needsNewPane = !active || Boolean(busyPanes[activeKey]);
     let targetKey = active?.key || '';
@@ -2414,6 +2487,7 @@ export function Chat() {
       setEditingProjectId(undefined);
       setProjectName('');
       setProjectPrompt('');
+      if (compactSidebar) setSidebarOpen(true);
       setNotice('');
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
@@ -2457,7 +2531,7 @@ export function Chat() {
     }
   }
 
-  function requestSessionCompletion(session: Session, paneKey?: string) {
+  function requestSessionCompletion(session: CompletableSession, paneKey?: string) {
     if (session.isActive) {
       setSessionToComplete({ session, paneKey });
       return;
@@ -2570,7 +2644,6 @@ export function Chat() {
       <AppTopbar current="chat" />
       <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
         <div className="sidebar-header sidebar-drawer-header">
-          <span className="sidebar-title">会話一覧</span>
           <button
             type="button"
             className="icon-button"
@@ -2586,24 +2659,10 @@ export function Chat() {
               }
             }}
           >
-            ‹
+            ☰
           </button>
+          <span className="sidebar-title">会話一覧</span>
         </div>
-        <button
-          type="button"
-          className="projects-link"
-          aria-current={projectViewOpen ? 'page' : undefined}
-          onClick={() => {
-            setAgentViewOpen(false);
-            setProjectViewOpen(true);
-            setProjectFormOpen(false);
-            if (compactSidebar) setSidebarOpen(false);
-          }}
-        >
-          <span aria-hidden="true">▱</span>
-          <span>Projects</span>
-          <span aria-hidden="true">›</span>
-        </button>
         {activeAgentId && (
           <button
             type="button"
@@ -2616,38 +2675,6 @@ export function Chat() {
             {agents.find((a) => a.id === activeAgentId)?.name} の会話 ×
           </button>
         )}
-        {!activeProject && (
-          <div className="new-conversation-agent">
-            <label>
-              新規会話の担当
-              <select
-                aria-describedby="conversation-agent-help"
-                value={selectedAgentId}
-                onChange={(e) => {
-                  setSelectedAgentId(e.target.value);
-                  if (activeAgentId) setActiveAgentId(e.target.value);
-                }}
-              >
-                <option value="">xangiの既定設定</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <small id="conversation-agent-help">
-              {selectedAgentId
-                ? (() => {
-                    const a = agents.find((a) => a.id === selectedAgentId);
-                    return a
-                      ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
-                      : '';
-                  })()
-                : '登録済みの全エージェントから選択します。'}
-            </small>
-          </div>
-        )}
         <div className="sidebar-actions">
           <input
             className="search"
@@ -2656,140 +2683,193 @@ export function Chat() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <NewChatButton onCreate={(secret) => void createSession(secret)} />
-        </div>
-        <div className="session-filter" role="group" aria-label="セッションの状態で絞り込む">
-          {(
-            [
-              ['open', '未完了'],
-              ['closed', '完了'],
-              ['all', 'すべて'],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              type="button"
-              key={value}
-              aria-pressed={sessionFilter === value}
-              onClick={() => setSessionFilter(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <nav className="session-list" aria-label="セッション一覧">
-          {grouped.map((group) => (
-            <section className="session-group" key={group.label}>
-              <h2>{group.label}</h2>
-              {group.sessions.map((session) => {
-                const open = panes.some((pane) => pane.sessionId === session.id);
-                const current =
-                  panes.find((pane) => pane.key === activeKey)?.sessionId === session.id;
-                const projectName = session.projectId
-                  ? projectNames.get(session.projectId)
-                  : undefined;
-                const status = sessionListStatus(session);
-                return (
-                  <div
-                    className={[
-                      'session-row',
-                      open ? 'active' : '',
-                      current ? 'current selected' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                    aria-current={current ? 'true' : undefined}
-                    key={session.id}
+          <NewChatButton onCreate={(secret) => void createSession(secret)}>
+            {!activeProject && (
+              <div className="new-conversation-agent">
+                <label>
+                  新規会話の担当
+                  <select
+                    aria-describedby="conversation-agent-help"
+                    value={selectedAgentId}
+                    onChange={(e) => {
+                      setSelectedAgentId(e.target.value);
+                      if (activeAgentId) setActiveAgentId(e.target.value);
+                    }}
                   >
-                    <button
-                      type="button"
-                      className="session-main"
-                      onClick={() => openSession(session.id)}
+                    <option value="">xangiの既定設定</option>
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <small id="conversation-agent-help">
+                  {selectedAgentId
+                    ? (() => {
+                        const a = agents.find((a) => a.id === selectedAgentId);
+                        return a
+                          ? `使用AI: ${a.backend || '全体既定'}${a.model ? ' / ' + a.model : ''} · 作業場所: ${a.workspaceId || 'default'}`
+                          : '';
+                      })()
+                    : ''}
+                </small>
+              </div>
+            )}
+          </NewChatButton>
+        </div>
+        <div className="sidebar-scroll">
+          <SidebarProjects
+            projects={projects}
+            activeId={activeProjectId}
+            onSelect={(id) => {
+              setActiveAgentId('');
+              setActiveProjectId(id);
+              setAgentViewOpen(false);
+              setProjectViewOpen(false);
+              setProjectFormOpen(false);
+            }}
+            onCreate={() => {
+              setAgentViewOpen(false);
+              setProjectViewOpen(true);
+              openNewProjectForm();
+              if (compactSidebar) setSidebarOpen(false);
+            }}
+            onEdit={(id) => {
+              const project = projects.find((item) => item.id === id);
+              if (!project) return;
+              setAgentViewOpen(false);
+              setProjectViewOpen(true);
+              openProjectEditor(project);
+              if (compactSidebar) setSidebarOpen(false);
+            }}
+          />
+          <div className="sidebar-conversation-heading">
+            <h2>{activeProject?.name || '会話'}</h2>
+          </div>
+          <nav className="session-list" aria-label="セッション一覧">
+            {grouped.map((group) => (
+              <section className="session-group" key={group.label}>
+                <h2>{group.label}</h2>
+                {group.sessions.map((session) => {
+                  const open = panes.some((pane) => pane.sessionId === session.id);
+                  const current =
+                    panes.find((pane) => pane.key === activeKey)?.sessionId === session.id;
+                  const projectName = session.projectId
+                    ? projectNames.get(session.projectId)
+                    : undefined;
+                  const status = sessionListStatus(session);
+                  return (
+                    <div
+                      className={[
+                        'session-row',
+                        open ? 'active' : '',
+                        current ? 'current selected' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      aria-current={current ? 'true' : undefined}
+                      key={session.id}
                     >
-                      <span className={`status-dot ${status}`} aria-hidden="true">
-                        {status === 'completed' ? '✓' : ''}
-                      </span>
-                      <span className="session-copy">
-                        <strong>{session.title}</strong>
-                        <small>
-                          <span>
-                            {platformLabel(session.platform)} · {relativeTime(session.updatedAt)}
-                            {' · '}
-                            {sessionListStatusLabel(status)}
-                          </span>
-                          {projectName && (
-                            <span className="session-project-tag" title={projectName}>
-                              {projectName}
+                      <button
+                        type="button"
+                        className="session-main"
+                        onClick={() => openSession(session.id)}
+                      >
+                        <span className={`status-dot ${status}`} aria-hidden="true">
+                          {status === 'completed' ? '✓' : ''}
+                        </span>
+                        <span className="session-copy">
+                          <strong>{session.title}</strong>
+                          <small>
+                            <span>
+                              {platformLabel(session.platform)} · {relativeTime(session.updatedAt)}
+                              {' · '}
+                              {sessionListStatusLabel(status)}
                             </span>
-                          )}
-                        </small>
-                      </span>
-                    </button>
-                    <div className="session-actions">
-                      <button
-                        type="button"
-                        aria-label={`${session.title}を別ペインで開く`}
-                        title="別ペインで開く"
-                        onClick={() => {
-                          if (!addPane(session.id)) setNotice(`最大 ${MAX_PANES} ペインです。`);
-                          else setSidebarOpen(false);
-                        }}
-                      >
-                        ⊞
+                            {projectName && (
+                              <span className="session-project-tag" title={projectName}>
+                                {projectName}
+                              </span>
+                            )}
+                          </small>
+                        </span>
                       </button>
-                      {session.isActive && (
+                      <div className="session-actions">
                         <button
                           type="button"
-                          aria-label="停止"
-                          onClick={() => void stopSession(session.id)}
+                          aria-label={`${session.title}を別ペインで開く`}
+                          title="別ペインで開く"
+                          onClick={() => {
+                            if (!addPane(session.id)) setNotice(`最大 ${MAX_PANES} ペインです。`);
+                            else setSidebarOpen(false);
+                          }}
                         >
-                          ■
+                          ⊞
                         </button>
-                      )}
-                      {session.lifecycle !== 'closed' && (
+                        {session.isActive && (
+                          <button
+                            type="button"
+                            aria-label="停止"
+                            onClick={() => void stopSession(session.id)}
+                          >
+                            ■
+                          </button>
+                        )}
+                        {session.lifecycle !== 'closed' && (
+                          <button
+                            type="button"
+                            aria-label="完了にする"
+                            title="完了にする"
+                            onClick={() => requestSessionCompletion(session)}
+                          >
+                            ✓
+                          </button>
+                        )}
+                        {session.platform === 'web' && (
+                          <button
+                            type="button"
+                            aria-label="Projectへ移動"
+                            title={session.isActive ? '実行中は移動できません' : 'Projectへ移動'}
+                            disabled={session.isActive}
+                            onClick={() => openMoveSession(session)}
+                          >
+                            ▱
+                          </button>
+                        )}
                         <button
                           type="button"
-                          aria-label="完了にする"
-                          title="完了にする"
-                          onClick={() => requestSessionCompletion(session)}
+                          aria-label="削除"
+                          onClick={() => setSessionToDelete(session)}
                         >
-                          ✓
+                          ×
                         </button>
-                      )}
-                      {session.platform === 'web' && (
-                        <button
-                          type="button"
-                          aria-label="Projectへ移動"
-                          title={session.isActive ? '実行中は移動できません' : 'Projectへ移動'}
-                          disabled={session.isActive}
-                          onClick={() => openMoveSession(session)}
-                        >
-                          ▱
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        aria-label="削除"
-                        onClick={() => setSessionToDelete(session)}
-                      >
-                        ×
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </section>
-          ))}
-          {nextOffset !== undefined && (
-            <button
-              type="button"
-              className="load-more"
-              disabled={searching}
-              onClick={() => void loadSessions(nextOffset, query, true)}
-            >
-              {searching ? '読み込み中…' : 'さらに読み込む'}
-            </button>
-          )}
-        </nav>
+                  );
+                })}
+              </section>
+            ))}
+            {nextOffset !== undefined && (
+              <button
+                type="button"
+                className="load-more"
+                disabled={searching}
+                onClick={() => void loadSessions(nextOffset, query, true)}
+              >
+                {searching ? '読み込み中…' : 'さらに読み込む'}
+              </button>
+            )}
+          </nav>
+        </div>
+        <footer className="sidebar-footer">
+          <a href="/settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <NavigationIcon icon="settings" />
+            </svg>
+            全体設定
+          </a>
+        </footer>
       </aside>
       <section className="workspace">
         {agentViewOpen ? (
@@ -2884,11 +2964,18 @@ export function Chat() {
                   onClick={() => {
                     setProjectViewOpen(false);
                     setProjectFormOpen(false);
+                    if (compactSidebar) setSidebarOpen(true);
                   }}
                 >
                   ← 会話
                 </button>
-                <h1>プロジェクト</h1>
+                <h1>
+                  {projectFormOpen
+                    ? editingProjectId
+                      ? 'プロジェクト設定'
+                      : '新規プロジェクト'
+                    : 'プロジェクト'}
+                </h1>
               </div>
               {!projectFormOpen && (
                 <div className="project-view-header-actions">
@@ -3021,7 +3108,11 @@ export function Chat() {
                   <button
                     type="button"
                     disabled={savingProject}
-                    onClick={() => setProjectFormOpen(false)}
+                    onClick={() => {
+                      setProjectFormOpen(false);
+                      setProjectViewOpen(false);
+                      if (compactSidebar) setSidebarOpen(true);
+                    }}
                   >
                     キャンセル
                   </button>
@@ -3112,6 +3203,7 @@ export function Chat() {
               <button
                 type="button"
                 className="icon-button sidebar-toggle"
+                hidden={sidebarVisible}
                 aria-label={sidebarVisible ? 'サイドバーを閉じる' : 'サイドバーを開く'}
                 title={sidebarVisible ? 'サイドバーを閉じる' : 'サイドバーを開く'}
                 onClick={toggleSidebar}
@@ -3129,7 +3221,7 @@ export function Chat() {
                   onClick={() => {
                     setAgentViewOpen(false);
                     setProjectViewOpen(true);
-                    setProjectFormOpen(false);
+                    openProjectEditor(activeProject);
                   }}
                 >
                   <span aria-hidden="true">▱</span>

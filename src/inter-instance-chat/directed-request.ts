@@ -16,6 +16,8 @@ import { getInterChatConfig, isPeerAllowed } from './index.js';
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_HTTP_MESSAGE_BYTES = 64 * 1024;
+const AGENT_GUIDANCE =
+  'For an agent in this xangi instance, use xangi agent list and xangi agent run instead; inter_chat_ask is for another xangi instance.';
 const httpPeerQueues = new Map<string, Promise<void>>();
 
 export interface DirectedHttpRequest {
@@ -72,8 +74,12 @@ export async function askAgent(
   }
   if (!target) throw new Error('--to is required');
   if (!text) throw new Error('--text is required');
-  if (!/^[\w.-]+$/.test(target)) throw new Error('--to must be an exact instance_id');
-  if (target === cfg.selfInstanceId) throw new Error('cannot ask the current xangi instance');
+  if (!/^[\w.-]+$/.test(target)) {
+    throw new Error(`--to must be an exact instance_id. ${AGENT_GUIDANCE}`);
+  }
+  if (target === cfg.selfInstanceId) {
+    throw new Error(`cannot ask the current xangi instance. ${AGENT_GUIDANCE}`);
+  }
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {
     throw new Error('timeout must be between 1 and 3600 seconds');
   }
@@ -83,7 +89,7 @@ export async function askAgent(
   }
   const peerOrigin = cfg.peers[target];
   if (!peerOrigin) {
-    throw new Error(`${target} is not configured in INTER_INSTANCE_CHAT_PEERS`);
+    throw new Error(`${target} is not configured in INTER_INSTANCE_CHAT_PEERS. ${AGENT_GUIDANCE}`);
   }
   if (!cfg.token) {
     throw new Error('INTER_INSTANCE_CHAT_TOKEN is required for HTTP inter-instance chat');

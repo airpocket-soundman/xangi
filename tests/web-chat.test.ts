@@ -1,3 +1,4 @@
+import { requestUserInput, normalizeQuestions } from '../src/user-input.js';
 import { instanceCliCommand } from '../src/instance-cli.js';
 import * as sessionTitle from '../src/session-title.js';
 import { registerWorkTransport, submitAgentWork } from '../src/agent-work.js';
@@ -123,7 +124,6 @@ describe('Web Chat session list actions', () => {
     expect(source).toContain('aria-label="完了にする"');
     expect(source).toContain('aria-label="ペインを閉じる"');
     expect(source).toContain('aria-label="削除"');
-    expect(source).toContain("['open', '未完了']");
   });
 });
 
@@ -190,9 +190,16 @@ class FakeRunner implements AgentRunner {
     this.prompts.push(prompt);
     this.options.push(options ?? {});
     this.callbacks.set(channelId, callbacks);
-    return new Promise<RunResult>((resolve) => {
+    return new Promise<RunResult>((resolve, reject) => {
       this.pending.set(channelId, () => {
         this.callbacks.delete(channelId);
+        if (this.nextError) {
+          const error = this.nextError;
+          this.nextError = undefined;
+          callbacks.onError?.(error);
+          reject(error);
+          return;
+        }
         callbacks.onText?.(this.nextResult, this.nextResult);
         const result: RunResult = {
           result: this.nextResult,
@@ -374,6 +381,7 @@ describe('web-chat HTTP API', () => {
         requestDefault ?? { backend: 'claude-code' },
       getDefault: () => ({ backend: 'claude-code' }),
       getChannelOverride: (channelId: string) => overrides.get(channelId),
+      getChannelOverrides: () => new Map(overrides),
       getAllowedBackends: () => ['claude-code', 'codex'] as AgentBackend[],
       getSelectableBackends: () => ['claude-code', 'codex'] as AgentBackend[],
       isBackendAllowed: (backend: AgentBackend) => ['claude-code', 'codex'].includes(backend),
@@ -472,6 +480,26 @@ describe('web-chat HTTP API', () => {
     }
   });
 
+  it('answers pending Web questions once and rejects cross-origin or other-session answers', async () => {
+    const sessionId = createWebSession({});
+    const otherSessionId = createWebSession({});
+    const controller = new AbortController();
+    const request = normalizeQuestions([{ id: 'q', question: 'Pick', options: [{ label: 'A' }] }], 'codex');
+    const answer = requestUserInput(`web:${sessionId}`, 'web', request, controller.signal, async () => {});
+    try {
+      const pending = await (await fetch(`${baseUrl}/api/user-input/${sessionId}`)).json();
+      expect(pending.questions).toHaveLength(1);
+      const body = JSON.stringify({ id: pending.questions[0].id, answer: { answers: { q: ['A'] } } });
+      const send = (id: string, origin?: string) => fetch(`${baseUrl}/api/user-input/${id}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body });
+      expect((await send(sessionId, 'https://other.invalid')).status).toBe(403);
+      expect((await send(otherSessionId)).status).toBe(409);
+      expect((await send(sessionId)).status).toBe(200);
+      expect(await answer).toEqual({ answers: { q: ['A'] } });
+      expect((await send(sessionId)).status).toBe(409);
+      expect((await (await fetch(`${baseUrl}/api/user-input/${sessionId}`)).json()).questions).toEqual([]);
+    } finally { controller.abort(); await answer; }
+  });
+
   it('serves channel names for the settings selector while keeping IDs as values', async () => {
     const response = await fetch(`${baseUrl}/api/runtime-settings/channels?platform=discord`);
     const body = (await response.json()) as {
@@ -485,6 +513,19 @@ describe('web-chat HTTP API', () => {
       status: 'available',
       channels: [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
     });
+  });
+
+  it('serves the configured-channel overview separately from initial settings', async () => {
+    resolver.setChannelOverride('C123', { backend: 'codex', model: 'saved-model', effort: 'high' });
+    const response = await fetch(`${baseUrl}/api/runtime-settings/configured-channels?platform=slack`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect((await response.json()).channels).toEqual([{
+      id: 'C123', name: '#general', nameAvailable: true,
+      override: { backend: 'codex', model: 'saved-model', effort: 'high' },
+    }]);
+    const invalid = await fetch(`${baseUrl}/api/runtime-settings/configured-channels?platform=web`);
+    expect(invalid.status).toBe(400);
   });
 
   it('updates an allowlisted backend tool through a same-origin mutation', async () => {
@@ -2184,6 +2225,27 @@ describe('web-chat HTTP API', () => {
     expect((await (await fetch(`${baseUrl}/api/agent-runs`)).json()).runs).toHaveLength(0);
   });
 
+  it('refreshes cached file browsing after a live workspace path change', async () => {
+    const oldPath = join(testDir, 'old-workspace');
+    const newPath = join(testDir, 'new-workspace');
+    mkdirSync(oldPath);
+    mkdirSync(newPath);
+    writeFileSync(join(oldPath, 'old.md'), 'old');
+    writeFileSync(join(newPath, 'new.md'), 'new');
+    const context = { channelId: 'path-change' };
+    const { workspace } = JSON.parse(await executeWorkspaceCommand(
+      { action: 'create', name: 'moving', path: oldPath }, context
+    ));
+    const list = async () => (await (await fetch(
+      `${baseUrl}/api/workspace/entries?workspaceId=${workspace.id}`
+    )).json()).entries.map((entry: { name: string }) => entry.name);
+    expect(await list()).toContain('old.md');
+    await executeWorkspaceCommand({ action: 'set-path', workspace: workspace.id, path: newPath }, context);
+    expect(await list()).toContain('new.md');
+    expect(await list()).not.toContain('old.md');
+    expect(existsSync(join(oldPath, 'old.md'))).toBe(true);
+  });
+
   it('renames workspace metadata through Settings and rejects path changes', async () => {
     const directory = join(testDir, 'rename-workspace');
     mkdirSync(directory);
@@ -3169,6 +3231,22 @@ process.stdin.on('end', () => process.exit(0));
     await readSSEUntilDone(r1.body);
   });
 
+  it('streams retry state separately from assistant text and clears it on recovery', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()).sessionId as string;
+    const key = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({appSessionId:id,message:'hello'}),
+    });
+    await vi.waitFor(() => expect(runner.callbacks.has(key)).toBe(true));
+    runner.callbacks.get(key)?.onStatus?.({reason:'rate_limit',retryAt:12345});
+    runner.callbacks.get(key)?.onStatus?.(null);
+    runner.release(key);
+    const events = (await readSSEUntilDone((await send).body)).events;
+    expect(events.filter(e => e.event === 'backend_status').map(e => e.data)).toEqual([{status:{reason:'rate_limit',retryAt:12345}},{status:null}]);
+    expect(events.find(e => e.event === 'done')?.data.response).toBe('ok');
+  });
+
   it('hides reply suggestion markup from Web SSE and returns structured suggestions', async () => {
     const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;
@@ -3443,6 +3521,26 @@ process.stdin.on('end', () => process.exit(0));
     expect(evB.events.find((e) => e.event === 'done')).toBeTruthy();
   });
 
+  it('keeps the partial Web response in the transcript when stopped', async () => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()).sessionId as string;
+    const ctx = `${WEB_CHAT_CONTEXT_PREFIX}${id}`;
+    const send = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'hello' }),
+    });
+    for (let i = 0; i < 50 && !runner.pending.has(ctx); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(runner.emitText(ctx, '途中の回答')).toBe(true);
+    logPrompt(testDir, id, 'hello');
+    const stopped = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    expect(stopped.ok).toBe(true);
+    expect(readSessionMessages(testDir, id).at(-1)).toMatchObject({
+      role: 'assistant', content: { result: expect.stringContaining('途中の回答') },
+    });
+    runner.nextError = new Error('Request cancelled by user');
+    runner.release(ctx);
+    await (await send).text();
+  });
+
   it('POST /api/sessions/:id/stop destroys the runner but keeps the session', async () => {
     const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;
@@ -3679,6 +3777,10 @@ process.stdin.on('end', () => process.exit(0));
     );
     expect(sourceStylesheet).toMatch(/\.plain-message\s*\{[^}]*white-space:\s*pre-wrap/s);
     expect(sourceStylesheet).toMatch(/\.markdown-message\s*\{[^}]*white-space:\s*normal/s);
+    expect(chatSource).toMatch(/content=\{promptDisplay\.content\}\s+markdown\s*\/>/);
+    expect(chatSource).toContain('<MessageContent content={remoteEcho.text} markdown />');
+    expect(chatSource).toContain('copyText(promptDisplay.content)');
+    expect(sourceStylesheet).toMatch(/\.message\.user \.markdown-message\s*\{[^}]*margin-left:\s*auto/s);
     expect(chatSource).toMatch(
       /if \(activeRef\.current\) \{\s*requestAnimationFrame\(\(\) => draftRef\.current\?\.focus\(\)\);\s*\}/
     );
@@ -3690,7 +3792,7 @@ process.stdin.on('end', () => process.exit(0));
     expect(chatSource).toContain('projectId={activeProjectId || undefined}');
     expect(chatSource).toContain("jsonInit('POST', { projectId, agentId: selectedAgentId, secret })");
     expect(chatSource).toContain('session-project-tag');
-    expect(chatSource).toContain('className="projects-link"');
+    expect(chatSource).toContain('<SidebarProjects');
     expect(chatSource).toContain('className="project-view"');
     expect(chatSource).toContain('新規プロジェクト');
     expect(chatSource).not.toContain('href="/settings#workspaces"');
@@ -3705,9 +3807,7 @@ process.stdin.on('end', () => process.exit(0));
     expect(sourceStylesheet).toMatch(/\.project-model-settings\s*\{/);
     expect(sourceStylesheet).toMatch(/\.pane-backend-badge\s*\{/);
     expect(chatSource).not.toContain('Project内の会話');
-    expect(sourceStylesheet).toMatch(
-      /\.projects-link\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/s
-    );
+    expect(chatSource).toContain('className="sidebar-footer"');
     expect(sourceStylesheet).toMatch(/\.project-view-list\s*\{/);
     expect(chatSource).toContain('SIDEBAR_COLLAPSED_KEY');
     expect(chatSource).toContain('new ResizeObserver(scrollToBottom)');
@@ -3721,7 +3821,7 @@ process.stdin.on('end', () => process.exit(0));
       /@media \(max-width: 768px\)[\s\S]*\.workspace-editor-tabs button\s*\{[^}]*min-height:\s*32px[^}]*font-size:\s*13px/s
     );
     expect(sourceStylesheet).toMatch(
-      /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s
+      /\.workspace-browser-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)/s
     );
     expect(sourceStylesheet).toMatch(/\.workspace-file-panel\s*\{[^}]*overflow-y:\s*auto/s);
     expect(sourceStylesheet).not.toMatch(/\.workspace-browser-header\s*\{/);
@@ -4104,7 +4204,7 @@ process.stdin.on('end', () => process.exit(0));
     await reader.cancel();
   });
 
-  it('persists and streams an interrupted assistant response during shutdown', async () => {
+  it.each(['reject', 'resolve'])('persists and streams an interrupted assistant response during shutdown before runner %s', async (outcome) => {
     const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
       .sessionId as string;
     const responsePromise = fetch(`${baseUrl}/api/chat`, {
@@ -4135,10 +4235,31 @@ process.stdin.on('end', () => process.exit(0));
       (text) => text.includes('event: done') && text.includes('プロセス再起動により中断されました')
     );
     expect(streamed).toContain('"replySuggestions":[]');
+    if (outcome === 'reject') runner.nextError = new Error('Runner is shutting down');
     expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
-    while (!(await reader.read()).done) {
-      // Drain the normal completion emitted after the shutdown finalizer.
+    let trailing = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      trailing += new TextDecoder().decode(chunk.value);
     }
+    expect(trailing).toBe('');
+    expect(readSessionMessages(testDir, id)).toEqual(messages);
+  });
+
+  it.each(['Runner is shutting down', 'Request cancelled by user'])('still streams ordinary runner errors without a shutdown finalizer: %s', async (message) => {
+    const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json()).sessionId as string;
+    const responsePromise = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'fail now' }),
+    });
+    await vi.waitFor(() => expect(runner.pending.size).toBe(1));
+    runner.nextError = new Error(message);
+    expect(runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${id}`)).toBe(true);
+    const streamed = await (await responsePromise).text();
+    expect(streamed).toContain('event: error');
+    expect(streamed).toContain(message);
+    expect(streamed).not.toContain('プロセス再起動により中断されました');
   });
 
   it('GET /api/sessions/:id separates uploaded file paths from user display text', async () => {

@@ -1,6 +1,14 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { getJson, requestJson } from './api';
 import { openSetupSession } from './extensionSetup';
+
+export function useCatalogFormFocus() {
+  return useCallback((form: HTMLFormElement | null) => {
+    if (!form) return;
+    form.focus({ preventScroll: true });
+    form.scrollIntoView({ block: 'start' });
+  }, []);
+}
 
 export function CatalogCreateButton({
   label,

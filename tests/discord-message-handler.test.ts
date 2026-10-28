@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +11,8 @@ import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
 import { clearSessions, initSessions, setSession } from '../src/sessions.js';
 import { initSettings } from '../src/settings.js';
+import { finalizeActiveStreams } from '../src/stream-finalizer.js';
+import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
 
 const originalSplitDelay = process.env.DISCORD_SPLIT_SEND_DELAY_MS;
 
@@ -42,7 +44,11 @@ describe('processPrompt error completion', () => {
     ['This operation was aborted', '❌ エラーが発生しました'],
     ['Process exited unexpectedly with code 1', '💥 AIプロセスが予期せず終了しました'],
     ['Some random error', '❌ エラーが発生しました'],
-  ])('ends %s without follow-up and accepts the next turn', async (errorMessage, display) => {
+    ['Runner is shutting down', '❌ エラーが発生しました'],
+    ['Request cancelled by user', '🛑 停止しました'],
+    ['Runner is shutting down', '⏸ プロセス再起動により中断されました', true],
+    ['Process exited during shutdown (code 0)', '⏸ プロセス再起動により中断されました', true],
+  ])('ends %s with %s without follow-up and accepts the next turn', async (errorMessage, display, shutdown) => {
     const testDir = mkdtempSync(join(tmpdir(), 'xangi-session-limit-'));
     clearSessions();
     initSessions(testDir);
@@ -51,7 +57,15 @@ describe('processPrompt error completion', () => {
     const edit = vi.fn().mockResolvedValue(undefined);
     const replyMessage = { id: 'reply', edit };
     const sendInitial = vi.fn().mockResolvedValue(replyMessage);
-    const runStream = vi.fn().mockRejectedValue(new Error(errorMessage));
+    const runStream = vi.fn().mockImplementation(async (_prompt, callbacks, options) => {
+      logPrompt(testDir, options.appSessionId, '確認');
+      callbacks.onText?.('途中の回答', '途中の回答');
+      callbacks.onToolUse?.('Bash', { command: 'pwd' });
+      if (shutdown) await finalizeActiveStreams();
+      const error = new Error(errorMessage);
+      callbacks.onError?.(error);
+      throw error;
+    });
     const run = vi.fn();
     const message = {
       id: 'source',
@@ -85,7 +99,7 @@ describe('processPrompt error completion', () => {
           'session-limit-test',
           {
             agent: { backend: 'claude-code', config: { workdir: testDir } },
-            discord: { streaming: false, showButtons: false, replySuggestions: false },
+            discord: { streaming: true, showButtons: false, replySuggestions: false },
           } as never,
           target as never,
           { id: 'user', name: 'user', messageId: 'source', react: false }
@@ -96,10 +110,34 @@ describe('processPrompt error completion', () => {
       expect(coordinator.isBusy('session-limit-test')).toBe(false);
       expect(runStream).toHaveBeenCalledTimes(1);
       expect(run).not.toHaveBeenCalled();
-      expect(edit).toHaveBeenCalledWith({
+      expect(edit).toHaveBeenLastCalledWith({
         content: expect.stringContaining(display),
         components: [],
       });
+      if (errorMessage === 'Request cancelled by user') {
+        const appSessionId = runStream.mock.calls[0][2].appSessionId;
+        expect(readSessionMessages(testDir, appSessionId).at(-1)).toMatchObject({
+          role: 'assistant',
+          content: { result: expect.stringContaining('途中の回答') },
+        });
+      }
+      if (shutdown) {
+        expect(edit.mock.calls.at(-1)?.[0].content).toContain('途中の回答');
+        expect(edit.mock.calls.at(-1)?.[0].content).toContain('pwd');
+        expect(errorLog).not.toHaveBeenCalled();
+        const appSessionId = runStream.mock.calls[0][2].appSessionId;
+        expect(readSessionMessages(testDir, appSessionId).at(-1)).toMatchObject({
+          role: 'assistant',
+          content: { result: expect.stringContaining(display) },
+        });
+      }
+      const latencyDir = join(testDir, 'logs', 'turn-latency');
+      const latencyRecords = readdirSync(latencyDir).flatMap((file) =>
+        readFileSync(join(latencyDir, file), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+      );
+      expect(latencyRecords.at(-1)?.outcome).toBe(
+        shutdown || errorMessage === 'Request cancelled by user' ? 'cancelled' : 'error'
+      );
       expect(target.outputChannel.send).not.toHaveBeenCalled();
       const next = await coordinator.tryRun('session-limit-test', turn);
       expect(next.accepted).toBe(true);

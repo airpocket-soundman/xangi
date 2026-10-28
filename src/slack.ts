@@ -1,3 +1,4 @@
+import { registerSlackUserInput, slackUserInput } from './slack-user-input.js';
 import { completionHistory } from './completion-history.js';
 import { handleSecretCommand } from './secret-command.js';
 import { handleSecretConversationCommand } from './secret-conversation-command.js';
@@ -297,6 +298,7 @@ async function downloadSlackAttachments(
 }
 
 async function processSlackInbound(options: {
+  actorId?: string;
   text: string;
   files?: SlackInboundFile[];
   channelId: string;
@@ -361,7 +363,10 @@ async function processSlackInbound(options: {
     options.messageTs,
     options.client,
     options.agentRunner,
-    options.config
+    options.config,
+    true,
+    undefined,
+    options.actorId
   );
 }
 
@@ -1187,6 +1192,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     socketMode: true,
     logLevel: LogLevel.INFO,
   });
+  registerSlackUserInput(app);
   if (options.remoteInputRef)
     options.remoteInputRef.current = createSlackRemoteInputBridge(app.client, agentRunner, config);
   registerSlackAgentWork(
@@ -1440,6 +1446,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     const files = (event as unknown as Record<string, unknown>).files as
       SlackInboundFile[] | undefined;
     await processSlackInbound({
+      actorId: userId,
       text,
       files,
       channelId: event.channel,
@@ -1578,6 +1585,7 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
     }
 
     await processSlackInbound({
+      actorId: messageEvent.user,
       text: messageEvent.text || '',
       files: messageEvent.files,
       channelId: messageEvent.channel,
@@ -1801,7 +1809,8 @@ export async function processMessage(
   agentRunner: AgentRunner,
   config: Config,
   removeReaction = true,
-  remoteSessionId?: string
+  remoteSessionId?: string,
+  actorId?: string
 ): Promise<void> {
   const runKey = conversationKey;
   const skipPermissions = config.agent.config.skipPermissions ?? false;
@@ -1831,12 +1840,13 @@ export async function processMessage(
     threadLabel,
     platform: 'slack' as const,
     userText: text,
+    isShutdownInterrupted: () => unregisterStreamFinalizer?.isFinalized() ?? false,
   };
 
   let messageTs = '';
   const progressUpdates = new SlackProgressUpdates();
   // プロセス終了時に実行中表示を「中断」表示で確定させる finalizer の登録解除関数 (issue #293)
-  let unregisterStreamFinalizer: (() => void) | undefined;
+  let unregisterStreamFinalizer: ReturnType<typeof registerStreamFinalizer> | undefined;
   // appSessionId は xangi 内部 (sessions.json) のセッション ID。
   // transcript-logger / 編集・削除同期で必要。
   let acquiredRunLock = false;
@@ -1947,6 +1957,7 @@ export async function processMessage(
     };
     const toolHistory: string[] = [];
     const captureCallbacks = {
+      onUserInput: actorId ? slackUserInput(client, channelId, threadTs, actorId) : undefined,
       onBackendReady: startTitleIfNeeded,
       onText: startTitleIfNeeded,
       onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
@@ -1969,7 +1980,7 @@ export async function processMessage(
             ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
             : sliceByBytes(
                 markdownToSlackMrkdwn(
-                  appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌')
+                  `${view.statusLine ? `${view.statusLine}\n\n` : ''}${appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌')}`
                 ),
                 SLACK_MAX_TEXT_BYTES
               );
@@ -2090,6 +2101,7 @@ export async function processMessage(
           eventCtx,
           {
             onBackendReady: sessionCallbacks.onBackendReady,
+            onUserInput: sessionCallbacks.onUserInput,
             onToolUse: sessionCallbacks.onToolUse,
           },
           {
@@ -2110,6 +2122,8 @@ export async function processMessage(
       }
     }
 
+    if (unregisterStreamFinalizer.isFinalized()) return;
+
     const attachmentRecovery = await recoverAttachmentOnce(
       agentRunner,
       { result, sessionId: newSessionId, attachments: structuredAttachments },
@@ -2126,6 +2140,8 @@ export async function processMessage(
     result = attachmentRecovery.runResult.result;
     newSessionId = attachmentRecovery.runResult.sessionId;
     structuredAttachments = attachmentRecovery.runResult.attachments;
+
+    if (unregisterStreamFinalizer.isFinalized()) return;
 
     sessions.set(conversationKey, newSessionId);
     incrementMessageCount(appSessionId);
@@ -2265,6 +2281,10 @@ export async function processMessage(
   } catch (error) {
     if (remoteSessionId && !acquiredRunLock) throw error;
     await progressUpdates.finish();
+    if (unregisterStreamFinalizer?.isFinalized()) {
+      console.log('[slack] Request interrupted by shutdown');
+      return;
+    }
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (errorMsg.includes('Request cancelled by user')) {
       console.log('[slack] Request cancelled by user');

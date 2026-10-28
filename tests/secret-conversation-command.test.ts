@@ -41,7 +41,6 @@ describe('secret controls without placeholder sessions', () => {
       const registry = await WorkspaceRegistry.open({
         dataDir: join(dir, 'registry'),
         defaultWorkspacePath: dir,
-        allowedRoots: [dir],
       });
       const base = { platform, registry, contextKey: 'chat', bindingKey: 'parent' };
       await handleSecretConversationCommand({ ...base, userText: '/secret on' });

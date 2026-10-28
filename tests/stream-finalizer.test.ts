@@ -95,4 +95,32 @@ describe('stream-finalizer', () => {
     await finalizeActiveStreams();
     expect(count).toBe(1);
   });
+
+  it('非同期 finalizer の開始前から中断状態を保持し、解除済み・次のターンに波及しない', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const registration = registerStreamFinalizer(() => pending);
+    const removed = registerStreamFinalizer(() => {});
+    removed();
+    expect(registration.isFinalized()).toBe(false);
+
+    const finalizing = finalizeActiveStreams();
+    expect(registration.isFinalized()).toBe(true);
+    expect(removed.isFinalized()).toBe(false);
+    const next = registerStreamFinalizer(() => {});
+    expect(next.isFinalized()).toBe(false);
+    next();
+    release();
+    await finalizing;
+    registration();
+    expect(registration.isFinalized()).toBe(true);
+  });
+
+  it.each(['reject', 'timeout'])('finalizer の %s 後も中断状態を保持する', async (outcome) => {
+    const registration = registerStreamFinalizer(() => outcome === 'reject'
+      ? Promise.reject(new Error('edit failed'))
+      : new Promise<void>(() => {}));
+    await finalizeActiveStreams(1);
+    expect(registration.isFinalized()).toBe(true);
+  });
 });

@@ -1,10 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { fetchAttachmentInfo } from './attachment-preview';
 import './document-attachment.css';
 
 type Info = { kind: string; text?: string; truncated?: boolean; pages?: number };
-export function DocumentAttachment({ path, sessionId }: { path: string; sessionId: string }) {
+export function DocumentAttachment({
+  path,
+  sessionId,
+  pending = false,
+}: {
+  path: string;
+  sessionId: string;
+  pending?: boolean;
+}) {
   const [open, setOpen] = useState(true);
   const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState('');
@@ -31,17 +40,34 @@ export function DocumentAttachment({ path, sessionId }: { path: string; sessionI
     setInfo(null);
     setError('');
     const params = new URLSearchParams({ sessionId, path, mode: 'info' });
-    void fetch(`/api/session-attachment?${params}`, { signal: controller.signal })
-      .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error || 'プレビューを取得できませんでした。');
-        setInfo(body);
-      })
+    const wait = (signal: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        const timer = window.setTimeout(() => {
+          signal.removeEventListener('abort', abort);
+          resolve();
+        }, 500);
+        const abort = () => {
+          window.clearTimeout(timer);
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', abort, { once: true });
+      });
+    void fetchAttachmentInfo(
+      () => fetch(`/api/session-attachment?${params}`, { signal: controller.signal }),
+      pending,
+      controller.signal,
+      wait
+    )
+      .then(setInfo)
       .catch((cause) => {
         if (!controller.signal.aborted) setError(String(cause.message || cause));
       });
     return () => controller.abort();
-  }, [open, path, sessionId, retry]);
+  }, [open, path, sessionId, retry, pending]);
   useEffect(() => {
     if (!expanded) return;
     dialog.current?.showModal();

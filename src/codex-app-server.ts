@@ -1,3 +1,5 @@
+import { codexDiagnosticReader, codexHttpStatus, codexFailureMessage } from './backend-status.js';
+import { normalizeQuestions, userInputEnabled, validateAnswer } from './user-input.js';
 import { codexFileChanges } from './file-changes.js';
 import { readCodexTurnEvidence } from './codex-model-evidence.js';
 import { updateSessionContextUsage } from './sessions.js';
@@ -26,12 +28,20 @@ interface Turn {
   resolve: (r: RunResult) => void;
   reject: (e: Error) => void;
   cancelled: boolean;
+  retrying?: boolean;
+  inputAbort: AbortController;
+  inputRequests: Map<unknown, AbortController>;
   first: boolean;
+  textBoundary: boolean;
+  providerCompleted: boolean;
+  startParams: Obj;
+  answerQueue: Promise<void>;
+  asyncItems: Set<string>;
   pending: Obj[];
   stopTimer?: NodeJS.Timeout;
 }
 
-/** One process per LINE conversation: CLI tool environment cannot leak across users. */
+/** One process per conversation: CLI tool environment cannot leak across users. */
 export class CodexAppServerRunner extends CliRunnerBase {
   protected readonly command = 'codex';
   protected readonly displayName = 'Codex App Server';
@@ -70,12 +80,21 @@ export class CodexAppServerRunner extends CliRunnerBase {
   }
   private async start() {
     const env = buildCliEnv(this.channelId, this.runnerPlatform, this.workdir);
-    const child = spawn(configuredBackendCommand('codex', env), ['app-server'], {
-      cwd: this.workdir,
-      env,
-      stdio: 'pipe',
-      detached: process.platform !== 'win32',
-    });
+    // Enable only the retry diagnostic required for progress; raw lines are never logged.
+    env.RUST_LOG = `${env.RUST_LOG ?? 'warn'},codex_core::responses_retry=warn`;
+    const child = spawn(
+      configuredBackendCommand('codex', env),
+      [
+        'app-server',
+        ...(userInputEnabled() ? ['-c', 'features.default_mode_request_user_input=true'] : []),
+      ],
+      {
+        cwd: this.workdir,
+        env,
+        stdio: 'pipe',
+        detached: process.platform !== 'win32',
+      }
+    );
     this.child = child;
     const spawnAt = Date.now();
     console.info(
@@ -97,8 +116,15 @@ export class CodexAppServerRunner extends CliRunnerBase {
     lines.on('close', () => {
       if (this.child === child) this.fail(new Error('App-server stdout closed'));
     });
-    // Drain diagnostics without printing potentially sensitive provider error text.
-    child.stderr.resume();
+    // Retry warnings carry the delay even when the protocol emits no event.
+    const diagnostic = codexDiagnosticReader(({ status, turnId }) => {
+      const t = this.turn;
+      if (this.child !== child || !t || t.cancelled || t.turnId !== turnId) return;
+      t.retrying = true;
+      t.callbacks.onStatus?.(status);
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', diagnostic);
     child.stdin.on('error', () => {
       if (this.child === child) this.fail(new Error('App-server stdin closed'));
     });
@@ -152,6 +178,52 @@ export class CodexAppServerRunner extends CliRunnerBase {
       return;
     }
     if (message.method && message.id !== undefined) {
+      if (message.method === 'item/tool/requestUserInput' && this.turn?.callbacks.onUserInput) {
+        const t = this.turn;
+        const p = obj(message.params);
+        if (!t.turnId) {
+          t.pending.push(message);
+          return;
+        }
+        if (p.threadId !== t.threadId || p.turnId !== t.turnId || t.cancelled) {
+          this.write({ id: message.id, error: { code: -32602, message: 'Inactive turn' } });
+          return;
+        }
+        if (t.inputRequests.has(message.id)) return;
+        const controller = new AbortController();
+        t.inputRequests.set(message.id, controller);
+        const abort = () => controller.abort();
+        t.inputAbort.signal.addEventListener('abort', abort, { once: true });
+        void (async () => {
+          try {
+            const request = normalizeQuestions(p.questions, 'codex');
+            const answer = validateAnswer(
+              request,
+              await t.callbacks.onUserInput!(request, controller.signal)
+            );
+            if (this.turn !== t || t.cancelled || controller.signal.aborted) return;
+            if ('cancelled' in answer) {
+              this.cancel();
+              return;
+            }
+            this.write({
+              id: message.id,
+              result: {
+                answers: Object.fromEntries(
+                  Object.entries(answer.answers).map(([id, answers]) => [id, { answers }])
+                ),
+              },
+            });
+          } catch {
+            if (this.turn === t && !controller.signal.aborted) this.cancel();
+          } finally {
+            t.inputRequests.delete(message.id);
+            t.inputAbort.signal.removeEventListener('abort', abort);
+            if (this.turn === t && t.providerCompleted && !t.inputRequests.size) this.finish();
+          }
+        })();
+        return;
+      }
       // Noninteractive, fail closed. Never silently grant an unexpected approval.
       this.write({
         id: message.id,
@@ -164,20 +236,31 @@ export class CodexAppServerRunner extends CliRunnerBase {
     if (!t) return;
     const p = obj(message.params);
     if (p.threadId !== t.threadId) return;
+    if (message.method === 'serverRequest/resolved') {
+      t.inputRequests.get(p.requestId)?.abort();
+      return;
+    }
     if (!t.turnId) {
       t.pending.push(message);
       return;
     }
     if (p.turnId !== undefined && p.turnId !== t.turnId) return;
     const method = str(message.method);
-    if (method === 'turn/started') {
+    if (method === 'error' && p.willRetry === true && !t.cancelled) {
+      t.retrying = true;
+      // The diagnostic provides a deadline; protocol-only versions still report a reason.
+      const code = codexHttpStatus(p.error);
+      t.callbacks.onStatus?.({ reason: code === 429 ? 'rate_limit' : 'connection' });
+    } else if (method === 'turn/started') {
       if (obj(p.turn).id === t.turnId) t.callbacks.onTraceEvent?.({ type: 'turn_started' });
     } else if (method === 'item/agentMessage/delta') {
+      this.clearRetryStatus();
       if (!t.first) {
         t.first = true;
         this.mark('first_response', t.callbacks);
       }
-      const delta = str(p.delta);
+      const delta = `${t.textBoundary && t.result.result ? '\n\n' : ''}${str(p.delta)}`;
+      t.textBoundary = false;
       t.result.result += delta;
       t.callbacks.onText?.(delta, t.result.result);
     } else if (method === 'thread/tokenUsage/updated') {
@@ -202,11 +285,17 @@ export class CodexAppServerRunner extends CliRunnerBase {
     } else if (method === 'item/started' || method === 'item/completed') {
       const item = obj(p.item);
       const type = str(item.type);
+      if (method === 'item/started') this.clearRetryStatus();
       if (method === 'item/completed') {
         const changes = codexFileChanges(item);
         if (changes.length) t.callbacks.onFileChanges?.(changes);
       }
+      if (type === 'agentMessage' && item.delivery === 'async' && Array.isArray(item.questions)) {
+        if (method === 'item/completed') this.receiveAsyncQuestions(t, item);
+        return;
+      }
       if (type === 'agentMessage' && method === 'item/completed') {
+        t.textBoundary = true;
         // Only the final message is the returned answer; deltas remain available to UI.
         if (item.phase === 'final_answer' || item.phase == null) t.result.result = str(item.text);
       } else if (
@@ -222,7 +311,19 @@ export class CodexAppServerRunner extends CliRunnerBase {
           'sleep',
         ].includes(type)
       ) {
-        if (method === 'item/started') t.callbacks.onToolUse?.(type, {});
+        if (method === 'item/started') {
+          // Match the CLI transport's tool names/inputs so shared platform renderers
+          // retain command details instead of collapsing every command to one row.
+          if (type === 'commandExecution' && str(item.command)) {
+            t.callbacks.onToolUse?.('Bash', { command: item.command });
+          } else if (type === 'mcpToolCall' && str(item.server) && str(item.tool)) {
+            t.callbacks.onToolUse?.(`mcp__${item.server}__${item.tool}`, obj(item.arguments));
+          } else if (type === 'dynamicToolCall' && str(item.tool)) {
+            t.callbacks.onToolUse?.(str(item.tool), obj(item.arguments));
+          } else {
+            t.callbacks.onToolUse?.(type, {});
+          }
+        }
         t.callbacks.onTraceEvent?.({
           type: method === 'item/started' ? 'tool_started' : 'tool_completed',
           toolName: type,
@@ -234,14 +335,113 @@ export class CodexAppServerRunner extends CliRunnerBase {
       if (turn.id !== t.turnId) return;
       this.mark('completed', t.callbacks);
       t.callbacks.onTraceEvent?.({ type: 'turn_completed', usage: t.result.usage });
-      if (turn.status !== 'completed' || t.cancelled)
-        this.finish(new Error('Codex turn interrupted or failed'));
-      else this.finish();
+      if (t.cancelled) this.finish(new Error('Request cancelled by user'));
+      else if (turn.status !== 'completed') this.finish(new Error(codexFailureMessage(turn.error)));
+      else {
+        t.providerCompleted = true;
+        const hasAsyncQuestion = [...t.inputRequests.keys()].some(
+          (key) => typeof key === 'string' && key.startsWith('async:')
+        );
+        if (!hasAsyncQuestion) this.finish();
+      }
     }
+  }
+  /** Async questions are agent-message items, not requestUserInput RPCs. */
+  private receiveAsyncQuestions(t: Turn, item: Obj) {
+    const id = str(item.id);
+    if (!id || t.asyncItems.has(id)) return;
+    t.asyncItems.add(id);
+    if (!t.callbacks.onUserInput) {
+      this.fail(new Error('This conversation cannot display user questions'));
+      return;
+    }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    t.inputAbort.signal.addEventListener('abort', abort, { once: true });
+    const key = `async:${id}`;
+    t.inputRequests.set(key, controller);
+    void (async () => {
+      try {
+        const request = normalizeQuestions(
+          (item.questions as unknown[]).map((value, i) => {
+            const q = obj(value);
+            return {
+              id: String(i),
+              question: q.title,
+              isOther: true,
+              options: Array.isArray(q.options)
+                ? q.options.map((label) => ({ label, description: '' }))
+                : q.options,
+            };
+          }),
+          'codex'
+        );
+        const answer = validateAnswer(
+          request,
+          await t.callbacks.onUserInput!(request, controller.signal)
+        );
+        if (this.turn !== t || controller.signal.aborted || t.cancelled) return;
+        if ('cancelled' in answer) {
+          this.cancel();
+          return;
+        }
+        const text = JSON.stringify({
+          questionItemId: id,
+          answers: request.questions.map((q) => ({
+            question: q.question,
+            answers: answer.answers[q.id],
+          })),
+        });
+        // Serialize answers so only one continuation can start after a completed turn.
+        t.answerQueue = t.answerQueue.then(async () => {
+          if (this.turn !== t || t.cancelled || controller.signal.aborted) return;
+          const input = [{ type: 'text', text, text_elements: [] }];
+          if (!t.providerCompleted) {
+            try {
+              await this.rpc('turn/steer', {
+                threadId: t.threadId,
+                expectedTurnId: t.turnId,
+                input,
+              });
+              return;
+            } catch (error) {
+              // Completion may race with a click; retry only when completion was observed.
+              await new Promise<void>((resolve) => setImmediate(resolve));
+              if (!t.providerCompleted) throw error;
+            }
+          }
+          if (this.turn !== t || t.cancelled || controller.signal.aborted) return;
+          t.providerCompleted = false;
+          t.textBoundary = true;
+          t.turnId = undefined;
+          const response = await this.rpc('turn/start', { ...t.startParams, input });
+          if (this.turn !== t) return;
+          t.turnId = str(obj(response.turn).id);
+          if (!t.turnId) throw new Error('App-server missing continuation turn id');
+          for (const event of t.pending.splice(0)) this.receive(event);
+        });
+        await t.answerQueue;
+      } catch (error) {
+        if (this.turn === t && !controller.signal.aborted)
+          this.fail(error instanceof Error ? error : new Error('Question delivery failed'));
+      } finally {
+        t.inputRequests.delete(key);
+        t.inputAbort.signal.removeEventListener('abort', abort);
+        if (this.turn === t && t.providerCompleted && !t.inputRequests.size) this.finish();
+      }
+    })();
+  }
+  private clearRetryStatus() {
+    const t = this.turn;
+    if (!t?.retrying) return;
+    t.retrying = false;
+    t.callbacks.onStatus?.(null);
   }
   private finish(error?: Error) {
     const t = this.turn;
+    this.clearRetryStatus();
     if (!t) return;
+    t.inputAbort.abort();
     this.turn = undefined;
     clearTimeout(t.stopTimer);
     if (error) t.reject(error);
@@ -271,11 +471,16 @@ export class CodexAppServerRunner extends CliRunnerBase {
     if (!this.running) return false;
     const t = this.turn;
     if (!t?.turnId) {
-      this.fail(new Error('Codex preparation cancelled'));
+      this.fail(new Error('Request cancelled by user'));
       return true;
     }
     if (t.cancelled) return true;
     t.cancelled = true;
+    t.inputAbort.abort();
+    if (t.providerCompleted) {
+      this.finish(new Error('Request cancelled by user'));
+      return true;
+    }
     t.stopTimer = setTimeout(() => this.fail(new Error('Codex interrupt timed out')), 5_000);
     void this.rpc('turn/interrupt', { threadId: t.threadId, turnId: t.turnId }).catch(() =>
       this.fail(new Error('Codex interrupt failed'))
@@ -283,7 +488,9 @@ export class CodexAppServerRunner extends CliRunnerBase {
     return true;
   }
   shutdown() {
-    this.fail(new Error('App-server shut down'));
+    this.fail(
+      new Error(this.turn?.cancelled ? 'Request cancelled by user' : 'App-server shut down')
+    );
   }
   destroy(): boolean {
     this.shutdown();
@@ -338,7 +545,21 @@ export class CodexAppServerRunner extends CliRunnerBase {
           resolve,
           reject,
           cancelled: false,
+          inputAbort: new AbortController(),
+          inputRequests: new Map(),
           first: false,
+          textBoundary: false,
+          providerCompleted: false,
+          startParams: {
+            threadId,
+            cwd,
+            model: this.model,
+            effort: options.effort,
+            approvalPolicy: 'never',
+            sandboxPolicy: this.loaded.get(threadId!)?.sandbox,
+          },
+          answerQueue: Promise.resolve(),
+          asyncItems: new Set(),
           pending: [],
           result: { result: '', sessionId: threadId!, ...(model ? { model } : {}) },
         };

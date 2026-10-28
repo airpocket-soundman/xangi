@@ -7,12 +7,12 @@ import {
   existsSync,
   statSync,
   mkdirSync,
-  readdirSync,
+  opendirSync,
+  lstatSync,
   realpathSync,
 } from 'fs';
-import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
-import { resolve, join, dirname, relative, sep, isAbsolute, basename } from 'path';
+import { resolve, join, dirname, relative, sep, isAbsolute, basename, matchesGlob } from 'path';
 import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler, ToolCatalogEntry } from './types.js';
 import { buildCliEnv } from '../cli-process.js';
@@ -48,8 +48,7 @@ const READ_JSON_MAX_BYTES = parseInt(
 const WRITE_MAX_BYTES = parseInt(process.env.LOCAL_LLM_WRITE_MAX_BYTES ?? String(512 * 1024), 10);
 
 /**
- * Local LLM のファイルツールは workspace と system temp のみ許可する。
- * 既存部分を realpath 化して、symlink 経由で allowlist 外へ出るパスも拒否する。
+ * 通常モードはOS権限に従う。制限モードはworkspaceと直接指定したsystem tempのみ。
  */
 function isWithinRoot(candidate: string, root: string): boolean {
   const rel = relative(root, candidate);
@@ -59,26 +58,43 @@ function isWithinRoot(candidate: string, root: string): boolean {
 function canonicalizePath(filePath: string): string {
   let existing = filePath;
   const missing: string[] = [];
-  while (!existsSync(existing)) {
-    const parent = dirname(existing);
-    if (parent === existing) break;
-    missing.unshift(basename(existing));
-    existing = parent;
+  while (true) {
+    try {
+      // lstat preserves broken links: realpath below must reject them, not treat them as new files.
+      lstatSync(existing);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = dirname(existing);
+      if (parent === existing) throw error;
+      missing.unshift(basename(existing));
+      existing = parent;
+    }
   }
   return resolve(realpathSync(existing), ...missing);
 }
 
-function resolveLocalToolPath(filePath: string, workspace: string): string {
-  const workspacePath = resolve(workspace);
+function resolveLocalToolPath(filePath: string, context: ToolContext): string {
+  const workspacePath = resolve(context.workspace);
   const absoluteInput = isAbsolute(filePath);
   const resolved = absoluteInput ? resolve(filePath) : resolve(workspacePath, filePath);
 
+  // Match CLI backends in trusted mode; registration roots do not sandbox tools.
+  if (context.skipPermissions === true) return canonicalizePath(resolved);
+
   // Relative paths always remain workspace-relative. Use an absolute /tmp path for temp files.
-  if (!absoluteInput && !isWithinRoot(resolved, workspacePath)) {
+  if (
+    (!absoluteInput || filePath.split(sep).includes('..')) &&
+    !isWithinRoot(resolved, workspacePath)
+  ) {
     throw new Error(`Path outside allowed roots (workspace or system temp): ${filePath}`);
   }
 
   const canonical = canonicalizePath(resolved);
+  if (isWithinRoot(resolved, workspacePath)) {
+    if (isWithinRoot(canonical, realpathSync(workspacePath))) return canonical;
+    throw new Error(`Path outside allowed roots (workspace or system temp): ${filePath}`);
+  }
   const roots = [workspacePath, tmpdir(), '/tmp']
     .filter((root) => existsSync(root))
     .map((root) => realpathSync(root));
@@ -162,7 +178,7 @@ const readToolHandler: ToolHandler = {
 
     let resolved: string;
     try {
-      resolved = resolveLocalToolPath(filePath, context.workspace);
+      resolved = resolveLocalToolPath(filePath, context);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -201,7 +217,8 @@ const viewImageToolHandler: ToolHandler = {
     properties: {
       path: {
         type: 'string',
-        description: 'Image path under the workspace or system temp directory',
+        description:
+          'Image path (relative to the workspace or absolute; subject to permission settings)',
       },
     },
     required: ['path'],
@@ -210,7 +227,7 @@ const viewImageToolHandler: ToolHandler = {
     if (typeof args.path !== 'string' || !args.path.trim())
       return { success: false, output: '', error: 'path is required' };
     try {
-      const path = resolveLocalToolPath(args.path, context.workspace);
+      const path = resolveLocalToolPath(args.path, context);
       const stat = statSync(path);
       if (!stat.isFile()) throw new Error('Not a file');
       if (!isImageFile(path)) throw new Error('Supported images: JPEG, PNG, GIF, WebP');
@@ -272,7 +289,7 @@ const writeToolHandler: ToolHandler = {
 
     let resolved: string;
     try {
-      resolved = resolveLocalToolPath(filePath, context.workspace);
+      resolved = resolveLocalToolPath(filePath, context);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -326,7 +343,7 @@ const editToolHandler: ToolHandler = {
 
     let resolved: string;
     try {
-      resolved = resolveLocalToolPath(filePath, context.workspace);
+      resolved = resolveLocalToolPath(filePath, context);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -375,6 +392,90 @@ const editToolHandler: ToolHandler = {
 
 const GLOB_MAX_RESULTS = 500;
 const DEFAULT_EXCLUDES = new Set(['node_modules', '.git', 'dist', '.next', '.cache']);
+const SEARCH_MAX_ENTRIES = 10_000;
+const SEARCH_MAX_DEPTH = 64;
+const SEARCH_MAX_BYTES = 32 * 1024 * 1024;
+const SEARCH_MAX_MS = 5_000;
+
+interface SearchBudget {
+  entries: number;
+  bytes: number;
+  deadline: number;
+  truncated: boolean;
+}
+
+function searchBudget(): SearchBudget {
+  return { entries: 0, bytes: 0, deadline: Date.now() + SEARCH_MAX_MS, truncated: false };
+}
+
+function searchExpired(budget: SearchBudget, context: ToolContext): boolean {
+  context.signal?.throwIfAborted();
+  if (budget.entries >= SEARCH_MAX_ENTRIES || Date.now() >= budget.deadline) {
+    budget.truncated = true;
+    return true;
+  }
+  return false;
+}
+
+/** Keep lexical paths so each nested link is checked using the original workspace boundary. */
+function* walkSearchEntries(
+  root: string,
+  context: ToolContext,
+  budget: SearchBudget,
+  ancestors = new Set<string>(),
+  depth = 0,
+  patternDepth = Infinity
+): Generator<{ path: string; canonical: string; directory: boolean }> {
+  if (searchExpired(budget, context)) return;
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = resolveLocalToolPath(root, context);
+  } catch {
+    return;
+  }
+  if (ancestors.has(canonicalRoot)) return;
+  if (depth >= SEARCH_MAX_DEPTH) {
+    budget.truncated = true;
+    return;
+  }
+  let directory;
+  try {
+    directory = opendirSync(canonicalRoot);
+  } catch {
+    return;
+  }
+  ancestors.add(canonicalRoot);
+  try {
+    while (!searchExpired(budget, context)) {
+      const entry = directory.readSync();
+      if (!entry) break;
+      budget.entries++;
+      if (DEFAULT_EXCLUDES.has(entry.name)) continue;
+      const path = join(root, entry.name);
+      let canonical: string;
+      let stat;
+      try {
+        canonical = resolveLocalToolPath(path, context);
+        stat = statSync(canonical);
+      } catch {
+        // Broken, looping, unreadable or disallowed links are never traversed.
+        continue;
+      }
+      if (stat.isDirectory()) {
+        if (ancestors.has(canonical)) continue;
+        yield { path, canonical, directory: true };
+        if (depth + 1 < patternDepth) {
+          yield* walkSearchEntries(path, context, budget, ancestors, depth + 1, patternDepth);
+        }
+      } else if (stat.isFile()) {
+        yield { path, canonical, directory: false };
+      }
+    }
+  } finally {
+    ancestors.delete(canonicalRoot);
+    directory.closeSync();
+  }
+}
 
 const globToolHandler: ToolHandler = {
   name: 'glob',
@@ -397,10 +498,18 @@ const globToolHandler: ToolHandler = {
 
     if (!pattern || typeof pattern !== 'string')
       return { success: false, output: '', error: 'pattern must be a non-empty string' };
+    if (isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..'))
+      return {
+        success: false,
+        output: '',
+        error: 'Glob pattern must stay within the search directory',
+      };
 
     let searchRoot: string;
     try {
-      searchRoot = cwdArg ? resolveLocalToolPath(cwdArg, context.workspace) : context.workspace;
+      const input = cwdArg || context.workspace;
+      resolveLocalToolPath(input, context);
+      searchRoot = resolve(context.workspace, input);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -410,24 +519,39 @@ const globToolHandler: ToolHandler = {
 
     try {
       const results: string[] = [];
-      const iterator = fsp.glob(pattern, {
-        cwd: searchRoot,
-        exclude: (entry: string) => {
-          const base = entry.split('/').pop() ?? entry;
-          return DEFAULT_EXCLUDES.has(base);
-        },
-      } as Parameters<typeof fsp.glob>[1]);
-
-      for await (const entry of iterator) {
-        results.push(entry as string);
+      const budget = searchBudget();
+      const normalizedPattern = pattern.replace(/^(\.\/)+/, '').replace(/\/$/, '');
+      // fs.glob includes the search directory for a bare globstar, and the prefix
+      // directory for a trailing globstar; path.matchesGlob only matches descendants.
+      if (/^(\*\*\/)*\*\*$/.test(normalizedPattern)) results.push('.');
+      const patternDepth = normalizedPattern.includes('**')
+        ? Infinity
+        : normalizedPattern.split('/').length;
+      for (const entry of walkSearchEntries(
+        searchRoot,
+        context,
+        budget,
+        new Set(),
+        0,
+        patternDepth
+      )) {
+        const path = relative(searchRoot, entry.path);
+        const matchesDirectory =
+          entry.directory &&
+          normalizedPattern.endsWith('/**') &&
+          matchesGlob(path, normalizedPattern.slice(0, -3));
+        if (!matchesGlob(path, normalizedPattern) && !matchesDirectory) continue;
+        if (pattern.endsWith('/') && !entry.directory) continue;
+        results.push(path);
         if (results.length >= GLOB_MAX_RESULTS) break;
       }
 
-      const truncated = results.length >= GLOB_MAX_RESULTS;
-      const output = results.join('\n') + (truncated ? '\n... [truncated]' : '');
+      const truncated = budget.truncated || results.length >= GLOB_MAX_RESULTS;
+      const output =
+        (results.join('\n') || '(no matches)') + (truncated ? '\n... [truncated]' : '');
       return {
         success: true,
-        output: results.length === 0 ? '(no matches)' : output,
+        output,
       };
     } catch (err) {
       return { success: false, output: '', error: String(err) };
@@ -440,24 +564,6 @@ const globToolHandler: ToolHandler = {
 const GREP_MAX_MATCHES = 200;
 const GREP_MAX_LINE_LEN = 500;
 const GREP_MAX_FILE_BYTES = 2 * 1024 * 1024; // skip files larger than 2MB
-
-function* walkFiles(root: string): Generator<string> {
-  let entries;
-  try {
-    entries = readdirSync(root, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (DEFAULT_EXCLUDES.has(entry.name)) continue;
-    const full = join(root, entry.name);
-    if (entry.isDirectory()) {
-      yield* walkFiles(full);
-    } else if (entry.isFile()) {
-      yield full;
-    }
-  }
-}
 
 const grepToolHandler: ToolHandler = {
   name: 'grep',
@@ -497,7 +603,9 @@ const grepToolHandler: ToolHandler = {
 
     let searchRoot: string;
     try {
-      searchRoot = pathArg ? resolveLocalToolPath(pathArg, context.workspace) : context.workspace;
+      const input = pathArg || context.workspace;
+      resolveLocalToolPath(input, context);
+      searchRoot = resolve(context.workspace, input);
     } catch (err) {
       return { success: false, output: '', error: (err as Error).message };
     }
@@ -508,24 +616,35 @@ const grepToolHandler: ToolHandler = {
     const stat = statSync(searchRoot);
     const matches: string[] = [];
     let truncated = false;
+    const budget = searchBudget();
 
-    const fileIter: Iterable<string> = stat.isFile()
-      ? [searchRoot]
+    const fileIter = stat.isFile()
+      ? [{ path: searchRoot, directory: false }]
       : stat.isDirectory()
-        ? walkFiles(searchRoot)
+        ? walkSearchEntries(searchRoot, context, budget)
         : [];
 
     if (!stat.isFile() && !stat.isDirectory())
       return { success: false, output: '', error: `Not a file or directory: ${searchRoot}` };
 
-    outer: for (const file of fileIter) {
+    outer: for (const entry of fileIter) {
+      if (entry.directory) continue;
+      const file = entry.path;
       if (filePattern && !file.endsWith(filePattern)) continue;
+      if (searchExpired(budget, context)) break;
       try {
-        const fstat = statSync(file);
+        const canonical = resolveLocalToolPath(file, context);
+        const fstat = statSync(canonical);
         if (fstat.size > GREP_MAX_FILE_BYTES) continue;
-        const content = readFileSync(file, 'utf-8');
+        if (budget.bytes + fstat.size > SEARCH_MAX_BYTES) {
+          budget.truncated = true;
+          break;
+        }
+        budget.bytes += fstat.size;
+        const content = readFileSync(canonical, 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
+          if (i % 1024 === 0 && searchExpired(budget, context)) break outer;
           if (regex.test(lines[i])) {
             const display =
               lines[i].length > GREP_MAX_LINE_LEN
@@ -544,9 +663,9 @@ const grepToolHandler: ToolHandler = {
       }
     }
 
-    if (matches.length === 0) return { success: true, output: '(no matches)' };
-
-    const output = matches.join('\n') + (truncated ? '\n... [truncated]' : '');
+    const output =
+      (matches.join('\n') || '(no matches)') +
+      (truncated || budget.truncated ? '\n... [truncated]' : '');
     return { success: true, output };
   },
 };
