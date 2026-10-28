@@ -82,6 +82,8 @@ export interface ToolContext {
   /** Turn cancellation; tools must not start after it is aborted. */
   signal?: AbortSignal;
   workspace: string;
+  /** Effective runner permission setting. True uses OS filesystem permissions. */
+  skipPermissions?: boolean;
   userId?: string;
   channelId?: string;
   platform?: import('../prompts/index.js').ChatPlatform;

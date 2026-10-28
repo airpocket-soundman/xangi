@@ -1,3 +1,5 @@
+import { codexDiagnosticReader } from './backend-status.js';
+import { userInputEnabled } from './user-input.js';
 import { privacyConsole as console } from './privacy-console.js';
 import { IncompleteAgentTurnError, NonRetryableError, isNonRetryableError } from './errors.js';
 import { codexFileChanges } from './file-changes.js';
@@ -126,6 +128,9 @@ export class CodexRunner extends CliRunnerBase {
     let runner = this.appServers.get(channelId);
     if (!runner) {
       runner = new CodexAppServerRunner({ ...this.appOptions, channelId });
+      for (const event of ['timeout-started', 'timeout-extended', 'timeout-cleared'] as const) {
+        runner.on(event, (payload) => this.emit(event, payload));
+      }
       this.appServers.set(channelId, runner);
     }
     return runner;
@@ -453,7 +458,11 @@ export class CodexRunner extends CliRunnerBase {
     callbacks: StreamCallbacks,
     options?: RunOptions
   ): Promise<RunResult> {
-    if (options?.codexLineTransport === 'app-server' && !options.secret) {
+    if (
+      (options?.codexLineTransport === 'app-server' ||
+        (userInputEnabled() && callbacks.onUserInput && options?.channelId)) &&
+      !options?.secret
+    ) {
       if (!options.channelId) throw new Error('LINE app-server requires channelId');
       return this.appServer(options.channelId).runStream(rawPrompt, callbacks, options);
     }
@@ -514,6 +523,12 @@ export class CodexRunner extends CliRunnerBase {
     }
   }
 
+  protected buildEnv(channelId?: string): NodeJS.ProcessEnv {
+    const env = super.buildEnv(channelId);
+    env.RUST_LOG = `${env.RUST_LOG ?? 'warn'},codex_core::responses_retry=warn`;
+    return env;
+  }
+
   protected createStreamParser(callbacks: StreamCallbacks): CliStreamParser {
     const models = new ProviderModels(callbacks.onModel);
     let fullText = '';
@@ -525,6 +540,7 @@ export class CodexRunner extends CliRunnerBase {
     let backendReady = false;
     const startedAt = new Date().toISOString();
     let finalized = false;
+    let retrying = false;
     let evidencePending = false;
     let lastEvidenceRead = 0;
     const refreshModelEvidence = () => {
@@ -554,8 +570,21 @@ export class CodexRunner extends CliRunnerBase {
     };
 
     return {
+      handleStderr: codexDiagnosticReader(({ status }) => {
+        if (!finalized) {
+          retrying = true;
+          callbacks.onStatus?.(status);
+        }
+      }),
       handleEvent: (json, phase) => {
         const event = json as CodexEvent;
+        if (
+          retrying &&
+          ['item.started', 'item.completed', 'turn.completed', 'turn.failed'].includes(event.type)
+        ) {
+          retrying = false;
+          callbacks.onStatus?.(null);
+        }
         if (event.type === 'item.completed') {
           const item = event.item ?? event.payload?.item;
           if (item) {

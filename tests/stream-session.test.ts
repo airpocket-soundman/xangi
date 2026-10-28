@@ -59,7 +59,9 @@ describe('StreamSession', () => {
     await vi.advanceTimersByTimeAsync(1100);
     cb.onText?.('!', 'Hello!');
     expect(views).toHaveLength(2);
-    expect(views[1].text).toBe('Hello!');
+    expect(views[1].text).toBe('Hello');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(views[2].text).toBe('Hello!');
     expect(session.lastText).toBe('Hello!');
     session.finish();
   });
@@ -91,6 +93,34 @@ describe('StreamSession', () => {
     expect(renderCount).toBe(2);
     session.finish();
   });
+
+  it.each([false, true])(
+    'flushes latest pending text without another chunk (finish=%s)',
+    async (finish) => {
+      let release!: () => void;
+      const views: string[] = [];
+      const session = new StreamSession({
+        streamUpdateIntervalMs: 100,
+        render: (v) => {
+          views.push(v.text);
+          if (views.length === 1)
+            return new Promise<void>((r) => {
+              release = r;
+            });
+        },
+      });
+      const cb = session.callbacks();
+      cb.onText?.('a', 'a');
+      await vi.advanceTimersByTimeAsync(200);
+      cb.onText?.('b', 'ab');
+      cb.onText?.('c', 'abc');
+      if (finish) session.finish();
+      release();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(views).toEqual(finish ? ['a'] : ['a', 'abc']);
+      session.finish();
+    }
+  );
 
   it('streaming 遷移後は思考中 tick が描画しない', async () => {
     const views: StreamView[] = [];
@@ -261,5 +291,28 @@ describe('addToolHistory', () => {
     });
 
     expect(history).toEqual(['🔧 AGENTS参照']);
+  });
+});
+
+describe('backend retry presentation', () => {
+  it('shows retry before and after text, preserves deadline and clears on recovery', () => {
+    const render = vi.fn();
+    const session = new StreamSession({ render });
+    const cb = session.callbacks();
+    cb.onStatus?.({ reason: 'rate_limit', retryAt: Date.now() + 318000 });
+    cb.onStatus?.({ reason: 'rate_limit' });
+    expect(session.view().statusLine).toContain('318秒');
+    cb.onText?.('partial', 'partial');
+    expect(session.view().statusLine).toBe('');
+    cb.onStatus?.({ reason: 'connection', retryAt: Date.now() + 3000 });
+    expect(session.view().text).toBe('partial');
+    expect(session.view().statusLine).toContain('通信エラー');
+    expect(session.currentToolLines).toEqual([]);
+    cb.onStatus?.(null);
+    expect(session.view().toolLines).toEqual([]);
+    session.finish();
+    const calls = render.mock.calls.length;
+    cb.onStatus?.({ reason: 'rate_limit' });
+    expect(render).toHaveBeenCalledTimes(calls);
   });
 });

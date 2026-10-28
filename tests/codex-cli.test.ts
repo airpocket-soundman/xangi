@@ -91,7 +91,10 @@ describe('CodexRunner buildArgs', () => {
   }
 
   it('uses ephemeral exec without resuming a saved conversation', async () => {
-    const { args } = await getSpawnArgs(new CodexRunner({}), 'private', { secret: true, sessionId: 'old' });
+    const { args } = await getSpawnArgs(new CodexRunner({}), 'private', {
+      secret: true,
+      sessionId: 'old',
+    });
     expect(args).toContain('--ephemeral');
     expect(args).not.toContain('resume');
     expect(args).not.toContain('old');
@@ -758,5 +761,28 @@ describe('CodexRunner エラー本文の救出', () => {
       type: 'turn_completed',
       usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2 },
     });
+  });
+});
+
+describe('exec transport retry diagnostics', () => {
+  it('emits transient status and clears it on output', () => {
+    class TestRunner extends CodexRunner {
+      parser(cb: import('../src/agent-runner.js').StreamCallbacks) {
+        return this.createStreamParser(cb);
+      }
+    }
+    const onStatus = vi.fn();
+    const parser = new TestRunner({}).parser({ onStatus });
+    parser.handleStderr?.(
+      'WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/5 in 2s)... turn_id=turn-1 retries=1 max_retries=5 sampling_error=429 Too Many Requests\n'
+    );
+    expect(onStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'rate_limit', retryAt: expect.any(Number) })
+    );
+    parser.handleEvent(
+      { type: 'item.completed', item: { type: 'agent_message', text: 'done' } },
+      'stream'
+    );
+    expect(onStatus).toHaveBeenLastCalledWith(null);
   });
 });

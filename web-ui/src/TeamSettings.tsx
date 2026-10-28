@@ -1,4 +1,9 @@
-import { CatalogCreateButton, CatalogRow, CatalogFormActions } from './CatalogControls';
+import {
+  CatalogCreateButton,
+  CatalogRow,
+  CatalogFormActions,
+  useCatalogFormFocus,
+} from './CatalogControls';
 import { useEffect, useState, type FormEvent } from 'react';
 import { requestJson } from './api';
 import { jsonInit } from './chatPresentation';
@@ -25,6 +30,7 @@ interface Agent {
   role?: string;
 }
 export function TeamSettings() {
+  const formRef = useCatalogFormFocus();
   const [teams, setTeams] = useState<Team[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [editing, setEditing] = useState<Team>();
@@ -160,7 +166,7 @@ export function TeamSettings() {
         )
       )}
       {editing && (
-        <form className="project-form" onSubmit={(e) => void save(e)}>
+        <form ref={formRef} tabIndex={-1} className="project-form" onSubmit={(e) => void save(e)}>
           <fieldset disabled={saving} className="team-editor">
             <legend>{editing.id ? 'チームを編集' : '新しいチーム'}</legend>
             <label>

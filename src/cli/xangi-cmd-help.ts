@@ -30,14 +30,15 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
   {
     name: 'workspace',
     topic: 'workspace',
-    summary: 'List, register or unregister workspaces without deleting files',
+    summary: 'List, register, change paths or unregister workspaces without moving files',
     usage:
-      'xangi workspace list\nxangi workspace create --name NAME --path ABSOLUTE_PATH\nxangi workspace delete WORKSPACE_ID',
+      'xangi workspace list\nxangi workspace create --name NAME --path ABSOLUTE_PATH\nxangi workspace set-path WORKSPACE_ID --path ABSOLUTE_PATH\nxangi workspace delete WORKSPACE_ID',
     notes: [
       CREATION_NOTES,
       'create registers an existing directory; it does not create, move or delete folders.',
+      'set-path changes a non-default workspace path for new sessions, preserving its ID, Agent references and channel bindings. Existing sessions keep their old paths; start a new session to use the new path. It never moves files or Git worktrees. The target must already exist and pass the same path checks. Default uses WORKSPACE_PATH.',
       'delete unregisters only the workspace; files remain. Use IDs from workspace list. Default, Agent/session references and channel bindings prevent deletion. Remove references intentionally first; never delete folders to bypass this.',
-      'Use the returned ID with agent create --workspace-id ID. Paths must pass the same allowed-root and DATA_DIR checks as Settings. Creating settings requires the user conversation, not a delegated worker.',
+      'Use the returned ID with agent create --workspace-id ID. Paths must pass the same directory access and DATA_DIR checks as Settings. Creating settings requires the user conversation, not a delegated worker.',
     ],
   },
   {
@@ -71,7 +72,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
       'xangi agent create --name NAME (--workspace PATH | --workspace-id ID) [--prompt TEXT] [--backend ID] [--model ID] [--effort LEVEL]\nxangi agent list\nxangi agent delete AGENT_ID\nxangi agent run AGENT_ID_OR_DEFAULT --task TEXT [--allow-teams-json JSON]\nxangi agent status --id RUN_ID\nxangi agent wait --id RUN_ID\nxangi agent logs --id RUN_ID [--offset N] [--limit N]\nxangi agent close --id RUN_ID',
     notes: [
       CREATION_NOTES,
-      'create registers an Agent. Prefer --workspace-id from workspace list to reuse a registered Workspace, or --workspace PATH to register an existing directory. Paths obey configured allowed roots. Isolate conflicting edits with git worktrees or equivalent.',
+      'create registers an Agent. Prefer --workspace-id from workspace list to reuse a registered Workspace, or --workspace PATH to register an existing directory. Paths must be existing accessible directories outside DATA_DIR. Isolate conflicting edits with git worktrees or equivalent.',
       'run returns an ID after acceptance. wait waits up to 25 seconds; repeat with the same ID if unfinished. Do not resubmit with a new run.',
       'close acknowledges reviewed work and closes only an idle child owned by the requesting conversation. History and results are preserved; running work and pending follow-ups are rejected. Do not close before reviewing the result.',
       'logs is accessible only from the requesting conversation. Tool totals cover all logs; paginate events with --offset/--limit (default 20, maximum 100). Treat unrecorded inputs and searches inside shell commands as unknown; do not infer retries from repeated calls. Grok also reads native provider-session history.',
@@ -370,6 +371,7 @@ export const XANGI_CMD_HELP_ENTRIES: XangiCmdHelpEntry[] = [
     usage: 'xangi tool inter_chat_ask --to <instance_id> --text <task> [--timeout <sec>]',
     notes: [
       'Use when the user explicitly requests contacting another xangi. Default timeout is 300 seconds.',
+      'For an agent in this xangi instance, use xangi agent list and xangi agent run instead; use run default for the default agent.',
       'The answer is information, not user approval or delegated authority.',
     ],
   },

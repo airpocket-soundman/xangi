@@ -292,10 +292,10 @@ textarea:focus-visible {
   flex-direction: column;
   grid-column: 1;
   grid-row: 2;
-  gap: 8px;
+  gap: 6px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 12px;
+  padding: 8px;
   border-right: 1px solid var(--hairline);
   background: var(--surface-muted);
   transition:
@@ -415,33 +415,6 @@ button:disabled {
   gap: 6px;
 }
 
-.session-filter {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px;
-  background: var(--surface);
-}
-
-.session-filter button {
-  min-width: 0;
-  min-height: 30px;
-  border: 0;
-  border-radius: 4px;
-  color: var(--ink-muted);
-  background: transparent;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.session-filter button[aria-pressed='true'] {
-  color: var(--ink);
-  background: var(--surface-subtle);
-  font-weight: 650;
-}
-
 .sidebar-new-chat {
   min-height: 36px;
   padding-inline: 10px;
@@ -454,7 +427,7 @@ button:disabled {
 .projects-link {
   display: grid;
   width: 100%;
-  min-height: 38px;
+  min-height: 32px;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -702,6 +675,10 @@ button:disabled {
   border-radius: 8px;
   padding: 10px;
   background: var(--surface-subtle);
+}
+
+.settings-card .project-form {
+  scroll-margin-top: 16px;
 }
 
 .project-form label {
@@ -2047,7 +2024,7 @@ details.settings-card[open] > summary::before {
   width: 100%;
   height: 100vh;
   height: 100dvh;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--surface);
 }
@@ -2510,6 +2487,95 @@ details.settings-card[open] > summary::before {
   overflow: hidden;
 }
 
+.workspace-browser-layout.files-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace-browser-layout.files-collapsed .workspace-file-panel,
+.workspace-browser-layout.files-collapsed .workspace-resizer {
+  display: none;
+}
+
+.workspace-toolbar.panes-toolbar {
+  min-width: 0;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.workspace-panel-toggle {
+  flex: 0 0 38px;
+}
+
+.workspace-location {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.workspace-location > span {
+  flex-shrink: 0;
+}
+
+.workspace-location select {
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface);
+  width: 220px;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 4px 28px 4px 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workspace-list-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  gap: 4px;
+  padding-right: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.workspace-display-options {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.workspace-display-options summary {
+  padding: 6px;
+  border-radius: 5px;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+
+.workspace-display-options summary:hover {
+  background: var(--hover);
+}
+
+.workspace-display-options summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workspace-display-options[open] .workspace-file-controls {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  left: 8px;
+  right: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
 .workspace-file-panel {
   min-width: 0;
   min-height: 0;
@@ -2520,12 +2586,13 @@ details.settings-card[open] > summary::before {
 
 .workspace-breadcrumbs {
   display: flex;
-  min-height: 45px;
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
   align-items: center;
   gap: 4px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--hairline);
-  padding: 7px 10px;
+  padding: 4px 8px;
   white-space: nowrap;
 }
 
@@ -2559,8 +2626,21 @@ details.settings-card[open] > summary::before {
   padding: 8px;
 }
 
+.workspace-file-controls label,
 .workspace-file-controls select:last-child {
   grid-column: 1 / -1;
+}
+
+.workspace-file-controls label {
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+.workspace-file-controls select,
+.workspace-file-controls button {
+  min-height: 34px;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 
 .workspace-file-controls button {
@@ -2594,6 +2674,17 @@ details.settings-card[open] > summary::before {
 .workspace-file-row.selected {
   color: var(--accent-ink);
   background: var(--accent-tint);
+}
+
+.workspace-file-row:disabled {
+  cursor: default;
+  color: var(--ink-muted);
+}
+
+.workspace-link-target {
+  overflow-wrap: anywhere;
+  color: var(--ink-subtle);
+  font-size: 10px;
 }
 
 .workspace-file-icon {
@@ -3427,7 +3518,8 @@ details.settings-card[open] > summary::before {
   white-space: normal;
 }
 
-.message.user .plain-message {
+.message.user .plain-message,
+.message.user .markdown-message {
   width: fit-content;
   max-width: 88%;
   margin-left: auto;
@@ -5671,6 +5763,20 @@ video.media-preview {
     visibility: hidden;
   }
 
+  /* Keep the completion action available without restoring the desktop heading. */
+  .pane-header:has(.pane-complete) {
+    height: auto;
+    min-height: 48px;
+    overflow: visible;
+    visibility: visible;
+    justify-content: flex-end;
+    padding: 2px 9px;
+  }
+
+  .pane-header > :not(.pane-complete, .secret-mode-label) {
+    display: none;
+  }
+
   .pane-messages {
     padding-right: max(12px, var(--safe-right));
     padding-left: max(12px, var(--safe-left));
@@ -5748,7 +5854,8 @@ video.media-preview {
     opacity: 1;
   }
 
-  .message.user .plain-message {
+  .message.user .plain-message,
+  .message.user .markdown-message {
     max-width: 100%;
   }
 
@@ -5851,6 +5958,35 @@ video.media-preview {
 
   .monitor-bulk-close {
     margin-left: 0;
+  }
+
+  .workspace-panel-toggle {
+    display: none;
+  }
+
+  .workspace-location {
+    flex: 1;
+  }
+
+  .workspace-location select {
+    flex: 1;
+    width: auto;
+    min-height: 44px;
+  }
+
+  .workspace-display-options summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  .workspace-file-controls select,
+  .workspace-file-controls button {
+    min-height: 44px;
+  }
+
+  .workspace-browser-layout.files-collapsed.mobile-pane-files .workspace-file-panel {
+    display: block;
   }
 
   .workspace-browser-layout {
@@ -6970,6 +7106,14 @@ video.media-preview {
   gap: 1px;
   position: relative;
 }
+.new-chat-menu {
+  display: flex;
+}
+.new-chat-control > button,
+.new-chat-menu > summary {
+  font-size: 13px;
+  line-height: 20px;
+}
 .new-chat-control > button {
   border-radius: 6px 0 0 6px;
 }
@@ -6978,6 +7122,8 @@ video.media-preview {
   align-items: center;
   justify-content: center;
   min-width: 36px;
+  align-self: stretch;
+  padding-inline: 10px;
   border-radius: 0 6px 6px 0;
   list-style: none;
   cursor: pointer;
@@ -7056,4 +7202,359 @@ video.media-preview {
     min-width: 44px;
     min-height: 44px;
   }
+}
+
+/* Keep creation settings within the compact new-conversation menu. */
+.new-chat-options .new-conversation-agent {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.new-chat-options {
+  max-height: min(480px, 60dvh);
+  overflow-y: auto;
+}
+@media (max-width: 768px) {
+  .new-chat-options select {
+    min-height: 44px;
+  }
+}
+
+/* Sidebar open/close controls share the top-left anchor with Files. */
+.sidebar {
+  padding: 4px 12px 8px;
+}
+.sidebar .sidebar-drawer-header {
+  justify-content: flex-start;
+  gap: 10px;
+}
+.sidebar-drawer-header .icon-button,
+.sidebar-toggle {
+  width: 38px;
+  flex: 0 0 38px;
+}
+.sidebar-toggle[hidden] {
+  display: none;
+}
+.app-shell .panes-toolbar {
+  padding: 4px 12px;
+}
+@media (max-width: 768px), (max-height: 500px) and (hover: none) {
+  .sidebar,
+  .app-shell.sidebar-collapsed .sidebar {
+    padding-top: 1px;
+    padding-left: max(8px, var(--safe-left));
+  }
+  .app-shell .panes-toolbar {
+    padding: 1px max(8px, var(--safe-right)) 1px max(8px, var(--safe-left));
+  }
+}
+
+.user-questions {
+  margin: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 55vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.user-questions fieldset {
+  margin: 0.75rem 0;
+  min-width: 0;
+}
+.user-questions legend {
+  font-weight: 600;
+}
+.question-option {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin: 0.65rem 0;
+}
+.question-option input {
+  flex: 0 0 auto;
+  margin-top: 0.25rem;
+}
+.question-option small {
+  display: block;
+}
+.question-option:has(textarea) {
+  flex-direction: column;
+}
+.question-option textarea {
+  width: 100%;
+  min-height: 4rem;
+  box-sizing: border-box;
+}
+/* Chat navigation: one type scale, with independent touch target sizes. */
+.app-shell .sidebar {
+  --sidebar-text: 14px;
+  --sidebar-caption: 12px;
+  --sidebar-control: 36px;
+  overflow: hidden;
+  font-size: var(--sidebar-text);
+}
+.sidebar > .sidebar-actions,
+.sidebar > .sidebar-footer {
+  flex: 0 0 auto;
+}
+.sidebar .sidebar-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+.sidebar .new-chat-control {
+  order: -1;
+}
+.sidebar .new-chat-control > button {
+  flex: 1;
+  text-align: left;
+}
+.sidebar .search,
+.sidebar .new-chat-control > button,
+.sidebar .new-chat-menu > summary {
+  min-height: var(--sidebar-control);
+  font-size: var(--sidebar-text);
+  line-height: 20px;
+}
+.sidebar .new-chat-menu > summary {
+  min-width: var(--sidebar-control);
+  padding-inline: 8px;
+}
+.sidebar .sidebar-title {
+  font-size: var(--sidebar-text);
+}
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px;
+  scrollbar-width: thin;
+}
+.sidebar-projects button,
+.sidebar-footer a {
+  min-height: var(--sidebar-control);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--sidebar-text);
+  line-height: 20px;
+  cursor: pointer;
+}
+.sidebar-projects button:hover,
+.sidebar-footer a:hover {
+  background: var(--hover);
+}
+.sidebar-projects button[aria-pressed='true'] {
+  background: var(--active);
+  font-weight: 600;
+}
+.sidebar-all-chats {
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+}
+.sidebar-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+.sidebar-section-heading h2,
+.sidebar-conversation-heading h2 {
+  margin: 0;
+  padding: 8px;
+  color: var(--ink-secondary);
+  font-size: var(--sidebar-caption);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sidebar-section-heading h2 {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+.sidebar-projects .sidebar-project-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px;
+  color: var(--ink-secondary);
+  font-size: var(--sidebar-caption);
+  font-weight: 600;
+  text-align: left;
+}
+.sidebar-project-toggle:focus-visible {
+  outline: 2px solid var(--ink-secondary);
+  outline-offset: -2px;
+}
+.sidebar-section-heading > button,
+.sidebar-project-actions > button {
+  display: grid;
+  place-items: center;
+  width: var(--sidebar-control);
+  padding: 0;
+}
+.sidebar-projects svg,
+.sidebar-footer svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sidebar-project-row {
+  display: flex;
+  align-items: start;
+  position: relative;
+}
+.sidebar-project-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  text-align: left;
+}
+.sidebar-project-select > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-project-actions {
+  flex: 0 0 auto;
+}
+.sidebar-project-empty {
+  margin: 4px 8px 8px;
+  font-size: var(--sidebar-caption);
+  color: var(--ink-muted);
+}
+.sidebar-projects .sidebar-project-more {
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+  font-size: var(--sidebar-caption);
+  color: var(--ink-secondary);
+}
+.sidebar-conversation-heading {
+  margin-top: 12px;
+}
+.sidebar .session-group h2,
+.sidebar .session-copy small {
+  font-size: var(--sidebar-caption);
+}
+.sidebar .session-copy strong {
+  font-size: var(--sidebar-text);
+}
+.sidebar-footer {
+  border-top: 1px solid var(--hairline);
+  padding-top: 4px;
+}
+.sidebar-footer a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  text-decoration: none;
+}
+@media (max-width: 768px), (max-height: 500px) and (hover: none) {
+  .app-shell .sidebar {
+    --sidebar-control: 44px;
+    bottom: calc(var(--app-mobile-nav-height) + var(--safe-bottom));
+    height: calc(100dvh - var(--app-mobile-nav-height) - var(--safe-bottom));
+  }
+  .sidebar .search {
+    font-size: 16px;
+  }
+  .sidebar .session-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar .session-row .session-actions {
+    width: auto;
+    justify-content: flex-end;
+  }
+}
+.settings-configured-channels {
+  margin: 12px 0;
+}
+.settings-configured-note {
+  font-size: 0.85rem;
+  color: var(--ink-secondary);
+}
+.settings-configured-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.settings-configured-list > li {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr);
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-configured-name {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings-configured-name span,
+.settings-configured-name small {
+  font-size: 0.8rem;
+}
+.settings-configured-list dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+.settings-configured-list dt {
+  font-size: 0.8rem;
+  color: var(--ink-secondary);
+}
+.settings-configured-list dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .settings-configured-list > li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .settings-configured-list dl {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+.settings-configured-channels button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-configured-channels button:hover {
+  background: var(--hover);
+}
+.settings-configured-channels button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.settings-configured-channels button:disabled {
+  color: var(--ink-muted);
+  cursor: wait;
+}
+.settings-configured-name span {
+  color: var(--accent-ink);
 }

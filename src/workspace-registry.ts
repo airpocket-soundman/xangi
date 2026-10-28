@@ -19,7 +19,6 @@ export interface WorkspaceEntry {
 export interface WorkspaceRegistryOptions {
   dataDir: string;
   defaultWorkspacePath: string;
-  allowedRoots?: string[];
 }
 
 interface PersistedWorkspace {
@@ -46,20 +45,13 @@ export class WorkspaceRegistry {
   readonly registryPath: string;
 
   private readonly canonicalDataDir: string;
-  private readonly allowedRoots: string[];
   private state: PersistedRegistry;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  private constructor(
-    dataDir: string,
-    canonicalDataDir: string,
-    allowedRoots: string[],
-    state: PersistedRegistry
-  ) {
+  private constructor(dataDir: string, canonicalDataDir: string, state: PersistedRegistry) {
     this.dataDir = dataDir;
     this.registryPath = join(dataDir, REGISTRY_FILE);
     this.canonicalDataDir = canonicalDataDir;
-    this.allowedRoots = allowedRoots;
     this.state = state;
   }
 
@@ -71,22 +63,7 @@ export class WorkspaceRegistry {
     await mkdir(options.dataDir, { recursive: true });
     const canonicalDataDir = await realpath(options.dataDir);
     const canonicalDefault = await validateDirectory(options.defaultWorkspacePath, false);
-    const optionalRoots: string[] = [];
-    for (const root of options.allowedRoots ?? []) {
-      try {
-        optionalRoots.push(await validateDirectory(root, false));
-      } catch (error) {
-        console.warn(
-          `[xangi] Ignoring unavailable workspace root ${root}: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-    // 未設定なら任意の既存絶対pathを登録可能。明示時だけdefault＋指定rootへ制限する。
-    const canonicalRoots = options.allowedRoots
-      ? [...new Set([canonicalDefault, ...optionalRoots])]
-      : [];
-
-    assertAllowedWorkspace(canonicalDefault, canonicalRoots, canonicalDataDir);
+    assertWorkspaceOutsideState(canonicalDefault, canonicalDataDir);
 
     const registryPath = join(canonicalDataDir, REGISTRY_FILE);
     let state: PersistedRegistry;
@@ -141,12 +118,7 @@ export class WorkspaceRegistry {
       needsSave = true;
     }
 
-    const registry = new WorkspaceRegistry(
-      canonicalDataDir,
-      canonicalDataDir,
-      canonicalRoots,
-      state
-    );
+    const registry = new WorkspaceRegistry(canonicalDataDir, canonicalDataDir, state);
     if (needsSave) await registry.persist();
     return registry;
   }
@@ -155,12 +127,8 @@ export class WorkspaceRegistry {
     return this.state.workspaces.map((workspace) => this.toEntry(workspace));
   }
 
-  browseRoots(): string[] {
-    return [...this.allowedRoots];
-  }
-
   assertBrowsableDirectory(canonicalPath: string): void {
-    assertAllowedWorkspace(canonicalPath, this.allowedRoots, this.canonicalDataDir);
+    assertWorkspaceOutsideState(canonicalPath, this.canonicalDataDir);
   }
 
   /** Metadata lookup only. Use resolveById before using an entry path for I/O. */
@@ -180,7 +148,7 @@ export class WorkspaceRegistry {
     return this.mutate(async () => {
       const normalizedName = normalizeName(name);
       const canonicalPath = await validateDirectory(workspacePath);
-      assertAllowedWorkspace(canonicalPath, this.allowedRoots, this.canonicalDataDir);
+      assertWorkspaceOutsideState(canonicalPath, this.canonicalDataDir);
 
       const existing = this.state.workspaces.find((workspace) => workspace.name === normalizedName);
       if (existing) {
@@ -198,6 +166,21 @@ export class WorkspaceRegistry {
         path: canonicalPath,
       };
       this.state.workspaces.push(workspace);
+      await this.persist();
+      return this.toEntry(workspace);
+    });
+  }
+
+  /** Change the path for future sessions; saved snapshots and files stay untouched. */
+  async updatePath(workspaceId: string, workspacePath: string): Promise<WorkspaceEntry> {
+    return this.mutate(async () => {
+      const workspace = this.state.workspaces.find((entry) => entry.id === workspaceId);
+      if (!workspace) throw new Error('Workspace not found');
+      if (workspace.id === this.state.defaultWorkspaceId)
+        throw new Error('Default workspace path is configured by WORKSPACE_PATH');
+      const canonicalPath = await validateDirectory(workspacePath);
+      assertWorkspaceOutsideState(canonicalPath, this.canonicalDataDir);
+      workspace.path = canonicalPath;
       await this.persist();
       return this.toEntry(workspace);
     });
@@ -308,7 +291,7 @@ export class WorkspaceRegistry {
     let canonicalPath: string;
     try {
       canonicalPath = await validateDirectory(snapshotPath, false);
-      assertAllowedWorkspace(canonicalPath, this.allowedRoots, this.canonicalDataDir);
+      assertWorkspaceOutsideState(canonicalPath, this.canonicalDataDir);
     } catch (error) {
       throw new Error(
         `Saved workspace is no longer available or allowed. Start a new session with /new. ${error instanceof Error ? error.message : String(error)}`
@@ -322,7 +305,7 @@ export class WorkspaceRegistry {
     if (canonicalPath !== workspace.path) {
       throw new Error(`Workspace path changed since registration: ${workspace.path}`);
     }
-    assertAllowedWorkspace(canonicalPath, this.allowedRoots, this.canonicalDataDir);
+    assertWorkspaceOutsideState(canonicalPath, this.canonicalDataDir);
   }
 
   private toEntry(workspace: PersistedWorkspace): WorkspaceEntry {
@@ -397,14 +380,7 @@ async function validateDirectory(rawPath: string, requireWritable = true): Promi
   return canonicalPath;
 }
 
-function assertAllowedWorkspace(
-  workspacePath: string,
-  allowedRoots: string[],
-  canonicalDataDir: string
-): void {
-  if (allowedRoots.length > 0 && !allowedRoots.some((root) => containsPath(root, workspacePath))) {
-    throw new Error(`Workspace path is outside the allowed roots: ${workspacePath}`);
-  }
+function assertWorkspaceOutsideState(workspacePath: string, canonicalDataDir: string): void {
   if (containsPath(canonicalDataDir, workspacePath)) {
     throw new Error(
       `Workspace path must not be DATA_DIR or one of its descendants: ${workspacePath}`

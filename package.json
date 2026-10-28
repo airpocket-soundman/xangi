@@ -92,6 +92,9 @@
     "node": ">=22.0.0"
   },
   "overrides": {
-    "undici": "6.29.1"
+    "undici": "6.29.1",
+    "@github/copilot-sdk": {
+      "zod": "4.6.7"
+    }
   }
 }

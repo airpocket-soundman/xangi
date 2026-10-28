@@ -918,6 +918,7 @@ export function formatLlmError(err: unknown): string {
 }
 
 export class LocalLlmRunner extends EventEmitter implements AgentRunner {
+  private readonly skipPermissions: boolean;
   private readonly llm: LLMClient;
   private readonly workdir: string;
   private readonly sessions = new Map<string, Session>();
@@ -980,6 +981,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
 
   constructor(config: AgentConfig & { platform?: ChatPlatform; provider?: 'openrouter' }) {
     super();
+    this.skipPermissions = config.skipPermissions ?? process.env.SKIP_PERMISSIONS !== 'false';
     this.platform = config.platform;
     this.provider = config.provider ?? 'local-llm';
     const env = config.provider === 'openrouter' ? openRouterRunnerEnv(process.env) : process.env;
@@ -1744,6 +1746,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const toolContext = {
       signal,
       workspace: this.workdir,
+      skipPermissions: options?.skipPermissions ?? this.skipPermissions,
       channelId: options?.channelId,
       platform: this.platform,
       activateTools: (names: string[]) => {
@@ -2327,6 +2330,7 @@ export class LocalLlmRunner extends EventEmitter implements AgentRunner {
     const rescueToolContext = {
       signal: abortController.signal,
       workspace: this.workdir,
+      skipPermissions: options?.skipPermissions ?? this.skipPermissions,
       channelId: options?.channelId,
       platform: this.platform,
       activateTools: (names: string[]) => {

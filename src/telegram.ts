@@ -1781,7 +1781,7 @@ export async function startTelegramBot(opts: {
           displayText = view.statusLine + toolPart;
         } else {
           const textPart = view.text ? `${view.text} █` : '█';
-          displayText = textPart + toolPart;
+          displayText = `${view.statusLine ? `${view.statusLine}\n\n` : ''}${textPart}${toolPart}`;
         }
 
         if (!displayText.trim()) {

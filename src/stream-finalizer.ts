@@ -3,7 +3,7 @@
  *
  * 再起動・停止のタイミングで進行中ターンがあると、ストリーミング表示
  * (🔧 ツール行 + 末尾カーソル ▌、スピナー) が編集されないまま放置される (issue #293)。
- * プラットフォーム側 (Discord / Slack) はストリーミング表示を開始したら
+ * プラットフォーム側 (Discord / Slack / Web) はストリーミング表示を開始したら
  * finalizer を register し、正常完了・エラー処理後に unregister する。
  * shutdown ハンドラは finalizeActiveStreams() で残った表示を「中断」表示に確定させる。
  *
@@ -14,17 +14,27 @@
 
 type StreamFinalizer = () => Promise<void> | void;
 
-const active = new Set<StreamFinalizer>();
+export interface StreamFinalizerRegistration {
+  (): void;
+  /** shutdown がこの表示の確定を開始したか。完了・失敗・timeout 後も true。 */
+  isFinalized(): boolean;
+}
+
+const active = new Map<StreamFinalizer, { finalized: boolean }>();
 
 /**
  * 実行中ストリーミング表示の finalizer を登録する。
  * 返り値の関数で登録解除する（正常完了・エラー処理後に必ず呼ぶこと）。
  */
-export function registerStreamFinalizer(finalizer: StreamFinalizer): () => void {
-  active.add(finalizer);
-  return () => {
-    active.delete(finalizer);
-  };
+export function registerStreamFinalizer(finalizer: StreamFinalizer): StreamFinalizerRegistration {
+  const state = { finalized: false };
+  active.set(finalizer, state);
+  return Object.assign(
+    () => {
+      active.delete(finalizer);
+    },
+    { isFinalized: () => state.finalized }
+  );
 }
 
 /** 登録中の finalizer 数（テスト・診断用） */
@@ -39,7 +49,10 @@ export function activeStreamFinalizerCount(): number {
  */
 export async function finalizeActiveStreams(timeoutMs = 1200): Promise<void> {
   if (active.size === 0) return;
-  const finalizers = [...active];
+  const finalizers = [...active.keys()];
+  // 非同期の表示更新より先に全ターンを中断扱いにする。
+  // runner の reject が finalizer の完了や timeout と競合しても上書きさせない。
+  for (const state of active.values()) state.finalized = true;
   active.clear();
   const work = Promise.all(
     finalizers.map((fn) =>

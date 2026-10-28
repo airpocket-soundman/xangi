@@ -39,6 +39,8 @@ import type { Config } from '../src/config.js';
 let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'teams-'));
+  vi.stubEnv('XANGI_ENV_PATH', join(root, '.env'));
+  writeFileSync(join(root, '.env'), '');
   initSessions(root);
 });
 afterEach(() => {
@@ -445,6 +447,9 @@ it.each(['discord', 'slack'])(
   async (platform) => {
     const f = await setup();
     f.resolver.setChannelOverride('channel', { backend: 'codex', model: 'channel-model' });
+    expect(readFileSync(join(root, '.env'), 'utf8')).toContain(
+      'CHANNEL_OVERRIDES={"channel":{"backend":"codex","model":"channel-model"}}'
+    );
     const chosen = f.agents[0];
     await changeChannelAgent(platform, 'channel', chosen.id);
     expect((await channelAgentSnapshot(platform, 'channel')).workspaceId).toBe(chosen.workspaceId);

@@ -30,6 +30,8 @@ import { logPrompt, logResponse } from './transcript-logger.js';
  * executeStreamCore() がリクエストごとに createStreamParser() で生成する。
  */
 export interface CliStreamParser {
+  /** Optional safe diagnostic consumer; replaces raw stderr logging. */
+  handleStderr?(chunk: string): void;
   /**
    * JSONL 1 行（JSON.parse 済み）を処理する。
    * phase='stream' は受信中、phase='flush' はプロセス終了後の残バッファ処理。
@@ -122,6 +124,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
   protected readonly activeProcesses = new Map<string, ChildProcess>();
   /** busy retry の待機を停止するための AbortController */
   private readonly retryWaits = new Map<string, AbortController>();
+  private readonly cancelRequests = new WeakMap<ChildProcess, () => void>();
   private retryWaitWithoutChannel: AbortController | null = null;
 
   /** spawn する実行ファイル名（例: 'codex'） */
@@ -234,7 +237,11 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       this.currentProcess = null;
     }
     if (fallbackTimer) clearTimeout(fallbackTimer);
-    clearManagedCliProcess(channelId, this.activeProcesses, this.timeoutController, status);
+    this.cancelRequests.delete(proc);
+    // A late event from an old process must not clear its replacement's state.
+    if (channelId && this.activeProcesses.get(channelId) === proc) {
+      clearManagedCliProcess(channelId, this.activeProcesses, this.timeoutController, status);
+    }
   }
 
   /**
@@ -257,6 +264,12 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       registerManagedCliProcess(channelId, proc, this.activeProcesses, this.timeoutController);
       const fallbackTimer = this.startFallbackTimeout(proc, channelId, reject);
 
+      let cancelled = false;
+      this.cancelRequests.set(proc, () => {
+        cancelled = true;
+        this.finishProcess(proc, channelId, fallbackTimer, 'error');
+        reject(new Error(`${this.displayName} request cancelled`));
+      });
       let stdout = '';
       let stderr = '';
 
@@ -266,7 +279,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       }
 
       proc.stdout?.on('data', (data) => {
-        stdout += data.toString();
+        if (!cancelled) stdout += data.toString();
       });
 
       proc.stderr?.on('data', (data) => {
@@ -275,6 +288,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
       proc.on('close', (code) => {
         this.finishProcess(proc, channelId, fallbackTimer, code === 0 ? 'completed' : 'error');
+        if (cancelled) return;
         opts.onStderr?.(stderr);
 
         if (code !== 0) {
@@ -287,7 +301,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
       proc.on('error', (err) => {
         this.finishProcess(proc, channelId, fallbackTimer, 'error');
-        reject(new Error(`Failed to spawn ${this.displayName}: ${err.message}`));
+        if (!cancelled) reject(new Error(`Failed to spawn ${this.displayName}: ${err.message}`));
       });
     });
   }
@@ -464,8 +478,17 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         reject(err);
       });
 
+      let cancelled = false;
+      this.cancelRequests.set(proc, () => {
+        cancelled = true;
+        this.finishProcess(proc, opts.channelId, fallbackTimer, 'error');
+        const error = new Error(`${this.displayName} request cancelled`);
+        notifyError(error);
+        reject(error);
+      });
+
       const processLine = (line: string, phase: 'stream' | 'flush') => {
-        if (fatalError) return;
+        if (fatalError || cancelled) return;
         let json: unknown;
         try {
           json = JSON.parse(line);
@@ -486,6 +509,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       };
 
       proc.stdout?.on('data', (data) => {
+        if (cancelled) return;
         const chunk = typeof data === 'string' ? data : stdoutDecoder.write(data);
         const parsed = appendJsonlChunk(buffer, chunk);
         buffer = parsed.buffer;
@@ -497,12 +521,15 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       proc.stderr?.on('data', (data) => {
         const chunk = typeof data === 'string' ? data : stderrDecoder.write(data);
         stderr += chunk;
-        console.error(`[${this.logPrefix}] stderr:`, chunk);
+        if (parser.handleStderr) {
+          if (!cancelled) parser.handleStderr(chunk);
+        } else console.error(`[${this.logPrefix}] stderr:`, chunk);
       });
 
       proc.on('close', (code) => {
         this.finishProcess(proc, opts.channelId, fallbackTimer, code === 0 ? 'completed' : 'error');
 
+        if (cancelled) return;
         const stdoutTail = stdoutDecoder.end();
         if (stdoutTail) {
           const parsed = appendJsonlChunk(buffer, stdoutTail);
@@ -545,6 +572,7 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
 
       proc.on('error', (err) => {
         this.finishProcess(proc, opts.channelId, fallbackTimer, 'error');
+        if (cancelled) return;
         const error = new Error(`Failed to spawn ${this.displayName}: ${err.message}`);
         notifyError(error);
         reject(error);
@@ -566,9 +594,8 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       const proc = this.activeProcesses.get(channelId);
       if (proc) {
         console.log(`[${this.logPrefix}] Cancelling request for channel ${channelId}`);
+        this.cancelRequests.get(proc)?.();
         proc.kill();
-        this.activeProcesses.delete(channelId);
-        this.timeoutController.clear(channelId, 'error');
         return true;
       }
       return false;
@@ -582,8 +609,9 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
       return false;
     }
     console.log(`[${this.logPrefix}] Cancelling current request`);
-    this.currentProcess.kill();
-    this.currentProcess = null;
+    const proc = this.currentProcess;
+    this.cancelRequests.get(proc)?.();
+    proc.kill();
     return true;
   }
 

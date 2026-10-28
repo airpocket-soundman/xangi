@@ -1,4 +1,17 @@
 import { stripReplySuggestionMarkup } from '../../src/reply-suggestions';
+import { splitUserPromptHookContexts } from './userPromptContext';
+
+export function hasPersistedRemoteEcho(
+  messages: Array<{ id?: string; role: string; content: string }>,
+  echo: { text: string; previousIds: Array<string | undefined> }
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === 'user' &&
+      Boolean(message.id && !echo.previousIds.includes(message.id)) &&
+      splitUserPromptHookContexts(message.content).content.trim() === echo.text
+  );
+}
 
 export interface LiveActivity {
   state: string;

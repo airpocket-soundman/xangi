@@ -71,6 +71,19 @@ describe('runWithBubbleEvents', () => {
     }
   });
 
+  it('forwards transient backend status without adding it to assistant text', async () => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const onStatus = vi.fn();
+    const runner = new FakeRunner(async (_p, cb) => {
+      cb.onStatus?.({ reason: 'rate_limit', retryAt: 12345 });
+      cb.onStatus?.(null);
+      return { result: 'done', sessionId: 's' };
+    });
+    const result = await runWithBubbleEvents(runner, 'hello', {threadId:'web:retry',turnId:'retry',platform:'web'}, {onStatus}, {workdir:testDir});
+    expect(onStatus.mock.calls).toEqual([[{reason:'rate_limit',retryAt:12345}],[null]]);
+    expect(result.result).toBe('done');
+  });
+
   it.each(['claude-code', 'codex', 'opencode', 'cursor', 'grok', 'antigravity', 'github-copilot', 'local-llm', 'extension'])('persists edits announced by tool notifications for %s', async (backend) => {
     const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
     const { getTurnHistory, readTurnHistory } = await import('../src/activity-store.js');
@@ -101,6 +114,45 @@ describe('runWithBubbleEvents', () => {
     });
     await expect(runWithBubbleEvents(runner, 'edit', {threadId:'web:cancel-file',turnId:'c',platform:'web'}, {}, {workdir:testDir})).rejects.toThrow('cancelled');
     expect(readTurnHistory('web:cancel-file')).toEqual(expect.arrayContaining([expect.objectContaining({fileChanges: expect.objectContaining({files: [expect.objectContaining({path:'partial.txt'})]})})]));
+  });
+
+  it.each(['reject', 'resolve'])('records a finalized shutdown turn as aborted after runner %s', async (outcome) => {
+    const { runWithBubbleEvents } = await import('../src/bubble-events-runner.js');
+    const { registerStreamFinalizer, finalizeActiveStreams } = await import('../src/stream-finalizer.js');
+    const { getActivity, readTurnHistory } = await import('../src/activity-store.js');
+    const registration = registerStreamFinalizer(() => {});
+    const onError = vi.fn();
+    const onComplete = vi.fn();
+    const onText = vi.fn();
+    const runner = new FakeRunner(async (_prompt, callbacks) => {
+      callbacks.onText?.('途中', '途中');
+      callbacks.onToolUse?.('Bash', { command: 'pwd' });
+      await finalizeActiveStreams();
+      callbacks.onText?.('late', 'late');
+      if (outcome === 'reject') {
+        const error = new Error('Runner is shutting down');
+        callbacks.onError?.(error);
+        throw error;
+      }
+      return { result: 'late', sessionId: 's' };
+    });
+    const pending = runWithBubbleEvents(runner, 'restart', {
+      threadId: 'web:shutdown', turnId: 'shutdown-turn', platform: 'web',
+      isShutdownInterrupted: () => registration.isFinalized(),
+    }, { onError, onComplete, onText });
+    if (outcome === 'reject') await expect(pending).rejects.toThrow('Runner is shutting down');
+    else await pending;
+    expect(collected.map((e) => e.type)).toEqual(['turn.started', 'message.delta', 'turn.aborted']);
+    expect(onText).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(getActivity('web:shutdown')).toMatchObject({ state: 'aborted' });
+    expect(getActivity('web:shutdown')?.history.some((entry) => entry.state === 'error')).toBe(false);
+    expect(readTurnHistory('web:shutdown')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'text', text: '途中' }),
+      expect.objectContaining({ kind: 'tool', toolName: 'Bash' }),
+    ]));
+    registration();
   });
 
   it('publishes turn.started → message.delta×N → turn.complete in normal flow', async () => {

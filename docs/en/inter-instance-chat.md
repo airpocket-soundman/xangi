@@ -14,6 +14,7 @@ user ← instance-a ←──────── HTTP response ─ regular Web Se
 ```
 
 It works on one host or across hosts. Tailscale is recommended for cross-host connections.
+For an agent within the same xangi instance, use `xangi agent list` and `xangi agent run` instead. Use `xangi agent run default --task "task and necessary background"` for the default agent. The target of `inter_chat_ask` is another instance ID, not an agent name.
 
 ## Configuration
 

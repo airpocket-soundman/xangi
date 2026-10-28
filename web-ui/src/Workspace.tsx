@@ -25,7 +25,10 @@ const MarkdownBody = lazy(() => import('./MarkdownBody'));
 interface WorkspaceEntry {
   name: string;
   path: string;
-  type: 'directory' | 'file';
+  type: 'directory' | 'file' | 'symlink';
+  linkTarget?: string;
+  linkState?: 'internal' | 'external' | 'broken' | 'loop' | 'unavailable';
+  targetType?: 'directory' | 'file';
   size?: number;
   mtimeMs: number;
   tags?: string[];
@@ -86,7 +89,7 @@ function fileSize(bytes?: number): string {
 }
 
 function pathSegments(path: string): Array<{ label: string; path: string }> {
-  const result = [{ label: 'workspace', path: '' }];
+  const result = [{ label: 'ファイル', path: '' }];
   let current = '';
   for (const segment of path.split('/').filter(Boolean)) {
     current = current ? `${current}/${segment}` : segment;
@@ -129,6 +132,7 @@ export function Workspace() {
   const [tagFilter, setTagFilter] = useState('');
   const [mobilePane, setMobilePane] = useState<MobilePane>('files');
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
+  const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [showLineNumbers, setShowLineNumbers] = useState(initialLineNumbers);
   const lineNumbers = useMemo(
     () => Array.from({ length: draft.split('\n').length }, (_, index) => index + 1).join('\n'),
@@ -310,10 +314,12 @@ export function Workspace() {
   );
   const visibleEntries = useMemo(() => {
     const filtered = directory.entries.filter(
-      (entry) => entry.type === 'directory' || !tagFilter || entry.tags?.includes(tagFilter)
+      (entry) => entry.type !== 'file' || !tagFilter || entry.tags?.includes(tagFilter)
     );
     return [...filtered].sort((left, right) => {
-      if (left.type !== right.type) return left.type === 'directory' ? -1 : 1;
+      const leftDirectory = left.type === 'directory' || left.targetType === 'directory';
+      const rightDirectory = right.type === 'directory' || right.targetType === 'directory';
+      if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
       const comparison =
         sortKey === 'mtime' ? left.mtimeMs - right.mtimeMs : left.name.localeCompare(right.name);
       return sortDirection === 'asc' ? comparison : -comparison;
@@ -338,79 +344,120 @@ export function Workspace() {
   return (
     <main className="workspace-browser-shell">
       <AppTopbar current="workspace" />
+      <header className="workspace-toolbar panes-toolbar">
+        <button
+          type="button"
+          className="icon-button workspace-panel-toggle"
+          aria-label={filesCollapsed ? 'ファイル一覧を開く' : 'ファイル一覧を閉じる'}
+          title={filesCollapsed ? 'ファイル一覧を開く' : 'ファイル一覧を閉じる'}
+          aria-controls="workspace-file-panel"
+          aria-expanded={!filesCollapsed}
+          onClick={() => setFilesCollapsed((collapsed) => !collapsed)}
+        >
+          ☰
+        </button>
+        <label className="workspace-location">
+          <span>ワークスペース</span>
+          <select
+            aria-label="ワークスペース"
+            value={workspaceId}
+            onChange={(event) => {
+              if (dirtyRef.current) {
+                setMessage('ワークスペースを切り替える前に、変更を保存するか再読込してください。');
+                return;
+              }
+              setWorkspaceId(event.target.value);
+              setSelected(undefined);
+              setDraft('');
+              setDirectory({ path: '', parent: null, entries: [] });
+              setMobilePane('files');
+              setSaveState('idle');
+              setTagFilter('');
+            }}
+          >
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </header>
 
       <section
-        className={`workspace-browser-layout mobile-pane-${mobilePane}`}
+        className={`workspace-browser-layout mobile-pane-${mobilePane}${filesCollapsed ? ' files-collapsed' : ''}`}
         style={{ '--workspace-sidebar-width': `${sidebarWidth}px` } as CSSProperties}
       >
-        <aside className="workspace-file-panel" aria-label="Workspace files">
-          <div className="workspace-file-controls">
-            <select
-              aria-label="ワークスペース"
-              value={workspaceId}
-              onChange={(event) => {
-                if (dirtyRef.current) {
-                  setMessage(
-                    'ワークスペースを切り替える前に、変更を保存するか再読込してください。'
-                  );
-                  return;
+        <aside
+          id="workspace-file-panel"
+          className="workspace-file-panel"
+          aria-label="Workspace files"
+        >
+          <div className="workspace-list-toolbar">
+            <nav className="workspace-breadcrumbs" aria-label="パンくず">
+              {breadcrumbs.map((crumb, index) => (
+                <span key={crumb.path || 'root'}>
+                  {index > 0 && <span aria-hidden="true">/</span>}
+                  <button type="button" onClick={() => void loadDirectory(crumb.path)}>
+                    {crumb.label}
+                  </button>
+                </span>
+              ))}
+            </nav>
+
+            <details
+              className="workspace-display-options"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector('summary')?.focus();
                 }
-                setWorkspaceId(event.target.value);
-                setSelected(undefined);
-                setDraft('');
-                setDirectory({ path: '', parent: null, entries: [] });
-                setMobilePane('files');
-                setSaveState('idle');
+              }}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget))
+                  event.currentTarget.open = false;
               }}
             >
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name}
-                  {workspace.isDefault ? ' (default)' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-          <nav className="workspace-breadcrumbs" aria-label="パンくず">
-            {breadcrumbs.map((crumb, index) => (
-              <span key={crumb.path || 'root'}>
-                {index > 0 && <span aria-hidden="true">/</span>}
-                <button type="button" onClick={() => void loadDirectory(crumb.path)}>
-                  {crumb.label}
+              <summary title="並び替えとタグの絞り込み">
+                表示{tagFilter ? ' · 絞り込み中' : ''}
+              </summary>
+              <div className="workspace-file-controls">
+                <label htmlFor="workspace-sort">並び順</label>
+                <select
+                  id="workspace-sort"
+                  aria-label="ファイルの並び順"
+                  value={sortKey}
+                  onChange={(event) => setSortKey(event.target.value as SortKey)}
+                >
+                  <option value="name">名前順</option>
+                  <option value="mtime">更新日時順</option>
+                </select>
+                <button
+                  type="button"
+                  aria-label={sortDirection === 'asc' ? '降順に変更' : '昇順に変更'}
+                  title={sortDirection === 'asc' ? '降順に変更' : '昇順に変更'}
+                  onClick={() =>
+                    setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))
+                  }
+                >
+                  {sortDirection === 'asc' ? '昇順' : '降順'}
                 </button>
-              </span>
-            ))}
-          </nav>
-
-          <div className="workspace-file-controls">
-            <select
-              aria-label="ファイルの並び順"
-              value={sortKey}
-              onChange={(event) => setSortKey(event.target.value as SortKey)}
-            >
-              <option value="name">名前順</option>
-              <option value="mtime">更新日時順</option>
-            </select>
-            <button
-              type="button"
-              aria-label={sortDirection === 'asc' ? '降順に変更' : '昇順に変更'}
-              title={sortDirection === 'asc' ? '降順に変更' : '昇順に変更'}
-              onClick={() => setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))}
-            >
-              {sortDirection === 'asc' ? '昇順' : '降順'}
-            </button>
-            <select
-              aria-label="タグで絞り込み"
-              value={tagFilter}
-              onChange={(event) => setTagFilter(event.target.value)}
-            >
-              <option value="">すべてのタグ</option>
-              {availableTags.map((tag) => (
-                <option value={tag} key={tag}>
-                  #{tag}
-                </option>
-              ))}
-            </select>
+                <label htmlFor="workspace-tag">タグ</label>
+                <select
+                  id="workspace-tag"
+                  aria-label="タグで絞り込み"
+                  value={tagFilter}
+                  onChange={(event) => setTagFilter(event.target.value)}
+                >
+                  <option value="">すべてのタグ</option>
+                  {availableTags.map((tag) => (
+                    <option value={tag} key={tag}>
+                      #{tag}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </details>
           </div>
 
           <div className="workspace-file-list" aria-busy={directoryLoading}>
@@ -434,17 +481,29 @@ export function Workspace() {
                 }`}
                 aria-current={selected?.path === entry.path ? 'page' : undefined}
                 key={entry.path}
+                disabled={
+                  entry.type === 'symlink' && (entry.linkState !== 'internal' || !entry.targetType)
+                }
                 onClick={() =>
-                  entry.type === 'directory'
+                  entry.type === 'directory' || entry.targetType === 'directory'
                     ? void loadDirectory(entry.path)
                     : void openFile(entry.path)
                 }
               >
                 <span className="workspace-file-icon" aria-hidden="true">
-                  {entry.type === 'directory' ? '▸' : '·'}
+                  {entry.type === 'symlink' ? '↗' : entry.type === 'directory' ? '▸' : '·'}
                 </span>
                 <span className="workspace-file-primary">
                   <span className="workspace-file-name">{entry.name}</span>
+                  {entry.type === 'symlink' && (
+                    <small className="workspace-link-target" title={entry.linkTarget}>
+                      リンク → {entry.linkTarget}
+                      {entry.linkState === 'external' && '（ワークスペース外）'}
+                      {entry.linkState === 'broken' && '（リンク切れ）'}
+                      {entry.linkState === 'loop' && '（リンクループ）'}
+                      {entry.linkState === 'unavailable' && '（開けません）'}
+                    </small>
+                  )}
                   {entry.tags && entry.tags.length > 0 && (
                     <small className="workspace-file-tags">
                       {entry.tags

@@ -67,7 +67,6 @@ describe('Discord secret thread routing', () => {
     const registry = await WorkspaceRegistry.open({
       dataDir: join(dir, 'registry-state'),
       defaultWorkspacePath: dir,
-      allowedRoots: [dir],
     });
     const { parentId, startThread, resolve } = fixture();
     const target = await resolve();

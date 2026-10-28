@@ -77,14 +77,23 @@ export async function executeWorkspaceCommand(
   const { workspaces, runs } = dependencies;
   const action = flags.action || 'list';
   if (action === 'list') return JSON.stringify({ workspaces: workspaces.list() });
-  if (!['create', 'delete'].includes(action))
-    throw new Error('action must be list, create or delete');
+  if (!['create', 'delete', 'set-path'].includes(action))
+    throw new Error('action must be list, create, set-path or delete');
   const parent = context?.channelId;
   if (!parent) throw new Error('現在の会話が必要です');
   if (
     runs.list().some((run) => run.parentContextKey && run.appSessionId === webAppSessionId(parent))
   )
     throw new Error('子エージェントから設定を変更することはできません');
+  if (action === 'set-path') {
+    const id = (flags.workspace || flags.id || '').trim();
+    if (!id || !flags.path?.trim()) throw new Error('Workspace ID と --path は必須です');
+    return JSON.stringify({
+      workspace: await workspaces.updatePath(id, flags.path),
+      filesPreserved: true,
+      existingSessionsPreserved: true,
+    });
+  }
   if (action === 'delete') {
     const id = (flags.workspace || flags.id || '').trim();
     if (!id) throw new Error('Workspace IDを指定してください');

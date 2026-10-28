@@ -1,4 +1,10 @@
-import { CatalogCreateButton, CatalogRow, CatalogFormActions } from './CatalogControls';
+import { ConfiguredChannels } from './ConfiguredChannels';
+import {
+  CatalogCreateButton,
+  CatalogRow,
+  CatalogFormActions,
+  useCatalogFormFocus,
+} from './CatalogControls';
 import { TeamSettings } from './TeamSettings';
 import { useEffect, useState, type FormEvent } from 'react';
 import { AppTopbar } from './AppTopbar';
@@ -176,6 +182,7 @@ function StartupField({
 }
 
 export function Settings() {
+  const workspaceFormRef = useCatalogFormFocus();
   const [settings, setSettings] = useState<RuntimeSettingsSnapshot>();
   const [startupGroups, setStartupGroups] = useState<StartupGroup[]>([]);
   const [connectionGroups, setConnectionGroups] = useState<ConnectionGroup[]>([]);
@@ -205,6 +212,9 @@ export function Settings() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [updateTarget, setUpdateTarget] = useState<BackendAuthenticationStatus>();
+  const [updatingBackend, setUpdatingBackend] = useState('');
+  const [updateStatus, setUpdateStatus] = useState('');
+  const [updateError, setUpdateError] = useState('');
 
   useEffect(() => {
     const focusSection = () => {
@@ -288,9 +298,10 @@ export function Settings() {
   const updateBackend = async () => {
     if (!updateTarget) return;
     const id = updateTarget.id;
-    setSaving(`backend-update:${id}`);
-    setError('');
-    setMessage('');
+    setUpdatingBackend(id);
+    setUpdateTarget(undefined);
+    setUpdateError('');
+    setUpdateStatus(`${updateTarget.label}を更新中です。ほかの操作を続けられます。`);
     try {
       const result = await requestJson<BackendUpdateResponse>('/api/backend-tools/update', {
         method: 'POST',
@@ -298,12 +309,12 @@ export function Settings() {
       });
       setConnectionGroups(result.groups);
       setBackendAuthentication(result.backends);
-      setMessage(result.message);
-      setUpdateTarget(undefined);
+      setUpdateStatus(result.message);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setUpdateStatus('');
+      setUpdateError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setSaving('');
+      setUpdatingBackend('');
     }
   };
 
@@ -543,7 +554,12 @@ export function Settings() {
               ) : (
                 <div className="workspace-manager settings-workspace-manager">
                   {workspaceFormOpen ? (
-                    <form className="project-form" onSubmit={registerWorkspace}>
+                    <form
+                      ref={workspaceFormRef}
+                      tabIndex={-1}
+                      className="project-form"
+                      onSubmit={registerWorkspace}
+                    >
                       <h3>{editingWorkspace ? 'ワークスペースを編集' : '新しいワークスペース'}</h3>
                       <label>
                         <span>名前</span>
@@ -683,6 +699,22 @@ export function Settings() {
                   </select>
                 </label>
               </div>
+              <ConfiguredChannels
+                key={platform}
+                platform={platform}
+                onSelect={(channel) => {
+                  setChannels((current) =>
+                    current.some((item) => item.id === channel.id) ? current : [...current, channel]
+                  );
+                  setChannelSettings(undefined);
+                  setChannelId(channel.id);
+                  requestAnimationFrame(() =>
+                    document
+                      .querySelector<HTMLSelectElement>('select[aria-label="チャンネル"]')
+                      ?.focus()
+                  );
+                }}
+              />
               <div className="settings-channel-status" aria-live="polite">
                 {channelsStatus ? <span>{channelsStatus}</span> : <span />}
                 <button
@@ -866,16 +898,22 @@ export function Settings() {
                         <button
                           type="button"
                           className="settings-auth-update"
-                          disabled={saving.startsWith('backend-update:')}
+                          disabled={Boolean(updatingBackend)}
                           onClick={() => setUpdateTarget(item)}
                         >
-                          {saving === `backend-update:${item.id}` ? '更新中…' : '更新'}
+                          {updatingBackend === item.id ? '更新中…' : '更新'}
                         </button>
                       ) : null}
                     </div>
                   </div>
                 ))}
               </div>
+              {updateStatus && <p role="status">{updateStatus}</p>}
+              {updateError && (
+                <p className="settings-status error" role="alert">
+                  {updateError}
+                </p>
+              )}
               <div className="settings-connection-groups">
                 {connectionGroups.map((group) => (
                   <div key={group.label}>
@@ -952,8 +990,6 @@ export function Settings() {
         title={`${updateTarget?.label || 'AIサービス'}を更新しますか？`}
         description="公式CLIの自己更新コマンドをサーバー上で実行します。更新処理中もxangiは動作を続け、新しいCLIは次の実行から使われます。"
         confirmLabel="更新する"
-        busyLabel="更新中…"
-        busy={Boolean(updateTarget && saving === `backend-update:${updateTarget.id}`)}
         onCancel={() => setUpdateTarget(undefined)}
         onConfirm={() => void updateBackend()}
       />

@@ -58,12 +58,15 @@ describe('BackendResolver localLlmMode', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'br-test-'));
     envFile = join(tmpDir, '.env');
     writeFileSync(envFile, '# test env\n');
+    // An inherited explicit path takes precedence over the temporary cwd.
+    vi.stubEnv('XANGI_ENV_PATH', envFile);
     originalCwd = process.cwd();
     process.chdir(tmpDir);
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    vi.unstubAllEnvs();
     rmSync(tmpDir, { recursive: true, force: true });
     delete process.env.CHANNEL_OVERRIDES;
     delete process.env.WORKSPACE_SEARCH_RAG_URL;

@@ -4,7 +4,6 @@ import { getJson } from './api';
 interface DirectoryListing {
   path: string;
   parent: string | null;
-  roots: string[];
   directories: Array<{ name: string; path: string }>;
 }
 
@@ -96,15 +95,6 @@ export function DirectoryPicker({
         <p className="directory-picker-error" role="alert">
           {error}
         </p>
-      )}
-      {listing && listing.roots.length > 1 && (
-        <div className="directory-picker-roots" aria-label="選択できる場所">
-          {listing.roots.map((root) => (
-            <button type="button" key={root} onClick={() => void load(root)} disabled={busy}>
-              {root}
-            </button>
-          ))}
-        </div>
       )}
       <div className="directory-picker-list" aria-label="サブフォルダ">
         {listing?.parent && (

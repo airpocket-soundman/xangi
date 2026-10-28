@@ -29,7 +29,6 @@ async function fixture() {
   const registry = await WorkspaceRegistry.open({
     dataDir,
     defaultWorkspacePath: defaultWorkspace,
-    allowedRoots: [allowedRoot],
   });
   const project = await registry.register('project', projectWorkspace);
   return { registry, project, dataDir };
@@ -119,12 +118,12 @@ describe('ensureSessionWithWorkspace', () => {
     });
   });
 
-  it('rejects a stored path that is outside the current allowed roots', async () => {
-    const { registry, project } = await fixture();
+  it('rejects a stored path pointing into the state directory', async () => {
+    const { registry, project, dataDir } = await fixture();
     ensureSession('tampered', {
       platform: 'discord',
       workspaceId: project.id,
-      workspacePath: '/etc',
+      workspacePath: dataDir,
     });
 
     await expect(

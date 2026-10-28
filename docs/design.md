@@ -76,6 +76,7 @@ flowchart LR
 - `scheduler-bridge.ts` — スケジューラの Discord 送信関数・エージェント実行関数の登録。schedule / trigger ターンを共有調停器へ登録し、起点の処理中メッセージも `ui.ts` の処理中メッセージ管理に登録して、Stop / 延長 / 残り時間表示を通常メッセージ経路と揃える
 - `ui.ts` — ボタン行（Stop / 延長 / 残り時間表示）・処理中メッセージ管理
 - `tool-history.ts` — ツール履歴の整形・蓄積（`TOOL_HISTORY_MAX_LINES` で表示行数を制限）
+- Codex app-serverの実行通知は、コマンドを `Bash` と `command`、MCPを `mcp__server__tool`、動的ツールを実ツール名と引数へ変換して共通表示へ渡す。これによりコマンド内容と異なる実行の履歴を維持する。入力はタイミングログへ追加しない。
 - `message-utils.ts` — Discord メッセージリンク展開・返信元引用・スレッド元引用・チャンネルメンション展開
 
 - エラー時は途中テキスト・ツール履歴とエラー表示を残してターンを終了する。報告目的のagentRunner.runは呼ばず、調停器のbusy解除を妨げる追加ターンを作らない。
@@ -91,6 +92,7 @@ flowchart LR
 - スレッド・添付ファイル・リアクション対応
 - ストリーミング表示は `stream-session.ts`（Slack / Web と共通コア）で思考表示・更新スロットリングを統一し、ボタン UI を `message.edit` で 1 秒粒度に更新
 - プロセス終了時（SIGTERM）は `stream-finalizer.ts` が実行中のストリーミング表示を「⏸ プロセス再起動により中断されました」へ確定させる（message-handler / scheduler-bridge 両経路で登録）
+- Discord / Slack / Web の通常ターンは finalizer の確定開始状態を保持し、後続の runner 終了エラーや完了処理で中断表示を上書きしない。中断は activity / events で `aborted`、latency で `cancelled` として扱い、通常エラーとユーザー停止の表示は従来どおり。
 
 ### Slack 統合（slack.ts）
 
@@ -397,6 +399,8 @@ claude-code / codex-cli / opencode-cli / cursor-cli / grok-cli / antigravity-cli
   で誤エラー通知を抑制する
 - **stale session 自動回復**: 無効になった sessionId での resume 失敗を検出し、
   新規セッションで 1 回だけ自動リトライする（claude-code / codex / cursor / grok の全ランナー）
+
+`cancel` は対象リクエストを直ちに中断として終了させ、遅れて届く標準出力や終了コード0を成功通知に変換しない。プロセスの実終了は別管理で、`processManager` は `close` まで同じチャンネルへの重複起動を拒否する。`tests/backend-lifecycle.test.ts` はプロセス境界をモックし、Codex / Claude の実アダプターに同じ実行・継続・停止・チャンネル分離の試験を適用する。実CLIやモデルAPIは呼び出さない。
 
 #### Local LLMアダプターの詳細設計
 
@@ -1397,3 +1401,9 @@ checkout・Dockerでは専用`.env`のsetup/state指定（両方空なら共通�
 POST本文は最大32 MiB。応答ヘッダーまでの待機は120秒で、受信開始後はSSE等を逐次転送する。HTTP GET/POST専用で、WebSocket・任意の外部API認証・機器固有TCPの汎用中継ではない。redirectを使うクライアントも対象外。内部bridge/STT等のポート自動割当は拡張runtime側の責務であり、この入口自体は内部ポートを割り当てない。
 
 Even G2はこの仕組みを利用する一例で、`deviceIngress.capability`に`device.even-g2`を指定する。他の拡張も同じ認証・転送仕様を実装すれば、固有ポートを端末へ公開せずに利用できる。
+
+### Codexの質問回答と共通UI
+
+`StreamCallbacks.onUserInput(request, signal)` がCodexと共通の表示側を接続する。他のバックエンドの質問連携は追加せず、Claude Codeの実行方式も変更しない。`user-input.ts` は質問の正規化、回答の検証、会話・回答者・一回限りのID・最長10分の受付を管理する。外側の実行の終了または停止でAbortSignalを発火し、遅れて届いた回答を破棄する。Codexの`serverRequest/resolved`も受付を終了する。未対応経路には質問コールバックを渡さない。
+
+Webは既存HTTP境界内の`GET/POST /api/user-input/:appSessionId`を使用し、実行中のWeb会話だけを1.5秒間隔で確認する。POSTは同一ホスト検査とセッション種別検査を行う。Discordは回答ボタンとモーダル、SlackはBoltのaction/viewハンドラを使用する。各チャットの認証済みユーザーIDと開始時の依頼者を照合する。同期質問は保留中のRPCへ回答する。Codexの非同期質問は`agentMessage`の`delivery: async`と`questions`を受け取り、`turn/steer`で回答する。元のターンが完了済みなら同じthreadで`turn/start`して続行する。フォームと外側の実行は回答まで保持し、会話・ターン照合と項目IDによる重複防止を行う。起動オプションは`AGENT_USER_INPUT`、初期値true。

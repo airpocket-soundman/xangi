@@ -124,6 +124,13 @@ it('routes management CRUD through the CLI and preserves the injected launcher u
       workspaceId: registered.workspace.id,
       prompt: '出典を示す',
     });
+    const nextPath = join(root, 'next');
+    mkdirSync(nextPath);
+    const updated = await workspaceCall('set-path', registered.workspace.id, '--path', nextPath);
+    expect(updated.workspace).toEqual({ ...registered.workspace, path: nextPath });
+    expect(catalog.agent(writingAgent.agent.id)?.workspaceId).toBe(registered.workspace.id);
+    await expect(workspaceCall('set-path', registered.workspace.id)).rejects.toThrow();
+    await expect(workspaceCall('set-path', 'default', '--path', nextPath)).rejects.toThrow();
     await expect(
       call('create', '--name', '不明な作業場所', '--workspace-id', 'missing')
     ).rejects.toThrow();

@@ -1,6 +1,7 @@
 """Settings consolidation smoke test against the built UI and isolated API fixtures."""
 import json
 import mimetypes
+import os
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -11,7 +12,7 @@ out = Path(tempfile.mkdtemp(prefix='catalog-browser-'))
 print('Evidence:', out, flush=True)
 results = []
 with sync_playwright() as playwright:
-    browser = playwright.chromium.launch(executable_path='/snap/bin/chromium', headless=True, args=['--no-sandbox'])
+    browser = playwright.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH', '/snap/bin/chromium'), headless=True, args=['--no-sandbox'])
     try:
         for width in [1280, 768, 414, 375, 320]:
             context = browser.new_context(viewport={'width': width, 'height': 1000})
@@ -49,7 +50,7 @@ with sync_playwright() as playwright:
                 elif path == '/api/projects': data = {'projects': projects}
                 elif path == '/api/workspaces/directories':
                     directory = parse_qs(parsed.query).get('path', ['/srv'])[0]
-                    data = {'path': directory, 'parent': '/srv' if directory != '/srv' else None, 'roots': ['/srv'], 'directories': [{'name': 'child', 'path': '/srv/child'}] if directory == '/srv' else []}
+                    data = {'path': directory, 'parent': '/srv' if directory != '/srv' else None, 'directories': [{'name': 'child', 'path': '/srv/child'}] if directory == '/srv' else []}
                 elif path == '/api/workspaces' and method == 'POST':
                     workspaces.append({**r.request.post_data_json, 'id': 'child', 'isDefault': False}); data = {'workspace': workspaces[-1]}
                 elif path == '/api/workspaces': data = {'workspaces': workspaces}
@@ -79,10 +80,9 @@ with sync_playwright() as playwright:
             def open_projects():
                 page.goto('http://agent-owned.test/')
                 if width <= 768: page.get_by_role('button', name='サイドバーを開く').click()
-                page.get_by_role('button', name='Projects', exact=False).click()
             open_projects()
             page.screenshot(path=str(out / f'projects-{width}.png'), animations='disabled')
-            assert page.locator('.project-view').evaluate('(e) => e.scrollWidth <= e.clientWidth + 1')
+            assert page.locator('.sidebar-projects').evaluate('(e) => e.scrollWidth <= e.clientWidth + 1')
             expect(page.get_by_role('button', name='エージェント', exact=True)).to_have_count(0)
             page.goto('http://agent-owned.test/settings#workspaces')
             expect(page).to_have_url('http://agent-owned.test/settings#workspaces')
@@ -150,7 +150,7 @@ with sync_playwright() as playwright:
             expect(section.locator('.catalog-row')).to_have_count(0)
             expect(section.get_by_role('alert')).to_have_count(0)
             open_projects()
-            page.get_by_role('button', name='＋ 新規プロジェクト', exact=True).click()
+            page.get_by_role('button', name='新規プロジェクト', exact=True).click()
             form = page.locator('.project-form')
             expect(form.get_by_label('ワークスペース', exact=True)).to_have_count(0)
             form.get_by_label('名前', exact=True).fill('検証プロジェクト')

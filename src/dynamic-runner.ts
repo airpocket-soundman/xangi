@@ -346,6 +346,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
         : undefined;
     const observedCallbacks: StreamCallbacks = {
       ...callbacks,
+      onUserInput: runOptions?.secret ? undefined : callbacks.onUserInput,
       onModel: (model) => {
         if (execution.status !== 'running') return;
         if (observeExecutionModel(execution, model))

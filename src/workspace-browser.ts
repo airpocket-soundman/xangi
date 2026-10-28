@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from 'crypto';
-import { lstat, open, readFile, readdir, realpath, rename, stat, unlink } from 'fs/promises';
+import {
+  lstat,
+  open,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+  stat,
+  unlink,
+} from 'fs/promises';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path';
 import { parse as parseYaml } from 'yaml';
 
@@ -88,7 +98,10 @@ const VIEWABLE_BASENAMES = new Set([
 export interface WorkspaceEntry {
   name: string;
   path: string;
-  type: 'directory' | 'file';
+  type: 'directory' | 'file' | 'symlink';
+  linkTarget?: string;
+  linkState?: 'internal' | 'external' | 'broken' | 'loop' | 'unavailable';
+  targetType?: 'directory' | 'file';
   size?: number;
   mtimeMs: number;
   tags?: string[];
@@ -141,11 +154,55 @@ export class WorkspaceBrowser {
     let excludedDirectoryCount = 0;
 
     for (const entry of entries) {
-      if (isExcludedSegment(entry.name) || entry.isSymbolicLink()) continue;
+      if (isExcludedSegment(entry.name)) continue;
       const childRelative = normalized ? `${normalized}/${entry.name}` : entry.name;
       const childAbsolute = join(target, entry.name);
 
-      if (entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        const root = await this.getRootRealPath();
+        const childStat = await lstat(childAbsolute);
+        let destination = resolve(target, await readlink(childAbsolute));
+        let linkState: WorkspaceEntry['linkState'];
+        let targetType: WorkspaceEntry['targetType'];
+        try {
+          destination = await realpath(childAbsolute);
+          linkState = isWithin(root, destination) ? 'internal' : 'external';
+          if (linkState === 'internal') {
+            const destinationStat = await stat(destination);
+            targetType = destinationStat.isDirectory()
+              ? 'directory'
+              : destinationStat.isFile()
+                ? 'file'
+                : undefined;
+            // Apply the same hidden-path and file-type rules to the resolved target.
+            if (targetType) await this.resolveExisting(childRelative, targetType);
+          }
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          linkState =
+            code === 'ELOOP'
+              ? 'loop'
+              : code === 'ENOENT' || code === 'ENOTDIR'
+                ? 'broken'
+                : 'unavailable';
+          targetType = undefined;
+        }
+        if (targetType === 'directory' && this.excludedDirectoryPaths.has(childRelative)) {
+          excludedDirectoryCount++;
+          continue;
+        }
+        visible.push({
+          name: entry.name,
+          path: childRelative,
+          type: 'symlink',
+          linkTarget: isWithin(root, destination)
+            ? relative(root, destination) || '.'
+            : destination,
+          linkState,
+          targetType,
+          mtimeMs: childStat.mtimeMs,
+        });
+      } else if (entry.isDirectory()) {
         // Display preference only: direct listing, reading and writing stay available.
         if (this.excludedDirectoryPaths.has(childRelative)) {
           excludedDirectoryCount++;
@@ -176,7 +233,9 @@ export class WorkspaceBrowser {
     }
 
     visible.sort((left, right) => {
-      if (left.type !== right.type) return left.type === 'directory' ? -1 : 1;
+      const leftDirectory = left.type === 'directory' || left.targetType === 'directory';
+      const rightDirectory = right.type === 'directory' || right.targetType === 'directory';
+      if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
       return left.name.localeCompare(right.name);
     });
 
@@ -268,18 +327,16 @@ export class WorkspaceBrowser {
 
     for (const segment of relativePath ? relativePath.split('/') : []) {
       current = join(current, segment);
-      let currentStat;
       try {
-        currentStat = await lstat(current);
+        current = await realpath(current);
       } catch {
         throw new WorkspaceBrowserError('Workspace path was not found', 404);
       }
-      if (currentStat.isSymbolicLink()) {
-        throw new WorkspaceBrowserError(
-          'Symbolic links are not available in the workspace UI',
-          403
-        );
+      if (!isWithin(rootRealPath, current)) {
+        throw new WorkspaceBrowserError('Workspace path is outside the configured workspace', 403);
       }
+      // A visible alias must not expose hidden or otherwise excluded targets.
+      normalizeRelativePath(relative(rootRealPath, current), true);
     }
 
     let targetRealPath;

@@ -1,3 +1,4 @@
+import { discordUserInput } from './user-input.js';
 import { isSecretSession, parseSecretCommand } from '../secret.js';
 import { handleSecretConversationCommand } from '../secret-conversation-command.js';
 import { findAgentWork, submitAgentWork } from '../agent-work.js';
@@ -316,7 +317,7 @@ export async function processPrompt(
   // 表示状態のコア。エラー時に途中テキスト・ツール行を残すため関数スコープに置く
   let streamSession: StreamSession | null = null;
   // プロセス終了時に実行中表示を「中断」表示で確定させる finalizer の登録解除関数 (issue #293)
-  let unregisterStreamFinalizer: (() => void) | undefined;
+  let unregisterStreamFinalizer: ReturnType<typeof registerStreamFinalizer> | undefined;
   const sourceMessageId = actor?.messageId ?? message.id;
   const turnId = turnIdFor('discord', sourceMessageId);
   const channelName = 'name' in message.channel ? (message.channel as { name: string }).name : null;
@@ -417,7 +418,7 @@ export async function processPrompt(
         const content =
           view.phase === 'thinking'
             ? `${view.toolLines.length > 0 ? `${view.toolLines.join('\n')}\n\n` : ''}${view.statusLine}`
-            : appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌').slice(
+            : `${view.statusLine ? `${view.statusLine}\n\n` : ''}${appendToolHistory(stripReplySuggestionMarkup(view.text), view.toolLines, ' ▌')}`.slice(
                 0,
                 DISCORD_MAX_LENGTH
               );
@@ -476,6 +477,7 @@ export async function processPrompt(
       threadLabel,
       platform: 'discord' as const,
       userText: actor?.userText ?? (message.content || undefined),
+      isShutdownInterrupted: () => unregisterStreamFinalizer?.isFinalized() ?? false,
     };
 
     const sessionId = existingProviderSessionId;
@@ -607,6 +609,9 @@ export async function processPrompt(
 
     // 完了後ツール履歴の蓄積（表示は StreamSession 側、こちらは完了後の inline/button 表示用）
     const captureCallbacks = {
+      onUserInput: discordUserInput(conversationChannelId, actorId, (payload) =>
+        target.outputChannel.send(payload)
+      ),
       onBackendReady: () => {
         latency.markBackendReady();
         startTitleIfNeeded();
@@ -662,6 +667,7 @@ export async function processPrompt(
           prompt,
           eventCtx,
           {
+            onUserInput: sessionCallbacks.onUserInput,
             onBackendReady: sessionCallbacks.onBackendReady,
             onToolUse: sessionCallbacks.onToolUse,
             onTraceEvent: sessionCallbacks.onTraceEvent,
@@ -684,6 +690,11 @@ export async function processPrompt(
       }
     }
 
+    if (unregisterStreamFinalizer.isFinalized()) {
+      latency.finish('cancelled');
+      return null;
+    }
+
     const attachmentRecovery = await recoverAttachmentOnce(
       runner,
       { result, sessionId: newSessionId, attachments: structuredAttachments },
@@ -700,6 +711,11 @@ export async function processPrompt(
     result = attachmentRecovery.runResult.result;
     newSessionId = attachmentRecovery.runResult.sessionId;
     structuredAttachments = attachmentRecovery.runResult.attachments;
+
+    if (unregisterStreamFinalizer.isFinalized()) {
+      latency.finish('cancelled');
+      return null;
+    }
 
     setSession(conversationChannelId, newSessionId);
     incrementMessageCount(appSessionId);
@@ -824,6 +840,11 @@ export async function processPrompt(
   } catch (error) {
     latency.markAgentComplete();
     streamSession?.finish();
+    if (unregisterStreamFinalizer?.isFinalized()) {
+      console.log('[xangi] Request interrupted by shutdown');
+      latency.finish('cancelled');
+      return null;
+    }
     if (error instanceof Error && error.message === 'Request cancelled by user') {
       console.log('[xangi] Request cancelled by user');
       const lastStreamedText = streamSession?.lastText ?? '';
@@ -831,6 +852,14 @@ export async function processPrompt(
       const stoppedText = appendToolHistory(
         `${prefix}🛑 停止しました`,
         streamSession?.currentToolLines ?? []
+      );
+      attachPlatformMessageIdToLast(sessionWorkdir, appSessionId, 'user', sourceMessageId);
+      ensureVisibleAssistantResponse(
+        sessionWorkdir,
+        appSessionId,
+        replyMessage?.id,
+        stoppedText.slice(0, DISCORD_MAX_LENGTH),
+        replyMessage?.createdAt?.toISOString()
       );
       await replyMessage
         ?.edit({

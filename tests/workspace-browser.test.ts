@@ -193,6 +193,81 @@ describe('WorkspaceBrowser', () => {
     }
   });
 
+  it('lists internal file and directory links and opens and saves through them', async () => {
+    symlinkSync('notes', join(workspace, 'linked-notes'));
+    symlinkSync('notes/today.md', join(workspace, 'linked.md'));
+    const entries = (await browser.list()).entries;
+    expect(entries.find((entry) => entry.name === 'linked-notes')).toMatchObject({
+      type: 'symlink', linkTarget: 'notes', linkState: 'internal', targetType: 'directory',
+    });
+    expect(entries.find((entry) => entry.name === 'linked.md')).toMatchObject({
+      type: 'symlink', linkTarget: 'notes/today.md', linkState: 'internal', targetType: 'file',
+    });
+    expect((await browser.list('linked-notes')).entries[0].path).toBe('linked-notes/today.md');
+    const opened = await browser.read('linked-notes/today.md');
+    await browser.write('linked.md', 'linked save', opened.version);
+    expect(readFileSync(join(workspace, 'notes/today.md'), 'utf8')).toBe('linked save');
+  });
+
+  it('lists external targets but rejects listing, reading and saving through them', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'xangi-browser-outside-'));
+    try {
+      writeFileSync(join(outside, 'secret.md'), 'outside');
+      symlinkSync(outside, join(workspace, 'external'));
+      symlinkSync(join(outside, 'secret.md'), join(workspace, 'external.md'));
+      const entries = (await browser.list()).entries;
+      expect(entries.find((entry) => entry.name === 'external')).toMatchObject({
+        type: 'symlink', linkTarget: outside, linkState: 'external',
+      });
+      expect(entries.find((entry) => entry.name === 'external.md')).toMatchObject({
+        type: 'symlink', linkTarget: join(outside, 'secret.md'), linkState: 'external',
+      });
+      await expect(browser.list('external')).rejects.toMatchObject({ status: 403 });
+      await expect(browser.read('external/secret.md')).rejects.toMatchObject({ status: 403 });
+      await expect(browser.write('external.md', 'changed', 'version')).rejects.toMatchObject({ status: 403 });
+      expect(readFileSync(join(outside, 'secret.md'), 'utf8')).toBe('outside');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('shows broken and looping links without breaking the directory list', async () => {
+    symlinkSync('missing.md', join(workspace, 'broken.md'));
+    symlinkSync('loop-b', join(workspace, 'loop-a'));
+    symlinkSync('loop-a', join(workspace, 'loop-b'));
+    const entries = (await browser.list()).entries;
+    expect(entries.find((entry) => entry.name === 'broken.md')).toMatchObject({
+      type: 'symlink', linkTarget: 'missing.md', linkState: 'broken',
+    });
+    expect(entries.find((entry) => entry.name === 'loop-a')).toMatchObject({
+      type: 'symlink', linkTarget: 'loop-b', linkState: 'loop',
+    });
+    await expect(browser.read('broken.md')).rejects.toMatchObject({ status: 404 });
+    await expect(browser.list('loop-a')).rejects.toMatchObject({ status: 404 });
+    await expect(browser.write('broken.md', 'changed', 'version')).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('rejects aliases for hidden targets and targets with unsupported file types', async () => {
+    symlinkSync('.env', join(workspace, 'secret.md'));
+    symlinkSync('image.png', join(workspace, 'image.md'));
+    symlinkSync('.xangi', join(workspace, 'state'));
+    const entries = (await browser.list()).entries;
+    for (const name of ['secret.md', 'image.md', 'state']) {
+      expect(entries.find((entry) => entry.name === name)?.linkState).toBe('unavailable');
+    }
+    await expect(browser.read('secret.md')).rejects.toMatchObject({ status: 403 });
+    await expect(browser.read('image.md')).rejects.toMatchObject({ status: 403 });
+    await expect(browser.list('state')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('respects directory display exclusions for internal directory links', async () => {
+    symlinkSync('notes', join(workspace, 'alias'));
+    const custom = new WorkspaceBrowser(workspace, undefined, ['alias']);
+    expect((await custom.list()).entries.map((entry) => entry.name)).not.toContain('alias');
+    expect((await custom.list()).excludedDirectoryCount).toBe(1);
+    expect((await custom.list('alias')).entries).toHaveLength(1);
+  });
+
   it('rejects files larger than the configured editor limit', async () => {
     const limited = new WorkspaceBrowser(workspace, 8);
     writeFileSync(join(workspace, 'large.md'), '123456789');

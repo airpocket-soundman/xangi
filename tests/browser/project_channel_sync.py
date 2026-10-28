@@ -49,9 +49,8 @@ with sync_playwright() as pw:
             page=context.new_page();page.set_default_timeout(10000);page.on('pageerror',lambda e: errors.append(str(e)))
             page.goto('http://project-test.test/')
             if width <= 768: page.get_by_role('button',name='サイドバーを開く').click()
-            expect(page.locator('.sidebar .projects-link')).to_have_count(1)
-            page.get_by_role('button',name='Projects',exact=False).click()
-            page.get_by_role('button',name='＋ 新規プロジェクト').click()
+            expect(page.locator('.sidebar-projects')).to_have_count(1)
+            page.get_by_role('button',name='新規プロジェクト',exact=True).click()
             form=page.locator('.project-form')
             form.get_by_label('名前',exact=True).fill('開発Project')
             form.get_by_label('共通指示').fill('変更を検証してください')
@@ -66,11 +65,14 @@ with sync_playwright() as pw:
             assert projects[0]['channel']=={'platform':'slack','channelId':'C123'}
             page.reload()
             if width <= 768: page.get_by_role('button',name='サイドバーを開く').click()
-            page.get_by_role('button',name='＋ 新規',exact=True).click()
+            page.locator('.sidebar').get_by_role('button',name='＋ 新しい会話',exact=True).click()
             assert not posts and not sessions, 'New must not create a remote thread before input'
             page.get_by_placeholder('Slackへ送るメッセージを入力').fill('続けてください')
             page.get_by_role('button',name='送信',exact=True).click()
             expect(page.get_by_label('送信したメッセージ')).to_contain_text('続けてください')
+            for _ in range(100):
+                if pending: break
+                page.wait_for_timeout(20)
             assert pending, 'Input must appear while the response is still pending'
             sessions[0]['messages']=[{'id':'server-user-1','role':'user','content':'続けてください','createdAt':datetime.now(timezone.utc).isoformat()}]
             pending.pop().fulfill(json={'ok':True,'response':None})
@@ -99,7 +101,7 @@ with sync_playwright() as pw:
             if width <= 768: expect(page.locator('.sidebar')).not_to_be_in_viewport()
             page.screenshot(path=str(out/f'child-panes-{width}.png'),full_page=True)
             if width <= 768: page.get_by_role('button',name='サイドバーを開く').click()
-            toggle=page.get_by_text('▾',exact=True)
+            toggle=page.get_by_label('新しい会話の種類と担当')
             toggle.focus(); page.keyboard.press('Enter')
             expect(page.get_by_role('button',name='シークレット会話',exact=False)).to_be_visible()
             page.keyboard.press('Escape')

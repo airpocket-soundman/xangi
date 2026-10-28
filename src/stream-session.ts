@@ -1,3 +1,4 @@
+import { formatBackendStatus, type BackendStatus } from './backend-status.js';
 import type { StreamCallbacks } from './agent-runner.js';
 import { STREAM_UPDATE_INTERVAL_MS } from './constants.js';
 
@@ -7,7 +8,7 @@ import { STREAM_UPDATE_INTERVAL_MS } from './constants.js';
  */
 export interface StreamView {
   phase: 'thinking' | 'streaming';
-  /** 思考中の表示ライン（スピナー + ステータス語 + 経過秒）。phase='streaming' では '' */
+  /** 思考中または再試行待ちの表示。通常のstreaming中は空文字。 */
   statusLine: string;
   /** 受信済みの応答本文。phase='thinking' では '' */
   text: string;
@@ -93,6 +94,7 @@ export const DEFAULT_STATUS_VERBS = [
 export class StreamSession {
   private phase: 'thinking' | 'streaming' = 'thinking';
   private text = '';
+  private backendStatus: BackendStatus | null = null;
   private toolLines: string[] = [];
   private readonly startedAt = Date.now();
   private tick = 0;
@@ -100,6 +102,8 @@ export class StreamSession {
   private interval: NodeJS.Timeout | undefined;
   private lastUpdateTime = 0;
   private pendingUpdate = false;
+  private textDirty = false;
+  private textTimer: NodeJS.Timeout | undefined;
   private finished = false;
 
   constructor(private readonly opts: StreamSessionOptions) {}
@@ -124,7 +128,7 @@ export class StreamSession {
     if (this.interval) return;
     const tickMs = this.opts.tickMs ?? 1000;
     this.interval = setInterval(() => {
-      if (this.finished || this.phase !== 'thinking') return;
+      if (this.finished || (this.phase !== 'thinking' && !this.backendStatus)) return;
       this.tick++;
       const rotate = this.opts.verbRotateTicks ?? 4;
       if (this.tick % rotate === 0) this.verbIndex++;
@@ -140,18 +144,27 @@ export class StreamSession {
   callbacks(inner: StreamCallbacks = {}): StreamCallbacks {
     return {
       ...inner,
+      onStatus: (status) => {
+        if (this.finished) return;
+        // Protocol notification may follow stderr without the retry deadline.
+        if (status && !status.retryAt && this.backendStatus?.reason === status.reason) {
+          status = { ...this.backendStatus, ...status };
+        }
+        if (status === null && this.backendStatus === null) return;
+        this.backendStatus = status;
+        this.renderNow();
+        inner.onStatus?.(status);
+      },
       onText: (chunk, fullText) => {
+        this.backendStatus = null;
         this.text = fullText;
         this.phase = 'streaming';
-        const intervalMs = this.opts.streamUpdateIntervalMs ?? STREAM_UPDATE_INTERVAL_MS;
-        const now = Date.now();
-        if (now - this.lastUpdateTime >= intervalMs && !this.pendingUpdate) {
-          this.lastUpdateTime = now;
-          this.renderThrottled();
-        }
+        this.textDirty = true;
+        this.scheduleTextRender();
         inner.onText?.(chunk, fullText);
       },
       onToolUse: (toolName, toolInput) => {
+        this.backendStatus = null;
         const line = this.opts.formatToolLine?.(toolName, toolInput);
         if (line && !this.toolLines.includes(line)) {
           this.toolLines.push(line);
@@ -166,7 +179,11 @@ export class StreamSession {
   view(): StreamView {
     return {
       phase: this.phase,
-      statusLine: this.phase === 'thinking' ? this.buildStatusLine() : '',
+      statusLine: this.backendStatus
+        ? formatBackendStatus(this.backendStatus)
+        : this.phase === 'thinking'
+          ? this.buildStatusLine()
+          : '',
       text: this.text,
       toolLines: capToolLines([...this.toolLines]),
       elapsedSec: this.elapsedSec(),
@@ -176,6 +193,9 @@ export class StreamSession {
   /** 完了・エラー時に呼ぶ。アニメーションを停止し、以後の描画を抑止する */
   finish(): void {
     this.finished = true;
+    this.textDirty = false;
+    if (this.textTimer) clearTimeout(this.textTimer);
+    this.textTimer = undefined;
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = undefined;
@@ -200,6 +220,26 @@ export class StreamSession {
     Promise.resolve(this.opts.render(this.view())).catch(() => {});
   }
 
+  /** Coalesce skipped chunks and flush the latest text even if no new chunk arrives. */
+  private scheduleTextRender(): void {
+    if (this.finished || !this.textDirty || this.pendingUpdate || this.textTimer) return;
+    const delay = Math.max(
+      0,
+      (this.opts.streamUpdateIntervalMs ?? STREAM_UPDATE_INTERVAL_MS) -
+        (Date.now() - this.lastUpdateTime)
+    );
+    if (delay > 0) {
+      this.textTimer = setTimeout(() => {
+        this.textTimer = undefined;
+        this.scheduleTextRender();
+      }, delay);
+      return;
+    }
+    this.textDirty = false;
+    this.lastUpdateTime = Date.now();
+    this.renderThrottled();
+  }
+
   /** ストリーム本文用の描画。完了まで pendingUpdate を立てて重複 edit を防ぐ */
   private renderThrottled(): void {
     if (this.finished) return;
@@ -208,6 +248,7 @@ export class StreamSession {
       .catch(() => {})
       .finally(() => {
         this.pendingUpdate = false;
+        this.scheduleTextRender();
       });
   }
 }

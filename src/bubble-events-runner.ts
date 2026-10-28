@@ -44,6 +44,8 @@ export interface BubbleEventContext {
   userText?: string;
   /** UI内部メタデータを共通eventsから除外する場合のみ指定。 */
   eventTextSanitizer?: (text: string) => string;
+  /** shutdown finalizer がこのターンの表示を確定済みか。 */
+  isShutdownInterrupted?: () => boolean;
 }
 
 const CANCEL_MESSAGE = 'Request cancelled by user';
@@ -55,7 +57,7 @@ export async function runWithBubbleEvents(
   callbacks: StreamCallbacks = {},
   options?: RunOptions
 ): Promise<RunResult> {
-  const { userText, eventTextSanitizer, ...eventBase } = ctx;
+  const { userText, eventTextSanitizer, isShutdownInterrupted, ...eventBase } = ctx;
   startActivity(ctx);
   events.turnStarted({ ...eventBase, userText });
   let errorEmitted = false;
@@ -87,9 +89,12 @@ export async function runWithBubbleEvents(
     const result = await runner.runStream(
       prompt,
       {
+        onUserInput: callbacks.onUserInput,
         onBackendReady: () => callbacks.onBackendReady?.(),
+        onStatus: (status) => callbacks.onStatus?.(status),
         onModel: (model) => callbacks.onModel?.(model),
         onText: (chunk, fullText) => {
+          if (isShutdownInterrupted?.()) return;
           const publicFullText = eventTextSanitizer ? eventTextSanitizer(fullText) : fullText;
           const publicChunk = eventTextSanitizer
             ? publicFullText.startsWith(lastPublicText)
@@ -108,6 +113,7 @@ export async function runWithBubbleEvents(
           callbacks.onText?.(chunk, fullText);
         },
         onToolUse: (toolName, toolInput) => {
+          if (isShutdownInterrupted?.()) return;
           observation?.onToolUse(toolName, toolInput);
           updateActivityTool(ctx, toolName, toolInput);
           callbacks.onToolUse?.(toolName, toolInput);
@@ -127,6 +133,11 @@ export async function runWithBubbleEvents(
       runOptions
     );
     collectChanges();
+    if (isShutdownInterrupted?.()) {
+      abortActivity(ctx);
+      events.turnAborted(eventBase);
+      return result;
+    }
     if (callbackError) throw callbackError;
     const completed = completion ?? result;
     const publicResult = eventTextSanitizer
@@ -140,7 +151,7 @@ export async function runWithBubbleEvents(
     collectChanges();
     if (!errorEmitted) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg === CANCEL_MESSAGE) {
+      if (msg === CANCEL_MESSAGE || isShutdownInterrupted?.()) {
         abortActivity(ctx);
         events.turnAborted(eventBase);
       } else {
@@ -149,7 +160,9 @@ export async function runWithBubbleEvents(
       }
     }
     errorEmitted = true;
-    callbacks.onError?.(e instanceof Error ? e : new Error(String(e)));
+    if (!isShutdownInterrupted?.()) {
+      callbacks.onError?.(e instanceof Error ? e : new Error(String(e)));
+    }
     throw e;
   } finally {
     releaseSession();
