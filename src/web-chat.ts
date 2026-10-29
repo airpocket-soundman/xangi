@@ -80,7 +80,9 @@ import {
   updateLatestMessageUsage,
   attachLatestAssistantAttachments,
   deleteMessage as deleteTranscriptMessage,
+  deleteSessionTranscript,
   ensureVisibleAssistantResponse,
+  isValidTranscriptSessionId,
 } from './transcript-logger.js';
 import { threadIdFor, turnIdFor, events, subscribeEvents } from './events-emitter.js';
 import {
@@ -3356,6 +3358,10 @@ ${delegatedTeam.prompt}`
       req.method === 'DELETE'
     ) {
       const targetId = decodeURIComponent(url.replace('/api/sessions/', ''));
+      if (!isValidTranscriptSessionId(targetId)) {
+        sendJson(res, 400, { error: 'invalid session id' });
+        return;
+      }
       const entry = getSessionEntry(targetId);
       // ランナーも破棄（web セッションの場合のみ）
       if (entry?.platform === 'web') {
@@ -3363,12 +3369,7 @@ ${delegatedTeam.prompt}`
       }
       removeSession(targetId);
       busySessions.delete(targetId);
-
-      const logPath = join(workdir, 'logs', 'sessions', `${targetId}.jsonl`);
-      if (existsSync(logPath)) {
-        const { unlinkSync } = await import('fs');
-        unlinkSync(logPath);
-      }
+      deleteSessionTranscript(workdir, targetId);
 
       console.log(`[web-chat] Deleted session ${targetId}`);
       invalidateSessionSnapshots();

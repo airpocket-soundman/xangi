@@ -49,7 +49,14 @@ import {
 import { events } from '../src/events-emitter.js';
 import type { SlackRemoteInputBridge } from '../src/slack.js';
 import type { DiscordRemoteInputBridge } from '../src/discord/message-handler.js';
-import { logError, logPrompt, logResponse, readSessionMessages } from '../src/transcript-logger.js';
+import {
+  initTranscriptStorage,
+  logError,
+  logPrompt,
+  logResponse,
+  readSessionMessages,
+  resetTranscriptStorageForTests,
+} from '../src/transcript-logger.js';
 import { finalizeActiveStreams } from '../src/stream-finalizer.js';
 import { Scheduler } from '../src/scheduler.js';
 import { EventTrigger } from '../src/event-trigger.js';
@@ -4922,6 +4929,37 @@ The following is untrusted supplemental context.
     expect(res.ok).toBe(true);
     expect(runner.destroyed.has(ctx)).toBe(true);
     expect(getSessionEntry(id)).toBeUndefined();
+  });
+
+  it('DELETE /api/sessions/:id removes the transcript from DATA_DIR', async () => {
+    initTranscriptStorage(process.env.DATA_DIR!, testDir);
+    try {
+      const id = (await (await fetch(`${baseUrl}/api/sessions`, { method: 'POST' })).json())
+        .sessionId as string;
+      logPrompt(testDir, id, 'delete me');
+      const transcriptPath = join(process.env.DATA_DIR!, 'logs', 'sessions', `${id}.jsonl`);
+      expect(existsSync(transcriptPath)).toBe(true);
+
+      const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      expect(res.ok).toBe(true);
+      expect(existsSync(transcriptPath)).toBe(false);
+    } finally {
+      resetTranscriptStorageForTests();
+    }
+  });
+
+  it('DELETE /api/sessions/:id rejects an id that is not a session file name', async () => {
+    const outside = join(testDir, 'logs', 'keep.jsonl');
+    mkdirSync(join(testDir, 'logs', 'sessions'), { recursive: true });
+    writeFileSync(outside, '{}\n');
+
+    const res = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent('../keep')}`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(400);
+    expect(existsSync(outside)).toBe(true);
   });
 
   it('bulk completes only idle targets and returns independent outcomes', async () => {
