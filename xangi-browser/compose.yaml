@@ -1,0 +1,20 @@
+name: xangi-browser-dev
+services:
+  controller:
+    build: .
+    init: true
+    environment:
+      BROWSER_CONTROL_TOKEN: ${BROWSER_CONTROL_TOKEN:?Set a random token of at least 32 characters}
+      BROWSER_ALLOWED_HOSTS: ${BROWSER_ALLOWED_HOSTS:-localhost,127.0.0.1}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.5
+    networks: [isolated]
+    # No published ports, host paths, docker socket or existing services.
+networks:
+  isolated:
+    internal: true
