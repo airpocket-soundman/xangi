@@ -734,7 +734,7 @@ export function recordToolCallAndDetectLoop(
 /**
  * A successful file mutation changes the state that a later verification command observes.
  * Start a fresh loop-detection window so "edit -> rerun the same test" is not mistaken for
- * repeating an ineffective call. Idempotent result caching remains session-wide.
+ * repeating an ineffective call. Shell commands are re-executed so external changes are observed.
  */
 export function resetToolLoopHistoryAfterMutation(session: Session, toolName: string): void {
   if (toolName !== 'write' && toolName !== 'edit') return;
@@ -742,47 +742,10 @@ export function resetToolLoopHistoryAfterMutation(session: Session, toolName: st
   session.recentNormSigs.length = 0;
 }
 
-/**
- * 冪等な (副作用なし・args 同じなら結果同一) tool_call を検出する。
- * 主に exec / bash / shell 系の `command` / `script` / `code` 文字列を見て、
- * 計算・エンコード・ハッシュ系のコマンドを正規表現で判定。
- *
- * 副作用ありそうなパターン (リダイレクト / rm / curl / git 等) が含まれていれば
- * 冪等扱いしない。安全側に倒す。
- */
+/** Shell results depend on mutable files, environment and external processes. Do not cache them. */
 export function isIdempotentToolCall(name: string, args: unknown): boolean {
-  if (!args || typeof args !== 'object') return false;
-  const argsRec = args as Record<string, unknown>;
-  const commandStr = String(argsRec.command ?? argsRec.script ?? argsRec.code ?? '');
-  if (!commandStr) return false;
-
-  // 副作用ありそうなパターン: 冪等扱いしない (安全側)
-  const SIDE_EFFECT_PATTERNS = [
-    />>?\s*[^|&\s]/, // > or >> でファイル等に書き込み (パイプ/AND 連結は除く)
-    /\b(rm|mv|cp|mkdir|touch|chmod|chown|ln)\b/,
-    /\b(curl|wget|fetch|nc)\b/,
-    /\b(git|npm|pip|uv|docker|systemctl|apt|yum|brew|pm2)\b/,
-    /\b(kill|killall)\b/,
-  ];
-  for (const re of SIDE_EFFECT_PATTERNS) {
-    if (re.test(commandStr)) return false;
-  }
-
-  // 冪等パターン: 計算・エンコード・ハッシュ系
-  const IDEMPOTENT_PATTERNS = [
-    /\bwc\b\s+-[clmw]/, // wc -c / -l / -m / -w (文字数測定)
-    /\bbase64\b/, // base64 単発 (encode/decode)
-    /\b(?:md5|sha1|sha224|sha256|sha384|sha512)sum\b/, // ハッシュ系
-    /\bcksum\b/,
-    /\burllib\.parse\.(?:quote|unquote)/, // Python URL encode/decode
-    /\b(?:quote_plus|unquote_plus)\b/,
-    /\bimport\s+hashlib\b/, // Python hashlib import
-    /\bhashlib\.[a-z0-9]+\(/, // hashlib.md5(...) 等
-    /\bprintf\b.*%[bs]/, // printf '%s' 整形 (限定的)
-  ];
-  for (const re of IDEMPOTENT_PATTERNS) {
-    if (re.test(commandStr)) return true;
-  }
+  void name;
+  void args;
   return false;
 }
 

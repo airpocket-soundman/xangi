@@ -673,7 +673,7 @@ export async function runAgyUsageProbe(timeoutMs = AGY_USAGE_TIMEOUT_MS): Promis
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       setTimeout(() => {
-        if (!settled) child.kill('SIGKILL');
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }, 1000).unref();
       if (!settled) {
         settled = true;

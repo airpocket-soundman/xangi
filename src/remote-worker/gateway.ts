@@ -228,8 +228,18 @@ export class RemoteWorkerGateway {
         socket.close(1007, 'invalid json');
         return;
       }
+      if (!message || typeof message !== 'object' || Array.isArray(message)) {
+        socket.close(1007, 'invalid message');
+        return;
+      }
       if (!workerId) {
-        if (message.type !== 'hello' || !this.acceptHello(message)) {
+        let accepted = false;
+        try {
+          accepted = message.type === 'hello' && this.acceptHello(message);
+        } catch {
+          /* Reject this connection if its token store is unavailable. */
+        }
+        if (!accepted || message.type !== 'hello') {
           socket.close(1008, 'unauthorized worker');
           return;
         }
@@ -239,9 +249,15 @@ export class RemoteWorkerGateway {
         this.workers.set(workerId, { hello: message, socket });
         return;
       }
-      if (message.type !== 'response') return;
+      if (
+        message.type !== 'response' ||
+        typeof message.id !== 'string' ||
+        typeof message.ok !== 'boolean'
+      )
+        return;
       this.handleResponse(workerId, message);
     });
+    socket.on('error', () => socket.close());
     socket.on('close', () => {
       clearTimeout(helloTimer);
       if (workerId && this.workers.get(workerId)?.socket === socket) this.workers.delete(workerId);
@@ -249,7 +265,16 @@ export class RemoteWorkerGateway {
   }
 
   private acceptHello(hello: WorkerHello): boolean {
-    if (hello.protocol !== REMOTE_WORKER_PROTOCOL) return false;
+    if (
+      hello.protocol !== REMOTE_WORKER_PROTOCOL ||
+      typeof hello.workerId !== 'string' ||
+      typeof hello.token !== 'string' ||
+      typeof hello.platform !== 'string' ||
+      typeof hello.arch !== 'string' ||
+      !Array.isArray(hello.capabilities) ||
+      !hello.capabilities.every((c) => ['system.info', 'exec', 'usb.list'].includes(c))
+    )
+      return false;
     this.registrations = loadRegistrations(this.configPath);
     const registration = this.registrations.find((item) => item.id === hello.workerId);
     if (!registration) return false;

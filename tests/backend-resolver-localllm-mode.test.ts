@@ -189,6 +189,7 @@ describe('BackendResolver localLlmMode', () => {
       });
       const envContent = readFileSync(envFile, 'utf-8');
       expect(envContent).toContain('AGENT_BACKEND=claude-code');
+      expect(envContent).toContain('XANGI_GLOBAL_BACKEND_OVERRIDE=true');
       expect(envContent).toContain('AGENT_MODEL=claude-test');
       expect(envContent).toContain('AGENT_EFFORT=high');
 

@@ -1,3 +1,5 @@
+// HTTP tests must not discover or probe authenticated CLIs in the developer's home.
+vi.mock('../src/backend-auth-status.js', () => ({ backendAuthenticationSnapshot: async () => [] }));
 import { requestUserInput, normalizeQuestions } from '../src/user-input.js';
 import { instanceCliCommand } from '../src/instance-cli.js';
 import * as sessionTitle from '../src/session-title.js';
@@ -520,6 +522,53 @@ describe('web-chat HTTP API', () => {
       status: 'available',
       channels: [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
     });
+  });
+
+  it('saves and resets channel workspaces with persistence, platform isolation and origin checks', async () => {
+    const path = join(testDir, 'channel-workspace');
+    mkdirSync(path);
+    const post = (body: unknown, origin?: string) => fetch(`${baseUrl}/api/runtime-settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(origin ? { origin } : {}) },
+      body: JSON.stringify(body),
+    });
+    const created = await fetch(`${baseUrl}/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '開発工房', path }),
+    });
+    expect(created.status).toBe(201);
+    const { workspace } = await created.json();
+    const input = { name: 'workspace', platform: 'discord', channelId: 'workspace-channel', action: 'set', value: workspace.id };
+    const snapshot = async (platform = 'discord') => (await fetch(`${baseUrl}/api/runtime-settings/channel?platform=${platform}&channelId=workspace-channel`)).json();
+    expect((await post(input, 'https://other.invalid')).status).toBe(403);
+    expect((await snapshot()).workspace.value).toBe('inherit');
+    expect((await post(input)).status).toBe(200);
+    expect((await snapshot()).workspace).toMatchObject({ enabled: true, value: workspace.id, effective: { id: workspace.id, name: '開発工房', path: realpathSync(path) } });
+    const reopened = await WorkspaceRegistry.open({ dataDir: process.env.DATA_DIR!, defaultWorkspacePath: testDir });
+    expect(reopened.getBinding('discord', 'workspace-channel')).toBe(workspace.id);
+    expect((await snapshot('slack')).workspace.value).toBe('inherit');
+    expect((await post({ ...input, value: 'missing' })).status).toBe(400);
+    expect((await snapshot()).workspace.value).toBe(workspace.id);
+    expect((await post({ ...input, action: 'reset' })).status).toBe(200);
+    expect((await snapshot()).workspace).toMatchObject({ value: 'inherit', effective: { id: 'default' } });
+  });
+
+  it('shows an assigned agent workspace and rejects individual workspace mutations', async () => {
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const path = join(testDir, 'agent-workspace');
+    mkdirSync(path);
+    const { workspace } = await (await post('/api/workspaces', { name: 'Agent work', path })).json();
+    const { agent } = await (await post('/api/agents', { name: 'Worker', workspaceId: workspace.id })).json();
+    const binding = { name: 'agent', action: 'set', platform: 'discord', channelId: 'workspace-agent', value: agent.id };
+    expect((await post('/api/runtime-settings', binding)).status).toBe(200);
+    const snapshot = await (await fetch(`${baseUrl}/api/runtime-settings/channel?platform=discord&channelId=workspace-agent`)).json();
+    expect(snapshot.workspace).toMatchObject({ value: 'inherit', effective: { id: workspace.id } });
+    for (const action of ['set', 'reset']) {
+      const response = await post('/api/runtime-settings', { ...binding, name: 'workspace', action, value: 'default' });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain('担当を解除');
+    }
   });
 
   it('serves the configured-channel overview separately from initial settings', async () => {
@@ -5159,4 +5208,72 @@ The following is untrusted supplemental context.
     await readSSEUntilDone((await send).body);
     expect(getSessionEntry(id)?.lifecycle).toBe('closed');
   });
+
+  it('R07 preserves quoted-boundary uploads and boundary-like payload bytes', async () => {
+    const boundary='review-boundary'; const text='日本語\r\nnot--review-boundary-payload';
+    const body='--'+boundary+'\r\nContent-Disposition: form-data; name="file"; filename="report.txt"\r\nContent-Type: text/plain\r\n\r\n'+text+'\r\n--'+boundary+'--\r\n';
+    const response=await fetch(baseUrl+'/api/upload',{method:'POST',headers:{'content-type':'multipart/form-data; boundary="'+boundary+'"; charset=utf-8'},body});
+    expect(response.status).toBe(200);
+    const result=await response.json();expect(result.files).toHaveLength(1);
+    expect(readFileSync(result.files[0].path,'utf8')).toBe(text);
+    const invalid=await fetch(baseUrl+'/api/upload',{method:'POST',headers:{'content-type':'multipart/form-data; boundary="'+boundary+'"'},body:body.replace('--'+boundary+'--','missing-end')});
+    expect(invalid.status).toBe(400);
+  });
+  it('R10 returns 400 for invalid path encoding and remains available', async () => {
+    for(const path of ['/api/sessions/%ZZ/history','/api/files/%E0%A4%A']) {
+      const response=await fetch(baseUrl+path);expect(response.status).toBe(400);
+      expect((await fetch(baseUrl+'/health')).status).toBe(200);
+    }
+  });
+  it('R11 ignores permission overrides in Web chat requests', async () => {
+    const id=createWebSession();const run=vi.spyOn(runner,'runStream');
+    const pending=fetch(baseUrl+'/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({appSessionId:id,message:'hello',skipPermissions:true})});
+    await vi.waitFor(()=>expect(run).toHaveBeenCalled());runner.release('web-chat:'+id);
+    const response=await pending;expect(response.status).toBe(200);await response.text();
+    expect(run).toHaveBeenCalled();expect(run.mock.calls[0][2]?.skipPermissions).not.toBe(true);
+  });
+  it('R14 shares admission between Web chat and all inbox aliases', async () => {
+    const id=createWebSession();const {webSessionTurns}=await import('../src/web-session-turns.js');
+    webSessionTurns.add(id);
+    try {
+      for(const path of ['/api/chat','/api/pet/inbox','/api/device/inbox','/api/terminal/inbox']) {
+        const response=await fetch(baseUrl+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({appSessionId:id,message:'hello',text:'hello'})});
+        expect(response.status).toBe(409);
+      }
+    } finally {webSessionTurns.delete(id);}
+  });
+  it('R40 rejects closed conversations from Inbox and selects an open session instead', async () => {
+    const id=createWebSession();closeSession(id);
+    const response=await fetch(baseUrl+'/api/pet/inbox',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({appSessionId:id,text:'hello'})});
+    expect(response.status).toBe(409);
+    const next=await fetch(baseUrl+'/api/pet/inbox',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:'hello'})});
+    expect(next.status).toBe(202);
+    const result=await next.json();expect(listAllSessions()).toHaveLength(2);
+    await vi.waitFor(()=>expect(runner.options.length).toBeGreaterThan(0));
+    expect(runner.options[0].appSessionId).not.toBe(id);
+    runner.release(runner.options[0].channelId!);
+  });
+  it('R44 denies foreign origins across read, write and upload paths without wildcard CORS', async () => {
+    for(const [path,method] of [['/api/sessions','GET'],['/api/workspace/file?path=README.md','GET'],['/api/chat','POST'],['/api/upload','POST'],['/api/workspace/file','PUT']]) {
+      const response=await fetch(baseUrl+path,{method,headers:{origin:'https://untrusted.example'}});
+      expect(response.status).toBe(403);expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    }
+    expect((await fetch(baseUrl+'/health')).headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+
+  it('R11 ignores permission overrides in Agent Run requests as well', async () => {
+    const agentResponse=await fetch(baseUrl+'/api/agents',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'Permission regression',backend:'codex',model:'test'})});
+    const {agent}=await agentResponse.json();
+    const response=await fetch(baseUrl+'/api/agent-runs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agent.id,task:'permission test',skipPermissions:true})});
+    expect(response.status).toBe(202);const {run}=await response.json();
+    const context='web-chat:'+run.appSessionId;
+    await vi.waitFor(()=>expect(runner.pending.has(context)).toBe(true));
+    expect(runner.options.at(-1)?.skipPermissions).not.toBe(true);runner.release(context);
+  });
+  it('R44 preserves the separately authenticated device ingress preflight', async () => {
+    const response=await fetch(baseUrl+'/api/devices/sample/device-status',{method:'OPTIONS',headers:{origin:'https://device.example','access-control-request-method':'POST'}});
+    expect(response.status).toBe(200);expect(response.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
 });

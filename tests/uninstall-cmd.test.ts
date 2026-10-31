@@ -157,4 +157,12 @@ describe('managed uninstall command', () => {
     expect(await readFile(join(layout.workspaceDir, 'AGENTS.md'), 'utf8')).toBe('my workspace');
     expect(output).toContain('Kept workspace.');
   });
+
+  it('R06 refuses purge before stopping any service when a registered workspace would be deleted', async () => {
+    const {root,layout,service,scheduler}=await fixture();const workspace=join(layout.configDir,'work');await mkdir(workspace);
+    await writeFile(layout.configFile,JSON.stringify({workspacePath:workspace}));
+    await expect(uninstallCmd({purge:true,yes:true},{layout,service,updateScheduler:scheduler,homeDir:root})).rejects.toThrow(/would delete a workspace/);
+    expect(service.uninstalls).toBe(0);expect(scheduler.uninstalls).toBe(0);expect(await exists(layout.appRoot)).toBe(true);
+  });
+
 });

@@ -66,6 +66,7 @@ interface SendResult {
   ok?: boolean;
   sessionId: string;
   provider: ProviderLabel;
+  after?: number;
 }
 
 const DEFAULT_URL = 'http://127.0.0.1:18888';
@@ -435,10 +436,11 @@ async function fetchMessages(
 async function waitForResponse(
   config: CliConfig,
   sessionId: string,
-  timeoutMs: number
+  timeoutMs: number,
+  initialAfter = 0
 ): Promise<void> {
   const startedAt = Date.now();
-  let after = 0;
+  let after = initialAfter;
   let printed = false;
 
   while (Date.now() - startedAt < timeoutMs) {
@@ -496,7 +498,7 @@ async function send(
   const shouldWait = boolFlag(flags, 'wait') || !boolFlag(flags, 'detach');
   if (shouldWait) {
     const timeoutMs = Number(stringFlag(flags, 'timeout') || '600000');
-    await waitForResponse(config, result.sessionId, timeoutMs);
+    await waitForResponse(config, result.sessionId, timeoutMs, result.after ?? 0);
   }
   return result.sessionId;
 }

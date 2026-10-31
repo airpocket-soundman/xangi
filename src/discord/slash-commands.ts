@@ -186,7 +186,11 @@ export function buildSlashCommands(
           .setName('use')
           .setDescription('登録済みworkspaceへ切り替える')
           .addStringOption((opt) =>
-            opt.setName('name').setDescription('登録済み表示名').setRequired(true)
+            opt
+              .setName('name')
+              .setDescription('登録済み表示名')
+              .setRequired(true)
+              .setAutocomplete(true)
           )
       )
       .addSubcommand((sub) =>
@@ -719,9 +723,25 @@ async function handleAutocomplete(
   interaction: AutocompleteInteraction,
   skills: Skill[],
   resolver: BackendResolver,
-  discoverModels: typeof discoverBackendModels
+  discoverModels: typeof discoverBackendModels,
+  workspaceRegistry: WorkspaceRegistry
 ): Promise<void> {
   const focused = interaction.options.getFocused(true);
+  if (interaction.commandName === 'workspace') {
+    const choices =
+      interaction.options.getSubcommand() === 'use' && focused.name === 'name'
+        ? filterAutocompleteChoices(
+            workspaceRegistry
+              .list()
+              // Keep the exact name: /workspace use resolves it by name, not by ID.
+              .filter((workspace) => workspace.name.length <= 100)
+              .map((workspace) => ({ name: workspace.name, value: workspace.name })),
+            String(focused.value)
+          )
+        : [];
+    await interaction.respond(choices);
+    return;
+  }
   const backendOptionName = interaction.commandName === 'models' ? 'backend' : 'type';
   const backend = interaction.options.getString(backendOptionName) as AgentBackend | null;
   const model = interaction.options.getString('model') ?? undefined;
@@ -1086,6 +1106,15 @@ export function createInteractionHandler(
     // オートコンプリート処理
     if (interaction.isAutocomplete()) {
       if (
+        interaction.commandName === 'workspace' &&
+        (config.features?.workspaceSwitching === false ||
+          (!config.discord.allowedUsers?.includes('*') &&
+            !config.discord.allowedUsers?.includes(interaction.user.id)))
+      ) {
+        await interaction.respond([]);
+        return;
+      }
+      if (
         ['backend', 'models'].includes(interaction.commandName) &&
         config.features?.backendSwitching === false
       ) {
@@ -1096,7 +1125,8 @@ export function createInteractionHandler(
         interaction,
         skillsRef.current,
         resolver,
-        autocompleteDiscoverModels
+        autocompleteDiscoverModels,
+        workspaceRegistry
       );
       return;
     }

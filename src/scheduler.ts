@@ -371,7 +371,7 @@ export class Scheduler {
     }
 
     const startupTasks: Schedule[] = [];
-    for (const schedule of this.schedules) {
+    for (const schedule of [...this.schedules]) {
       if (schedule.enabled) {
         if (schedule.type === 'startup') {
           startupTasks.push(schedule);
@@ -447,7 +447,7 @@ export class Scheduler {
     this.load();
     // 有効なジョブを再開（スケジューラ無効時はスキップ）
     if (!this.disabled) {
-      for (const schedule of this.schedules) {
+      for (const schedule of [...this.schedules]) {
         if (schedule.enabled) {
           this.startJob(schedule);
         }
@@ -479,11 +479,13 @@ export class Scheduler {
         this.remove(schedule.id);
         return;
       }
-      const timer = setTimeout(() => {
-        this.executeJob(schedule);
-        // 単発は実行後に削除
-        this.remove(schedule.id);
-      }, delay);
+      const timer = setTimeout(
+        () => {
+          // Re-evaluate the deadline after each bounded timer, including clock changes.
+          this.startJob(schedule);
+        },
+        Math.min(delay, 2_147_483_647)
+      );
       this.timers.set(schedule.id, timer);
       const runDate = new Date(schedule.runAt);
       this.log(

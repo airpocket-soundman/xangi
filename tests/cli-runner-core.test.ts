@@ -266,7 +266,12 @@ describe('CliRunnerBase executeStreamCore', () => {
     const promise = runner.runStream('p', { onError }, { channelId: 'ch1' });
     await tick();
     const proc = await getMockProcess();
+    let settled = false;
+    void promise.then(() => { settled = true; }, () => { settled = true; });
     proc.stdout.emit('data', '{"fail": "fatal stream error"}\n');
+    await tick();
+    expect(settled).toBe(false); // R34 retry must wait for process ownership to be released.
+    expect(proc.killed).toBe(true);
     proc.emit('close', 0);
     await expect(promise).rejects.toThrow('fatal stream error');
     expect(onError).toHaveBeenCalledTimes(1);

@@ -228,4 +228,23 @@ describe('public GitHub extension repositories', () => {
       )
     ).toThrow('only regular files and directories');
   });
+
+  it('R19 keeps formerly colliding owner/repository names in separate directories', async () => {
+    const dataDir=await mkdtemp(join(tmpdir(),'xangi-extension-collision-'));temporaryDirectories.push(dataDir);
+    const sources=[];
+    for(const [repository,id] of [['a--b/c','first'],['a/b--c','second']]) {
+      const source=await preparePublicGitHubExtension('https://github.com/'+repository,{
+        dataDir,fetch:(async(input)=>String(input).includes('/commits/')?Response.json({sha:'a'.repeat(40)}):Response.json({private:false,default_branch:'main',license:{spdx_id:'MIT'}})) as typeof fetch,
+        download:async()=>new Uint8Array([1]),extract:async(_bytes,destination)=>{
+          await writeFile(join(destination,'xangi-extension.json'),JSON.stringify({schemaVersion:2,id,displayName:id,version:'1.0.0',entrypoint:'index.js',runtime:{kind:'managed-http'},capabilities:[]}));
+          await writeFile(join(destination,'index.js'),'');
+          await writeFile(join(destination,'README.md'),'# Synthetic extension setup');
+        },
+      });sources.push(source);
+    }
+    expect(sources[0].manifestPath).not.toBe(sources[1].manifestPath);
+    expect(JSON.parse(await readFile(sources[0].manifestPath,'utf8')).id).toBe('first');
+    expect(await listRemoteExtensionSources(dataDir)).toHaveLength(2);
+  });
+
 });

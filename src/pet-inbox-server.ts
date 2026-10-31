@@ -24,6 +24,7 @@
  *   → xangi をグローバル IP で公開する人だけ token 設定が必要。
  */
 
+import { webSessionTurns } from './web-session-turns.js';
 import { isSecretSession } from './secret.js';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { AgentRunner, RunOptions } from './agent-runner.js';
@@ -34,6 +35,7 @@ import {
   ensureSession,
   getSession,
   getSessionEntry,
+  getSessionLifecycle,
   listAllSessions,
   setSession,
   setProviderSessionId,
@@ -55,7 +57,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const INBOX_PATHS = new Set(['/api/pet/inbox', '/api/device/inbox', '/api/terminal/inbox']);
 
 /** 同一セッションへの並行送信を抑止する (web-chat 側とは独立の Set)。 */
-const busy = new Set<string>();
+const busy = webSessionTurns;
 
 export function isPetInboxEnabled(): boolean {
   return process.env.XANGI_PET_INBOX_ENABLED !== 'false';
@@ -225,7 +227,12 @@ export async function handlePetInboxRequest(
     const latestWeb =
       body.secret === true
         ? undefined
-        : listAllSessions().find((s) => s.platform === 'web' && !isSecretSession(s.id));
+        : listAllSessions().find(
+            (s) =>
+              s.platform === 'web' &&
+              !isSecretSession(s.id) &&
+              getSessionLifecycle(s.id) !== 'closed'
+          );
     appSessionId =
       latestWeb?.id ||
       createWebSession({
@@ -242,6 +249,10 @@ export async function handlePetInboxRequest(
     sendJson(res, 409, {
       error: `Session ${appSessionId} is not a web session (platform: ${entry.platform})`,
     });
+    return true;
+  }
+  if (getSessionLifecycle(appSessionId) === 'closed') {
+    sendJson(res, 409, { error: 'Session is closed' });
     return true;
   }
   if (busy.has(appSessionId)) {

@@ -101,14 +101,14 @@ describe('Darwin service adapter', () => {
         calls.push([command, args, allowFailure]);
         return '';
       }),
-      status: vi.fn(() => ({ status: 0, output: 'running' })),
+      status: vi.fn(() => ({ status: 0, output: 'state = running\npid = 123' })),
     };
     const options = fixture(root);
     const adapter = createDarwinServiceAdapter(options, commands);
 
     await adapter.install();
     await adapter.restart();
-    expect(await adapter.status()).toEqual({ running: true, detail: 'running' });
+    expect(await adapter.status()).toEqual({ running: true, detail: 'state = running\npid = 123' });
     await adapter.openBrowser('http://127.0.0.1:1234/setup');
     await expect(adapter.openBrowser('https://example.com/setup')).rejects.toThrow(/loopback/i);
 
@@ -137,7 +137,7 @@ describe('Darwin service adapter', () => {
         if (command === 'launchctl' && args[0] === 'bootout') running = false;
         return '';
       }),
-      status: vi.fn(() => ({ status: running ? 0 : 1, output: running ? 'running' : '' })),
+      status: vi.fn(() => ({ status: running ? 0 : 1, output: running ? 'state = running\npid = 123' : '' })),
     };
     const options = fixture(root);
     const adapter = createDarwinServiceAdapter(options, commands);
@@ -161,7 +161,7 @@ describe('Darwin service adapter', () => {
     const root = await mkdtemp(join(tmpdir(), 'xangi-darwin-autostart-'));
     const commands: DarwinCommandRunner = {
       run: vi.fn(() => ''),
-      status: vi.fn(() => ({ status: 0, output: 'running' })),
+      status: vi.fn(() => ({ status: 0, output: 'state = running\npid = 123' })),
     };
     const options = fixture(root);
     const adapter = createDarwinServiceAdapter(options, commands);
@@ -178,4 +178,12 @@ describe('Darwin service adapter', () => {
     await expect(access(options.plistPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(access(options.autostartPlistPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('R08 distinguishes a registered stopped job and starts it with kickstart', async () => {
+    const root=await mkdtemp(join(tmpdir(),'xangi-darwin-stopped-'));const run=vi.fn();
+    const adapter=createDarwinServiceAdapter(fixture(root),{run,status:()=>({status:0,output:'state = waiting\nlast exit code = 1'})});
+    expect((await adapter.status()).running).toBe(false);await adapter.start();
+    expect(run).toHaveBeenCalledWith('launchctl',['kickstart',expect.stringContaining('/dev.xangi.app')]);
+  });
+
 });

@@ -22,7 +22,8 @@
     "typecheck": "tsc --noEmit && tsc -p web-ui/tsconfig.json",
     "xangi": "node dist/cli/xangi-main.js",
     "xangi-cmd": "node --env-file=.env dist/cli/xangi-cmd.js",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test:browser:review": "node tests/browser/review-ui-regressions.mjs"
   },
   "lint-staged": {
     "{src,web-ui/src}/**/*.{ts,tsx}": [

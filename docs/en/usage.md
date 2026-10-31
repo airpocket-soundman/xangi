@@ -473,6 +473,10 @@ Managed `xangi update` reports checking, downloading, verification, extraction, 
 
 For a managed installation, `xangi uninstall` removes scheduled updates, the OS service, and the xangi application in that order. It retains the workspace, settings, tokens, and history, so rerunning the printed install command restores the application with the previous configuration. Use `xangi uninstall --purge --yes` only when settings, tokens, and history should also be removed. Without `--yes`, `--purge` exits before deleting anything. Neither mode removes the workspace.
 
+Before deleting anything, uninstall checks the real paths of configured and registered workspaces, including historical session snapshots. If a deletion target contains a workspace, it refuses before stopping services. Move that workspace outside managed app/config/state directories first. New setup also rejects workspaces inside those directories.
+
+Managed updates without activation defer old-version cleanup to preserve assets used by running processes. Update locks use heartbeats; a lease not refreshed for at least 60 seconds can be recovered by the next update. Legacy single-file `update.lock` files cannot prove ownership and are never removed automatically. Confirm that no updater is running before moving aside that legacy file and retrying.
+
 In a development checkout, `./bin/xangi` starts current source through the local `tsx` installed by `npm ci`, preventing an ignored, stale `dist/` tree from surviving a `git pull`. A distribution contains no source tree and uses its bundled `dist` and Node.js runtime; it also bundles the README and user-facing documentation consumed during onboarding.
 
 Enter Discord allowed user IDs, Discord / Slack / LINE / Telegram tokens, and optional AI-provider API keys through `xangi settings`. The temporary GUI binds only to `127.0.0.1`, uses a one-time URL plus Host validation, never returns stored values to the browser, and closes after saving. xangi atomically stores values with mode 0600 in the OS-specific config directory's `secrets.json`. Users do not need to assemble `read` or `printf` commands or paste tokens into an AI conversation. Explicit environment variables remain supported and take precedence.
@@ -765,6 +769,8 @@ In a Docker environment, `.env` lives outside the container and cannot be modifi
 
 On Discord, `/workspace status` also shows the selected agent and its workspace path. The current session refers only to the channel or thread where the command is invoked. An unassigned session in the parent channel does not mean that its threads have no workspace; check each thread for its session path.
 
+In Settings → Channels, select a Discord or Slack channel and save a registered workspace. Choose “既定のワークスペースを継承” to clear the channel override. Changes apply after the next `/new`; existing conversations keep their workspace. When an agent is assigned, its workspace is shown and individual workspace changes are disabled. Edit that workspace in the agent settings.
+
 Discord and Slack can select a working directory per channel. Threads inherit the parent channel binding. A binding change never rewrites an existing session; it takes effect for the next session after `/new`.
 
 | Command                                 | Description                                            |
@@ -775,7 +781,7 @@ Discord and Slack can select a working directory per channel. Threads inherit th
 | `/workspace use <name>`                 | Bind an existing workspace to the channel              |
 | `/workspace reset`                      | Return to the startup `WORKSPACE_PATH`                  |
 
-Discord exposes the arguments as slash-command fields. Add a `/workspace` Slash Command to the Slack App configuration as well. Any existing absolute path accessible to the xangi process can be registered. Paths are canonicalized and the xangi state directory is rejected. Docker can switch only to container paths that were mounted in advance; an unmounted host path is not accessible.
+Discord exposes the arguments as slash-command fields. The `name` field of `/workspace use` suggests up to 25 registered names (including `default`), filtered by the text you enter. Names longer than 100 characters are omitted from suggestions; enter them manually. For new registrations with `/workspace set`, enter the name and absolute path directly. Add a `/workspace` Slash Command to the Slack App configuration as well. Any existing absolute path accessible to the xangi process can be registered. Paths are canonicalized and the xangi state directory is rejected. Docker can switch only to container paths that were mounted in advance; an unmounted host path is not accessible.
 
 In the Web UI, use the Workspace section in Settings to register an existing absolute path accessible to the xangi process. On the Settings screen, you can enter a path or use `Browse…` to choose a directory on the machine running xangi. It cannot select a local directory on the device running the browser. Unregistering removes only the registry entry and never deletes its directory or files. The default workspace and any workspace referenced by a Project, an existing conversation, or a Discord, Slack, or other channel binding cannot be unregistered.
 
@@ -981,7 +987,7 @@ AGENT_BACKEND=local-llm
 LOCAL_LLM_MODEL=nemotron-3-nano
 
 # Start (ollama + xangi-max)
-docker compose up xangi-max -d --build
+docker compose up ollama xangi-max -d --build
 ```
 
 ### GPU Version (CUDA + Python + PyTorch)
@@ -1603,6 +1609,10 @@ Shared completion-display settings:
 | `XANGI_HOOKS_FILE`    | Path to the hooks config file                                                                            | `<workspace>/hooks/hooks.json` |
 
 ### Web Chat UI
+
+Ordinary Web UI/API reads and mutations reject foreign Origin headers and do not advertise wildcard CORS. Clients that omit Origin, such as the CLI, continue to work. Extension device ingress retains cross-origin access under its separate Bearer authentication contract. Tool Server command execution and GitHub token issuance are restricted to loopback clients; do not expose these local-only APIs through an external proxy.
+
+Explicit global backend/model/effort changes made through settings survive restart and override the initial setup choice. Arbitrary startup environment values do not override setup. The internal persisted `XANGI_GLOBAL_BACKEND_OVERRIDE` flag distinguishes an explicit settings change.
 
 The composer grows with the message and returns to a single-line height after sending. Its height also updates when text changes programmatically, such as when inserting a suggestion.
 

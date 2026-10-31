@@ -940,6 +940,8 @@ export async function handleLineEvent(event: webhook.Event, ctx: HandlerContext)
   if (!message) return;
 
   const source = event.source;
+  // LINE integration supports private conversations only. Never reuse DM context in a group.
+  if (source?.type !== 'user') return;
   const userId = source && 'userId' in source ? source.userId : undefined;
   const replyToken = 'replyToken' in event ? event.replyToken : undefined;
   const messageId = message.id;

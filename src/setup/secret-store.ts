@@ -1,3 +1,4 @@
+import { withPathMutation } from '../path-mutation.js';
 import { readFile } from 'node:fs/promises';
 import { writePrivateJsonFile } from './private-json-file.js';
 
@@ -32,12 +33,14 @@ export class SecretStore {
       if (!value.trim()) throw new Error('secret value must not be empty');
     }
     if (Object.keys(values).length === 0) return;
-    const current = await this.read();
-    const document: SecretDocument = {
-      schemaVersion: 1,
-      secrets: { ...current.secrets, ...values },
-    };
-    await writePrivateJsonFile(this.path, document);
+    await withPathMutation(this.path, async () => {
+      const current = await this.read();
+      const document: SecretDocument = {
+        schemaVersion: 1,
+        secrets: { ...current.secrets, ...values },
+      };
+      await writePrivateJsonFile(this.path, document);
+    });
   }
 
   private async read(): Promise<SecretDocument> {

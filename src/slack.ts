@@ -109,6 +109,13 @@ export function shouldProcessSlackMessage(
   return input.autoReplyEnabled ?? slackConfig.autoReplyChannels?.includes(input.channel) ?? false;
 }
 
+export function slackDeletedThread(event: {
+  previous_message?: { thread_ts?: string };
+  thread_ts?: string;
+}): string | undefined {
+  return event.previous_message?.thread_ts ?? event.thread_ts;
+}
+
 export function slackConversationKey(channelId: string, threadTs?: string): string {
   return threadTs ? `${channelId}:${threadTs}` : channelId;
 }
@@ -1060,7 +1067,11 @@ export function registerSlackSchedulerBridge(deps: {
         );
         incrementMessageCount(freshAppSessionId);
 
-        const { displayText } = buildAttachmentResult(result, attachments);
+        const { displayText } = buildAttachmentResult(
+          result,
+          attachments,
+          agentSnapshot.workspacePath ?? config.agent.config.workdir
+        );
         await sendSlackResult(
           client,
           channelId,
@@ -1503,7 +1514,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         if (!deletedTs || !channelId) return;
         const contextKey = slackConversationKey(
           channelId,
-          (event as { thread_ts?: string }).thread_ts
+          slackDeletedThread(
+            event as { previous_message?: { thread_ts?: string }; thread_ts?: string }
+          )
         );
         const appSessionId = getActiveSessionId(contextKey) || getActiveSessionId(channelId);
         if (!appSessionId) return;
@@ -2170,7 +2183,11 @@ export async function processMessage(
     if (replySuggestionsEnabled && extracted.suggestions.length === 0) {
       extracted.suggestions = fallbackReplySuggestions(replySuggestionCount);
     }
-    const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
+    const { filePaths, displayText } = buildAttachmentResult(
+      extracted.text,
+      structuredAttachments,
+      tWorkdir
+    );
     // finalテキストを mrkdwn へ一度だけ変換し、以降の全描画（本文更新・ボタン付与）で共有する
     const renderedText = markdownToSlackMrkdwn(displayText || '✅');
     const completion = prepareSlackCompletion({

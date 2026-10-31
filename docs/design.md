@@ -760,6 +760,8 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 
 AI CLIが xangi の機能（Discord操作・スケジュール・システム）を安全に呼び出すための HTTP API サーバー。
 
+command実行とGitHub token発行は接続元socketのloopback判定とOrigin検証を通したlocal client専用とする。外部triggerは別のBearer認証境界を維持する。通常Web APIはGETを含め同一hostのOriginを検証し、拡張device ingressの独立した認証・CORS契約とは分離する。
+
 ```
 AI CLI（Claude Code等）
   → xangi tool（正規CLI。xangi-cmdは互換shim）

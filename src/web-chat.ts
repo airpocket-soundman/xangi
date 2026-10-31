@@ -34,6 +34,7 @@ import { latestModelExecution } from './model-execution-display.js';
  * 各 Web セッションは contextKey = `web-chat:<appSessionId>` で独立。
  * 同時に複数のセッションを保持・操作できる。
  */
+import { webSessionTurns } from './web-session-turns.js';
 import { createServer } from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
@@ -288,7 +289,7 @@ function sessionThreadId(session: {
 }
 
 /** 同一 appSessionId への並行送信を抑止するためのビジー集合 */
-const busySessions = new Set<string>();
+const busySessions = webSessionTurns;
 
 function hasInternalPromptMetadata(text: string): boolean {
   return /\[システム注記:|\[runtime\]|<prefetched-history\b|(?:<|\[)system-context(?:>|\])|<xangi_reply|(?:🧵 スレッド元|💬 返信元)|\[チャンネルルール（必ず従うこと）\]|\[USER PROMPT HOOK CONTEXT:/.test(
@@ -663,7 +664,7 @@ ${delegatedTeam.prompt}`
           defaultLocalLlmMode: localOptions.localLlmMode,
           defaultLocalLlmReasoningEffort: localOptions.localLlmReasoningEffort,
           workdir: workspace.path,
-          skipPermissions: body.skipPermissions === true ? true : undefined,
+          // Permission policy comes from administrator configuration.
         };
         const result = await executeAgentWork(
           run,
@@ -1334,21 +1335,39 @@ ${delegatedTeam.prompt}`
     sendJson(res, 200, { [key]: entries }, { 'Cache-Control': 'no-store' });
   };
 
-  const server = createServer(async (req, res) => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url || '/';
     const url = rawUrl.split('?')[0];
+    try {
+      decodeURIComponent(url);
+    } catch {
+      sendJson(res, 400, { error: 'Invalid URL encoding' });
+      return;
+    }
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    // Device ingress has its own extension/device Bearer contract and never forwards cookies.
+    if (/^\/api\/devices\/[a-zA-Z0-9._-]+\//.test(url)) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+      if (await proxyExtensionRequest(req, res, resolveExtensionDeviceService, true)) return;
+    }
+
+    if (!acceptsSameHostMutation(req)) {
+      sendJson(res, 403, { error: 'Cross-origin requests are not allowed' });
+      return;
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(200);
       res.end();
       return;
     }
-
-    if (await proxyExtensionRequest(req, res, resolveExtensionDeviceService, true)) return;
 
     if (url === '/api/remote-platform/turn') {
       try {
@@ -1620,7 +1639,13 @@ ${delegatedTeam.prompt}`
       sendJson(
         res,
         200,
-        webChannelRuntimeSettingsSnapshot(platform, channelId, options.config, options.resolver),
+        webChannelRuntimeSettingsSnapshot(
+          platform,
+          channelId,
+          options.config,
+          options.resolver,
+          workspaceRegistry
+        ),
         { 'Cache-Control': 'no-store' }
       );
       return;
@@ -1642,6 +1667,7 @@ ${delegatedTeam.prompt}`
           resolver: options.resolver,
           agentRunner,
           modelDiscovery: options.discoverModels,
+          workspaceRegistry,
         });
         sendJson(res, 200, {
           message,
@@ -3405,13 +3431,39 @@ ${delegatedTeam.prompt}`
         const body = Buffer.concat(chunks);
 
         const contentType = req.headers['content-type'] || '';
-        const boundaryMatch = contentType.match(/boundary=(.+)/);
-        if (!boundaryMatch) {
-          sendJson(res, 400, { error: 'No boundary in content-type' });
+        const boundaryMatch = /(?:^|;)\s*boundary=(?:"([^"\r\n]+)"|([^;\s\r\n]+))/i.exec(
+          contentType
+        );
+        const boundaryValue = boundaryMatch?.[1] ?? boundaryMatch?.[2];
+        if (!boundaryValue || boundaryValue.length > 70) {
+          sendJson(res, 400, { error: 'Invalid boundary in content-type' });
           return;
         }
-        const boundary = '--' + boundaryMatch[1];
-        const parts = body.toString('binary').split(boundary);
+        const encoded = body.toString('binary');
+        const escapedBoundary = boundaryValue.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          (character) => '\\' + character
+        );
+        const delimiters = [
+          ...encoded.matchAll(
+            new RegExp('(?:^|\\r\\n)--' + escapedBoundary + '(--)?(?:\\r\\n|$)', 'g')
+          ),
+        ];
+        if (
+          delimiters.length < 2 ||
+          !delimiters.at(-1)?.[1] ||
+          delimiters.slice(0, -1).some((m) => m[1])
+        ) {
+          sendJson(res, 400, { error: 'Invalid multipart delimiters' });
+          return;
+        }
+        const parts = delimiters
+          .slice(0, -1)
+          .map(
+            (delimiter, index) =>
+              encoded.slice(delimiter.index! + delimiter[0].length, delimiters[index + 1].index) +
+              '\r\n'
+          );
 
         const files: { name: string; path: string }[] = [];
         const rejected: { name: string; reason: string }[] = [];
@@ -3870,7 +3922,6 @@ ${delegatedTeam.prompt}`
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
           });
           latency.markInitialReply();
 
@@ -4051,7 +4102,7 @@ ${delegatedTeam.prompt}`
                 defaultLocalLlmMode: backendDefault?.localLlmMode,
                 defaultLocalLlmReasoningEffort: backendDefault?.localLlmReasoningEffort,
                 workdir: sessionWorkspace.path,
-                skipPermissions: body.skipPermissions === true ? true : undefined,
+                // Permission policy is fixed by the administrator, never request JSON.
               }
             );
 
@@ -4143,6 +4194,18 @@ ${delegatedTeam.prompt}`
 
     res.writeHead(404);
     res.end('Not found');
+  };
+  const server = createServer((req, res) => {
+    void handleRequest(req, res).catch((error: unknown) => {
+      if (res.destroyed || res.writableEnded) return;
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendJson(res, error instanceof URIError ? 400 : 500, {
+        error: error instanceof URIError ? 'Invalid URL encoding' : 'Internal server error',
+      });
+    });
   });
 
   server.on('close', unsubscribeSessionChanges);

@@ -1,16 +1,6 @@
+import lockfile from 'proper-lockfile';
 import { constants } from 'node:fs';
-import {
-  access,
-  mkdir,
-  open,
-  readlink,
-  readdir,
-  rename,
-  rm,
-  symlink,
-  unlink,
-  type FileHandle,
-} from 'node:fs/promises';
+import { access, mkdir, readlink, readdir, rename, rm, symlink, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { versionPath } from './layout.js';
@@ -176,7 +166,8 @@ export class Updater {
       if (currentTarget && currentTarget !== targetPath) {
         await atomicLink(currentTarget, this.previousLink);
       }
-      await this.retainCurrentAndPrevious();
+      // Without activation, an older process may still serve assets from any prior version.
+      if (options.forceActivate) await this.retainCurrentAndPrevious();
 
       return {
         version: manifest.version,
@@ -187,7 +178,7 @@ export class Updater {
     } finally {
       if (stagingPath)
         await rm(stagingPath, { recursive: true, force: true }).catch(() => undefined);
-      await releaseLock(lock, this.layout.updateLock);
+      await lock();
     }
   }
 
@@ -195,14 +186,20 @@ export class Updater {
     return join(this.layout.appRoot, 'previous');
   }
 
-  private async acquireLock(): Promise<FileHandle> {
+  private async acquireLock(): Promise<() => Promise<void>> {
     await mkdir(this.layout.appRoot, { recursive: true });
+    // Legacy files have no liveness metadata: never delete them speculatively.
+    if (await pathExists(this.layout.updateLock))
+      throw new UpdateInProgressError(this.layout.updateLock);
     try {
-      return await open(this.layout.updateLock, 'wx', 0o600);
+      return await lockfile.lock(this.layout.appRoot, {
+        lockfilePath: this.layout.updateLock + '.lease',
+        stale: 60_000,
+        update: 10_000,
+        retries: 0,
+      });
     } catch (error) {
-      if (errorCode(error) === 'EEXIST') {
-        throw new UpdateInProgressError(this.layout.updateLock);
-      }
+      if (errorCode(error) === 'ELOCKED') throw new UpdateInProgressError(this.layout.updateLock);
       throw error;
     }
   }
@@ -296,13 +293,6 @@ async function pathExists(path: string): Promise<boolean> {
     if (errorCode(error) === 'ENOENT') return false;
     throw error;
   }
-}
-
-async function releaseLock(lock: FileHandle, lockPath: string): Promise<void> {
-  await lock.close();
-  await unlink(lockPath).catch((error: unknown) => {
-    if (errorCode(error) !== 'ENOENT') throw error;
-  });
 }
 
 function errorCode(error: unknown): string | undefined {

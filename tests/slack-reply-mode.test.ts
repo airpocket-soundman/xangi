@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ import {
   shouldProcessSlackMessage,
   shouldReplyInSlackThread,
   slackConversationKey,
+  slackDeletedThread,
   slackThreadParentTsFromActionBody,
 } from '../src/slack.js';
 
@@ -1619,4 +1620,22 @@ describe('Slack Web continuation', () => {
     expect(postMessage.mock.calls.filter(([p]) => p.text.startsWith('🌐 Webから:'))).toHaveLength(1);
     expect(postMessage.mock.calls[0][0]).toMatchObject({ channel: 'C_WEB', thread_ts: '123.456', text: '🌐 Webから: hello', mrkdwn: false });
   });
+
+  it('R18 resolves deletion events from previous_message.thread_ts to the original thread', () => {
+    const thread=slackDeletedThread({previous_message:{thread_ts:THREAD_TS}});
+    expect(thread).toBe(THREAD_TS);expect(slackConversationKey(AUTO_REPLY_CHANNEL,thread)).toBe(slackConversationKey(AUTO_REPLY_CHANNEL,THREAD_TS));
+    expect(slackDeletedThread({thread_ts:THREAD_TS})).toBe(THREAD_TS);expect(slackDeletedThread({})).toBeUndefined();
+  });
+  it('R28 uploads final attachments from the selected workspace outside the default root', async () => {
+    const selected=mkdtempSync(join(tmpdir(),'xangi-slack-selected-'));const file=join(selected,'report.txt');writeFileSync(file,'synthetic report');
+    try {
+      const upload=vi.fn().mockResolvedValue({});
+      const client={chat:{postMessage:vi.fn().mockResolvedValue({ts:'progress'}),update:vi.fn().mockResolvedValue({})},conversations:{info:vi.fn().mockResolvedValue({channel:{name:'dev'}})},reactions:{remove:vi.fn().mockResolvedValue({})},filesUploadV2:upload} as unknown as WebClient;
+      const agentRunner={runStream:vi.fn().mockResolvedValue({result:'MEDIA:'+file,attachments:[file],sessionId:'provider'})} as unknown as AgentRunner;
+      const config={agent:{config:{skipPermissions:false,workdir:selected}},slack:{streaming:false,showThinking:false,replySuggestions:false}} as Config;
+      await processMessageWithoutMinimumDisplayDelay(AUTO_REPLY_CHANNEL,slackConversationKey(AUTO_REPLY_CHANNEL,THREAD_TS),THREAD_TS,'report','1783402632.322829',client,agentRunner,config);
+      expect(upload).toHaveBeenCalledWith(expect.objectContaining({filename:'report.txt',file:Buffer.from('synthetic report')}));
+    } finally {rmSync(selected,{recursive:true,force:true});}
+  });
+
 });
