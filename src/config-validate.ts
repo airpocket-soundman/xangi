@@ -9,7 +9,12 @@
  * - 外部依存なし（zod 等は追加しない）
  */
 
-import { EFFORT_LEVELS, type AgentBackend, type EffortLevel } from './config.js';
+import {
+  BUILTIN_AGENT_BACKENDS,
+  EFFORT_LEVELS,
+  type AgentBackend,
+  type EffortLevel,
+} from './config.js';
 import { LOCAL_LLM_REASONING_EFFORTS } from './local-llm/reasoning-effort.js';
 import { listExtensionAgentBackends } from './extensions.js';
 import {
@@ -146,23 +151,14 @@ export class EnvValidator {
   }
 }
 
-const BUILTIN_BACKENDS = [
-  'claude-code',
-  'codex',
-  'cursor',
-  'grok',
-  'antigravity',
-  'github-copilot',
-  'local-llm',
-  'openrouter',
-] as const;
+const builtinBackends = (): readonly string[] => BUILTIN_AGENT_BACKENDS;
 
 function validBackends(): string[] {
   return [
-    ...BUILTIN_BACKENDS,
+    ...builtinBackends(),
     ...listExtensionAgentBackends()
       .map((item) => item.id)
-      .filter((id) => !(BUILTIN_BACKENDS as readonly string[]).includes(id)),
+      .filter((id) => !builtinBackends().includes(id)),
   ];
 }
 const VALID_LLM_MODES = ['agent', 'chat'] as const;

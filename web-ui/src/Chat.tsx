@@ -642,6 +642,8 @@ function ChatPane({
     }
   }, [sessionId]);
 
+  const detailSnapshot = useRef(detail);
+  detailSnapshot.current = detail;
   const loadDetail = useCallback(
     async (prepend = false, suppressError = false): Promise<SessionDetail | undefined> => {
       if (!sessionId) {
@@ -652,7 +654,7 @@ function ChatPane({
         return;
       }
       const sequence = ++loadSequenceRef.current;
-      const cursor = prepend ? detail?.nextCursor : 'tail';
+      const cursor = prepend ? detailSnapshot.current?.nextCursor : 'tail';
       if (prepend) {
         setLoadingOlder(true);
       } else {
@@ -714,7 +716,7 @@ function ChatPane({
         }
       }
     },
-    [detail?.messages.length, detail?.nextBefore, sessionId]
+    [sessionId]
   );
 
   useEffect(() => {

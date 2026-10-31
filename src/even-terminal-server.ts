@@ -406,12 +406,14 @@ async function handlePrompt(
         secret: privacyCommand === 'on',
       });
     }
+    const after = getTerminalSession(appSessionId).nextId - 1;
     const notice = isSecretSession(appSessionId) ? SECRET_NOTICE : 'シークレットモードはOFFです。';
     pushMessage(appSessionId, { type: 'result', success: true, text: notice });
     sendJson(res, 202, {
       ok: true,
       sessionId: appSessionId,
       provider,
+      after,
       secret: isSecretSession(appSessionId),
     });
     return;
@@ -452,9 +454,10 @@ async function handlePrompt(
     );
   };
 
+  const after = terminalState.nextId - 1;
   if (startsReservedEmptySession) startTurn();
 
-  sendJson(res, 202, { ok: true, sessionId: appSessionId, provider });
+  sendJson(res, 202, { ok: true, sessionId: appSessionId, provider, after });
 
   if (createdNewSession) {
     const connected = await waitForTerminalClient(appSessionId, 2500);

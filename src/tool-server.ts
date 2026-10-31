@@ -14,6 +14,7 @@ import {
  * process.env.XANGI_TOOL_SERVER に接続先URLを設定し、
  * xangi toolを使う子プロセスへ渡す。
  */
+import { acceptsSameHostMutation } from './web-http.js';
 import { createServer, type Server } from 'http';
 import { privacyConsole as console, withPrivateDiagnostics } from './privacy-console.js';
 import { isSecretSession } from './secret.js';
@@ -356,6 +357,13 @@ function persistToolServerPort(port: number): void {
  * options.eventTrigger を渡すと POST /api/trigger（外部イベントによる
  * エージェントターン起動）と xangi-cmd trigger が有効になる。
  */
+export function acceptsLocalToolRequest(req: import('node:http').IncomingMessage): boolean {
+  const address = req.socket.remoteAddress?.replace(/^::ffff:/, '');
+  return Boolean(
+    address && (address === '::1' || /^127\./.test(address)) && acceptsSameHostMutation(req)
+  );
+}
+
 export function startToolServer(options?: {
   eventTrigger?: EventTrigger | null;
   backendResolver?: BackendResolver | null;
@@ -386,6 +394,16 @@ export function startToolServer(options?: {
       const port = typeof addr === 'object' && addr ? addr.port : 0;
       res.writeHead(200);
       res.end(JSON.stringify({ status: 'ok', port }));
+      return;
+    }
+
+    // Command execution and token minting are local CLI capabilities, not public trigger APIs.
+    if (
+      (req.url === '/github-token' || req.url === '/api/execute') &&
+      !acceptsLocalToolRequest(req)
+    ) {
+      res.writeHead(403);
+      res.end(JSON.stringify({ error: 'Local clients only' }));
       return;
     }
 

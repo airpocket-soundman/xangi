@@ -301,7 +301,7 @@ export async function updateExtension(
         workspace: input.workspace,
         timeoutMs: 30_000,
       });
-      if (!finalStatus.healthy) throw new Error(`${input.id} did not pass doctor after update`);
+      if (!finalStatus.ok) throw new Error(`${input.id} did not pass doctor after update`);
       if (!wasRunning) {
         await runAction(activeLinked, 'stop', { workspace: input.workspace });
         candidateStarted = false;
@@ -322,7 +322,7 @@ export async function updateExtension(
           workspace: input.workspace,
           timeoutMs: 30_000,
         });
-        if (!rollbackStatus.healthy) throw new Error(`${input.id} rollback did not pass doctor`);
+        if (!rollbackStatus.ok) throw new Error(`${input.id} rollback did not pass doctor`);
       }
     },
   });

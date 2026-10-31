@@ -1043,52 +1043,52 @@ describe('local-llm runner: idempotent tool cache', () => {
   }
 
   describe('isIdempotentToolCall', () => {
-    it('returns true for wc -c command', async () => {
+    it('does not cache wc -c command', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
-      expect(isIdempotentToolCall('exec', { command: 'echo "test" | wc -c' })).toBe(true);
+      expect(isIdempotentToolCall('exec', { command: 'echo "test" | wc -c' })).toBe(false);
     });
 
-    it('returns true for base64 encode', async () => {
+    it('does not cache base64 encode', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
-      expect(isIdempotentToolCall('exec', { command: 'echo "test" | base64' })).toBe(true);
+      expect(isIdempotentToolCall('exec', { command: 'echo "test" | base64' })).toBe(false);
     });
 
-    it('returns true for sha256sum and md5sum', async () => {
+    it('does not cache sha256sum and md5sum', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
-      expect(isIdempotentToolCall('exec', { command: 'echo "test" | sha256sum' })).toBe(true);
-      expect(isIdempotentToolCall('exec', { command: 'echo "test" | md5sum' })).toBe(true);
+      expect(isIdempotentToolCall('exec', { command: 'echo "test" | sha256sum' })).toBe(false);
+      expect(isIdempotentToolCall('exec', { command: 'echo "test" | md5sum' })).toBe(false);
     });
 
-    it('returns true for python urllib.parse.quote', async () => {
+    it('does not cache python urllib.parse.quote', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
       expect(
         isIdempotentToolCall('exec', {
           command: `python3 -c "import urllib.parse; print(urllib.parse.quote('test'))"`,
         })
-      ).toBe(true);
+      ).toBe(false);
     });
 
-    it('returns true for python hashlib usage', async () => {
+    it('does not cache python hashlib usage', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
       expect(
         isIdempotentToolCall('exec', {
           command: `python3 -c "import hashlib; print(hashlib.md5(b'x').hexdigest())"`,
         })
-      ).toBe(true);
+      ).toBe(false);
     });
 
-    it('handles script field (bash tool)', async () => {
+    it('does not cache script field (bash tool)', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
-      expect(isIdempotentToolCall('bash', { script: 'echo "x" | wc -c' })).toBe(true);
+      expect(isIdempotentToolCall('bash', { script: 'echo "x" | wc -c' })).toBe(false);
     });
 
-    it('handles code field (python tool)', async () => {
+    it('does not cache code field (python tool)', async () => {
       const { isIdempotentToolCall } = await import('../src/local-llm/runner.js');
       expect(
         isIdempotentToolCall('python', {
           code: `import hashlib\nprint(hashlib.md5(b'x').hexdigest())`,
         })
-      ).toBe(true);
+      ).toBe(false);
     });
 
     it('returns false for git push (side effect)', async () => {

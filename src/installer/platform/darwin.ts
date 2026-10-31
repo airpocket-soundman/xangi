@@ -97,6 +97,8 @@ export function createDarwinServiceAdapter(
       const result = commands.status('launchctl', ['print', domain + '/' + options.label]);
       if (result.status !== 0) {
         commands.run('launchctl', ['bootstrap', domain, activePlistPath()]);
+      } else if (!/(?:\bstate = running\b|\bpid = [1-9]\d*)/.test(result.output)) {
+        commands.run('launchctl', ['kickstart', domain + '/' + options.label]);
       }
     },
     async stop(): Promise<void> {
@@ -123,7 +125,8 @@ export function createDarwinServiceAdapter(
     async status(): Promise<ServiceStatus> {
       const result = commands.status('launchctl', ['print', domain + '/' + options.label]);
       return {
-        running: result.status === 0,
+        running:
+          result.status === 0 && /(?:\bstate = running\b|\bpid = [1-9]\d*)/.test(result.output),
         detail: result.output,
       };
     },

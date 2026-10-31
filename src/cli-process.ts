@@ -42,8 +42,8 @@ export function registerManagedCliProcess(
 ): void {
   if (!channelId) return;
 
-  activeProcesses.set(channelId, proc);
   processManager.register(channelId, proc);
+  activeProcesses.set(channelId, proc);
   timeoutController.start(channelId, () => {
     const active = activeProcesses.get(channelId);
     if (active) active.kill();

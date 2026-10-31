@@ -539,4 +539,23 @@ describe('tool-server HTTP status codes', () => {
       _resetInterChatConfigForTest();
     }
   });
+
+  it('R39 rejects browser-origin requests to local execution and token endpoints', async () => {
+    for(const [path,method] of [['/api/execute','POST'],['/github-token','GET']]) {
+      const response=await fetch(serverUrl+path,{method,headers:{origin:'https://untrusted.example','content-type':'application/json'},...(method==='POST'?{body:JSON.stringify({command:'trigger',flags:{message:'should not run'}})}:{})});
+      expect(response.status).toBe(403);
+    }
+  });
+
+
+  it('R39 rejects non-loopback socket peers even with a matching Host or spoofed forwarding header', async () => {
+    const {acceptsLocalToolRequest}=await import('../src/tool-server.js');
+    const req=(address:string)=>({socket:{remoteAddress:address},headers:{host:'localhost:1234',origin:'http://localhost:1234','x-forwarded-for':'127.0.0.1'}} as import('node:http').IncomingMessage);
+    expect(acceptsLocalToolRequest(req('203.0.113.1'))).toBe(false);
+    expect(acceptsLocalToolRequest(req('192.168.1.2'))).toBe(false);
+    expect(acceptsLocalToolRequest(req('127.0.0.1'))).toBe(true);
+    expect(acceptsLocalToolRequest(req('::ffff:127.0.0.1'))).toBe(true);
+    expect(acceptsLocalToolRequest(req('::1'))).toBe(true);
+  });
+
 });

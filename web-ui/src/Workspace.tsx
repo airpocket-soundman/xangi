@@ -145,6 +145,8 @@ export function Workspace() {
   const initialLocationHandled = useRef(false);
   const previousWorkspaceId = useRef(workspaceId);
 
+  const selectionSnapshot = useRef({ path: selected?.path, workspaceId });
+  selectionSnapshot.current = { path: selected?.path, workspaceId };
   const dirty = selected !== undefined && draft !== selected.content;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
@@ -251,14 +253,24 @@ export function Workspace() {
           workspaceId,
         }),
       });
+      if (
+        selectionSnapshot.current.path !== selected.path ||
+        selectionSnapshot.current.workspaceId !== workspaceId
+      )
+        return;
       setSelected(file);
-      setDraft(file.content);
+      setDraft((current) => (current === draft ? file.content : current));
       setSaveState('saved');
       window.setTimeout(
         () => setSaveState((current) => (current === 'saved' ? 'idle' : current)),
         1600
       );
     } catch (error) {
+      if (
+        selectionSnapshot.current.path !== selected.path ||
+        selectionSnapshot.current.workspaceId !== workspaceId
+      )
+        return;
       if (error instanceof ApiError && error.status === 409) {
         setSaveState('conflict');
         setMessage('ファイルが外部で更新されました。再読込してから編集し直してください。');
@@ -325,7 +337,8 @@ export function Workspace() {
       return sortDirection === 'asc' ? comparison : -comparison;
     });
   }, [directory.entries, sortDirection, sortKey, tagFilter]);
-  const visibleSaveState: SaveState = dirty && saveState === 'idle' ? 'dirty' : saveState;
+  const visibleSaveState: SaveState =
+    dirty && (saveState === 'idle' || saveState === 'saved') ? 'dirty' : saveState;
   const resizeSidebar = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     const next = Math.min(
@@ -692,7 +705,7 @@ export function Workspace() {
                     value={draft}
                     onChange={(event) => {
                       setDraft(event.target.value);
-                      setSaveState('idle');
+                      setSaveState((current) => (current === 'saving' ? current : 'idle'));
                       setMessage('');
                     }}
                   />

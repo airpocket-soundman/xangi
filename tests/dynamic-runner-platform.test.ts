@@ -93,11 +93,14 @@ describe('DynamicRunnerManager platform routing', () => {
           })
       ),
       runStream: vi.fn(),
+      cancel: vi.fn(() => true),
+      getTimeoutState: vi.fn(() => ({active:true})),
+      extendTimeout: vi.fn(() => ({ok:true})),
       shutdown,
     };
     (manager as unknown as { defaultRunner: typeof oldRunner }).defaultRunner = oldRunner;
 
-    const activeTurn = manager.run('before');
+    const activeTurn = manager.run('before',{channelId:'active-channel'});
     await vi.waitFor(() => expect(oldRunner.run).toHaveBeenCalledOnce());
     expect(oldRunner.run).toHaveBeenCalledWith(
       'before',
@@ -106,6 +109,10 @@ describe('DynamicRunnerManager platform routing', () => {
     resolved = { backend: 'codex', model: 'new-model', effort: 'medium' };
     manager.switchDefaultBackend();
     expect(shutdown).not.toHaveBeenCalled();
+    expect(manager.cancel('active-channel')).toBe(true);
+    expect(oldRunner.cancel).toHaveBeenCalledWith('active-channel');
+    expect(manager.getTimeoutState('active-channel')).toMatchObject({active:true});
+    expect(manager.extendTimeout('active-channel',1000)).toMatchObject({ok:true});
 
     finish({ result: 'ok', sessionId: 'old-session' });
     await activeTurn;
@@ -597,4 +604,24 @@ describe('DynamicRunnerManager platform routing', () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('R12 runs hooks from the effective workspace with matching cwd in run and runStream', async () => {
+    const root=mkdtempSync(join(tmpdir(),'dynamic-workspace-hook-'));
+    try {
+      const other=join(root,'other');mkdirSync(join(root,'hooks'));mkdirSync(join(other,'hooks'),{recursive:true});
+      for(const [workspace,label] of [[root,'wrong-default'],[other,'selected-workspace']]) {
+        const script="let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{const input=JSON.parse(text);process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:"+JSON.stringify(label)+"+':'+input.cwd}}));});";
+        writeFileSync(join(workspace,'hooks','hooks.json'),JSON.stringify({hooks:{UserPromptSubmit:[{id:'selected',exec:{file:process.execPath,args:['-e',script]}}]}}));
+      }
+      const config=makeConfig('discord');config.agent.config.workdir=root;const resolved={backend:'local-llm',model:'test'};
+      const manager=new DynamicRunnerManager(config,{getDefault:()=>resolved,resolve:()=>resolved} as unknown as BackendResolver);
+      const run=vi.fn().mockResolvedValue({result:'ok',sessionId:'test'}),runStream=vi.fn().mockResolvedValue({result:'ok',sessionId:'test'});
+      vi.spyOn(manager as unknown as {createRunnerFor:()=>AgentRunner},'createRunnerFor').mockReturnValue({run,runStream});
+      const options={channelId:'other-channel',workdir:other,userText:'raw prompt'};
+      await manager.run('prompt',options);await manager.runStream('prompt',{},options);
+      for(const call of [run.mock.calls[0],runStream.mock.calls[0]]){expect(call[0]).toContain('selected-workspace:'+other);expect(call[0]).not.toContain('wrong-default');}
+      manager.shutdown();
+    } finally {rmSync(root,{recursive:true,force:true});}
+  });
+
 });

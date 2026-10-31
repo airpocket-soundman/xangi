@@ -2,7 +2,7 @@ import { assertIndividualAgentSettings } from './agent-selection.js';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 const REGISTRY_VERSION = 1;
 const DEFAULT_WORKSPACE_ID = 'default';
@@ -287,7 +287,9 @@ export class WorkspaceRegistry {
   }
 
   async resolveSnapshot(workspaceId: string, snapshotPath: string): Promise<WorkspaceEntry> {
-    const workspace = await this.resolveById(workspaceId);
+    const stored = this.state.workspaces.find((item) => item.id === workspaceId);
+    if (!stored) throw new Error(`Binding refers to an unknown workspace ID: ${workspaceId}`);
+    const workspace = this.toEntry(stored);
     let canonicalPath: string;
     try {
       canonicalPath = await validateDirectory(snapshotPath, false);
@@ -390,7 +392,10 @@ function assertWorkspaceOutsideState(workspacePath: string, canonicalDataDir: st
 
 function containsPath(root: string, candidate: string): boolean {
   const difference = relative(root, candidate);
-  return difference === '' || (!difference.startsWith('..') && !isAbsolute(difference));
+  return (
+    difference === '' ||
+    (difference !== '..' && !difference.startsWith('..' + sep) && !isAbsolute(difference))
+  );
 }
 
 function normalizeName(name: string): string {

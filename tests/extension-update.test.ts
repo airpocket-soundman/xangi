@@ -186,8 +186,8 @@ describe('repository-managed extension updates', () => {
         }),
         runAction: async (_linked, action) => {
           actions.push(action);
-          if (action === 'status') return { running: true, healthy: true };
-          if (action === 'doctor') return { running: true, healthy: true };
+          if (action === 'status') return { ok: true, running: true, healthy: true };
+          if (action === 'doctor') return { ok: true, running: true, healthy: true };
           return { running: action === 'start', healthy: action === 'start' };
         },
       }
@@ -233,7 +233,7 @@ describe('repository-managed extension updates', () => {
           listLinkedExtensions: async () => [setup.linked],
           runAction: async (_linked, action) => {
             actions.push(action);
-            return { running: true, healthy: true };
+            return { ok: true, running: true, healthy: true };
           },
         }
       )
@@ -265,7 +265,7 @@ describe('repository-managed extension updates', () => {
         runAction: async (_linked, action) =>
           action === 'status'
             ? { running: false, healthy: false }
-            : { running: action !== 'stop', healthy: action === 'doctor' },
+            : { running: action !== 'stop', ok: action === 'doctor', healthy: action === 'doctor' },
       }
     );
 
@@ -299,7 +299,7 @@ describe('repository-managed extension updates', () => {
           listLinkedExtensions: async () => [setup.linked],
           runAction: async (_linked, action) => {
             actions.push(action);
-            return { running: true, healthy: true };
+            return { ok: true, running: true, healthy: true };
           },
         }
       )
@@ -335,10 +335,10 @@ describe('repository-managed extension updates', () => {
           },
           runAction: async (_linked, action) => {
             actions.push(action);
-            if (action === 'status') return { running: true, healthy: true };
+            if (action === 'status') return { ok: true, running: true, healthy: true };
             if (action === 'doctor') {
               doctorCalls += 1;
-              return { running: true, healthy: doctorCalls > 1 };
+              return { ok: doctorCalls > 1, running: true, healthy: true };
             }
             return { running: action === 'start', healthy: action === 'start' };
           },

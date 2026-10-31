@@ -75,12 +75,10 @@ async function resolveSessionWithWorkspace(
     activeEntry = undefined;
   }
   if (activeId && activeEntry) {
-    const registeredWorkspace = activeEntry.workspaceId
-      ? await registry.resolveById(activeEntry.workspaceId)
-      : await registry.resolveById('default');
+    const workspaceId = activeEntry.workspaceId ?? 'default';
     const workspace = activeEntry.workspacePath
-      ? await registry.resolveSnapshot(registeredWorkspace.id, activeEntry.workspacePath)
-      : registeredWorkspace;
+      ? await registry.resolveSnapshot(workspaceId, activeEntry.workspacePath)
+      : await registry.resolveById(workspaceId);
     if (
       getActiveSessionId(contextKey) !== activeId ||
       (!project && !activeEntry.projectId && channelAgent(platform, bindingKey)?.id !== agent?.id)
@@ -116,11 +114,9 @@ async function resolveSessionWithWorkspace(
     workspacePath: workspace.path,
   });
   const persistedEntry = getSessionEntry(appSessionId);
-  const registeredWorkspace = persistedEntry?.workspaceId
-    ? await registry.resolveById(persistedEntry.workspaceId)
-    : await registry.resolveById('default');
+  const workspaceId = persistedEntry?.workspaceId ?? 'default';
   const persistedWorkspace = persistedEntry?.workspacePath
-    ? await registry.resolveSnapshot(registeredWorkspace.id, persistedEntry.workspacePath)
-    : registeredWorkspace;
+    ? await registry.resolveSnapshot(workspaceId, persistedEntry.workspacePath)
+    : await registry.resolveById(workspaceId);
   return { appSessionId, workspace: persistedWorkspace };
 }

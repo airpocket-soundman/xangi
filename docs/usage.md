@@ -478,6 +478,10 @@ managed版の`xangi update`は、更新確認・ダウンロード・検証・�
 
 managed版の`xangi uninstall`は定期update、OS service、xangi本体の順に削除します。workspace、設定、token、履歴は保持するため、表示されたinstall commandを再実行すれば以前の設定を使って再インストールできます。設定、token、履歴も削除する場合だけ`xangi uninstall --purge --yes`を使います。`--purge`は`--yes`が無ければ何も削除せず終了し、どちらの方法でもworkspaceは削除しません。
 
+削除前に、設定・workspace登録・過去sessionのworkspace snapshotと削除対象を実体pathで照合します。workspaceを含む場合はservice停止前に拒否するため、先にworkspaceを管理領域外へ移してください。新規セットアップでもapp・config・state管理領域内のworkspaceは受け付けません。
+
+再起動を伴わないmanaged更新では、稼働中の版の画面ファイルを守るため旧versionの削除を延期します。更新ロックはheartbeat付きで、60秒以上更新されなければ次回更新で回収します。旧形式の単一ファイル`update.lock`は所有者を確認できないため自動削除しません。更新processが停止していることを確認したうえで、その旧lockだけを退避して再実行してください。
+
 開発checkoutの`./bin/xangi`は、`git pull`後もGit管理外の古い`dist/`を実行しないよう、`npm ci`で入れたlocal `tsx`から現在のsourceを起動します。配布bundleはsourceを含まないため、同梱`dist`とNode runtimeを使い、AIが参照するREADMEと利用者向けdocsも同梱します。
 
 Discordの許可ユーザーID、Discord / Slack / LINE / Telegramのtoken、任意のAIプロバイダーAPIキーは`xangi settings`で入力します。一時GUIは`127.0.0.1`だけにbindし、one-time URLとHost検証を使い、保存済み値をbrowserへ返しません。保存後はserverを閉じ、OS別config directoryの`secrets.json`へmode 0600でatomic保存します。利用者が`read`や`printf`を組み立てたり、tokenをAIとの会話へ貼り付けたりする必要はありません。明示的な環境変数は互換性のため引き続き優先されます。
@@ -785,6 +789,8 @@ Docker環境では `.env` はコンテナ外にあるため、AI（Claude Code�
 
 Discordの `/workspace status` は、チャンネル設定に加え、選択中のエージェント名・パスと、実行した場所のセッションのパスを表示します。親チャンネルで「この場所では未固定」と出ても、スレッド内のセッションが未設定という意味ではありません。スレッドのセッションはそのスレッド内で確認してください。
 
+設定画面の「チャンネル」でも、DiscordまたはSlackのチャンネルを選び、登録済みワークスペースを保存できます。「既定のワークスペースを継承」でチャンネルの指定を解除します。変更は次の `/new` から適用され、既存の会話の作業場所は変わりません。担当エージェントが設定されている場合はその作業場所を表示し、個別変更を無効にします。担当の作業場所は「エージェント」設定で変更してください。
+
 DiscordとSlackではチャンネルごとに作業ディレクトリを選べます。スレッドは親チャンネルの設定を継承します。設定変更は進行中・既存セッションへ遡って適用されず、`/new`後の新規セッションから反映されます。
 
 | コマンド                                | 説明                                         |
@@ -795,7 +801,7 @@ DiscordとSlackではチャンネルごとに作業ディレクトリを選べ�
 | `/workspace use <name>`                 | 登録済みワークスペースをチャンネルへ設定     |
 | `/workspace reset`                      | 起動時の`WORKSPACE_PATH`へ戻す               |
 
-Discordでは各引数をスラッシュコマンドの入力欄へ指定します。Slack App側にも `/workspace` Slash Commandを追加してください。xangi processがアクセスできる既存の任意の絶対パスを登録できます。登録時は実体パスへ正規化し、xangiのstate directory配下は拒否します。Dockerではコンテナへmount済みのパスだけを切り替えられ、host上の未mountパスへはアクセスできません。
+Discordでは各引数をスラッシュコマンドの入力欄へ指定します。`/workspace use` の `name` 欄には、登録済みの名前（`default` を含む）が最大25件表示され、入力した文字で絞り込めます。100文字を超える名前は候補に表示されないため、直接入力してください。新規登録用の `/workspace set` は名前と絶対パスを直接入力します。Slack App側にも `/workspace` Slash Commandを追加してください。xangi processがアクセスできる既存の任意の絶対パスを登録できます。登録時は実体パスへ正規化し、xangiのstate directory配下は拒否します。Dockerではコンテナへmount済みのパスだけを切り替えられ、host上の未mountパスへはアクセスできません。
 
 Web UIでは設定画面の「ワークスペース」から、xangi processがアクセスできる既存の絶対パスを登録できます。設定画面ではパスの直接入力に加え、「参照…」でxangiが動くマシンのフォルダを選べます。ブラウザを開いている端末のローカルフォルダは選択できません。登録解除はregistryから項目だけを外し、ディレクトリとファイルを削除しません。default Workspace、エージェントまたは既存会話が参照しているWorkspace、Discord / Slack等のチャンネルへ設定済みのWorkspaceは登録解除できません。
 
@@ -999,7 +1005,7 @@ AGENT_BACKEND=local-llm
 LOCAL_LLM_MODEL=nemotron-3-nano
 
 # 起動（ollama + xangi-max）
-docker compose up xangi-max -d --build
+docker compose up ollama xangi-max -d --build
 ```
 
 ### GPU版（CUDA + Python + PyTorch）
@@ -1632,6 +1638,10 @@ AIが生成したタイトル内の引用符やカッコは、そのまま保持
 | `XANGI_HOOKS_FILE`    | hooks 設定ファイルのパス                                                                                             | `<workspace>/hooks/hooks.json` |
 
 ### WebチャットUI
+
+通常のWeb UI/APIは読取り・変更の両方で別Originからの要求を拒否し、ワイルドカードCORSを付けません。CLIなどOriginを送らないclientは利用できます。拡張device ingressだけは独立したBearer認証契約でcross-originを維持します。Tool Serverのcommand実行・GitHub token発行はloopback client専用で、これらのlocal専用APIを外部proxyで公開しないでください。
+
+全体backend/model/effortを設定操作で明示変更した場合は、再起動後もその値を初期セットアップの選択より優先します。単なる起動用環境値では初期セットアップを上書きしません。内部保存フラグ`XANGI_GLOBAL_BACKEND_OVERRIDE`で両者を区別します。
 
 入力欄は文章量に合わせて伸縮し、送信後は1行分の高さに戻ります。候補文の挿入など、入力操作以外で文章が変わった場合も高さを更新します。
 

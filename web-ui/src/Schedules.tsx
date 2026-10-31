@@ -38,10 +38,17 @@ function localDateTimeInput(value?: string): string {
   return local.toISOString().slice(0, 16);
 }
 
-function cronDescription(expression: string): string {
+export function isFixedCronTime(minute: string, hour: string): boolean {
+  return (
+    /^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour) && Number(minute) < 60 && Number(hour) < 24
+  );
+}
+
+export function cronDescription(expression: string): string {
   const parts = expression.trim().split(/\s+/);
   if (parts.length !== 5) return expression;
   const [minute, hour, day, month, weekday] = parts;
+  if (!isFixedCronTime(minute, hour)) return expression;
   const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
   if (day === '*' && month === '*' && weekday === '*') return `毎日 ${time}`;
   if (day === '*' && month === '*' && /^[0-6]$/.test(weekday)) {
@@ -116,7 +123,7 @@ function schedulePayload(input: {
   };
 }
 
-function timingForm(schedule: Schedule): {
+export function timingForm(schedule: Schedule): {
   mode: ScheduleMode;
   runAt: string;
   time: string;
@@ -143,7 +150,7 @@ function timingForm(schedule: Schedule): {
   }
   const expression = schedule.expression || '0 9 * * *';
   const parts = expression.trim().split(/\s+/);
-  if (parts.length === 5) {
+  if (parts.length === 5 && isFixedCronTime(parts[0], parts[1])) {
     const [minute, hour, day, month, weekday] = parts;
     const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
     if (day === '*' && month === '*' && weekday === '*') {

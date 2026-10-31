@@ -115,7 +115,7 @@ beforeAll(async () => {
       return;
     }
     if (parsedUrl.pathname === '/api/prompt') {
-      json(res, 202, { ok: true, sessionId: 'sess-1', provider: 'codex' });
+      json(res, 202, { ok: true, sessionId: 'sess-1', provider: 'codex', after: 100 });
       return;
     }
     if (parsedUrl.pathname === '/api/messages') {
@@ -126,7 +126,7 @@ beforeAll(async () => {
         state: messagesPollCount >= 2 ? 'idle' : 'busy',
         messages:
           messagesPollCount >= 2
-            ? [{ id: 1, type: 'result', success: true, text: 'assistant reply' }]
+            ? [{ id: 101, type: 'result', success: true, text: 'assistant reply' }]
             : [],
       });
       return;
@@ -723,6 +723,7 @@ exit 0
     expect(result.code).toBe(0);
     expect(result.stderr).toContain('session: sess-1');
     expect(result.stdout).toContain('assistant reply');
+    expect(requests.find(r => r.url?.startsWith('/api/messages'))?.url).toContain('after=100');
     const prompt = requests.find((r) => r.url === '/api/prompt');
     expect(prompt?.body).toEqual({ text: 'hello', provider: 'codex', sessionId: 'sess-1' });
   });

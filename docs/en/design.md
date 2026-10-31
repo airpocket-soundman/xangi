@@ -763,6 +763,8 @@ Manages periodic execution and reminders:
 
 An HTTP API server that allows AI CLIs to safely invoke xangi features (Discord operations, scheduling, system control).
 
+Command execution and GitHub token issuance require a loopback socket peer and a valid Origin when present. External triggers retain their separate Bearer authentication boundary. Ordinary Web APIs validate same-host Origin for reads as well as mutations, independently of extension device ingress authentication and CORS.
+
 ```
 AI CLI (Claude Code, etc.)
   → xangi tool (canonical CLI; xangi-cmd is a compatibility shim)

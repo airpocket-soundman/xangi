@@ -1,3 +1,4 @@
+import { assertManagedDeletionPreservesWorkspaces } from '../installer/workspace-protection.js';
 import { readlink, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +41,7 @@ export async function uninstallCmd(
   }
 
   const runtime = await resolveManagedLifecycle(dependencies);
+  await assertManagedDeletionPreservesWorkspaces(runtime.layout, purge);
   await runtime.updateScheduler.uninstall();
   await runtime.service.uninstall();
   await removeManagedCommandLink(

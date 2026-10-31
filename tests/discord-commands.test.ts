@@ -701,6 +701,93 @@ describe('Discord Commands', () => {
   });
 
   describe('/workspace command registration', () => {
+    function autocomplete(
+      names: string[],
+      query = '',
+      options: {
+        userId?: string;
+        allowedUsers?: string[];
+        enabled?: boolean;
+        subcommand?: string;
+      } = {}
+    ) {
+      const list = vi.fn(() => names.map((name) => ({ name })));
+      const handler = createInteractionHandler({
+        config: {
+          discord: { allowedUsers: options.allowedUsers ?? ['user-123'] },
+          features: { workspaceSwitching: options.enabled },
+        } as Config,
+        resolver: { getSelectableBackends: () => [] } as unknown as BackendResolver,
+        agentRunner: {} as never,
+        scheduler: {} as never,
+        workdir: discordCommandsTempDir,
+        skillsRef: { current: [] },
+        workspaceRegistry: { list } as never,
+      });
+      const interaction = {
+        commandName: 'workspace',
+        user: { id: options.userId ?? 'user-123' },
+        isAutocomplete: () => true,
+        options: {
+          getFocused: () => ({ name: 'name', value: query }),
+          getSubcommand: () => options.subcommand ?? 'use',
+          getString: () => null,
+        },
+        respond: vi.fn().mockResolvedValue(undefined),
+      };
+      return { handler, interaction, list };
+    }
+
+    it('offers registered names including default and filters without case sensitivity', async () => {
+      const { handler, interaction } = autocomplete(['default', '開発工房', 'Dev']);
+      await handler(interaction as never);
+      expect(interaction.respond).toHaveBeenLastCalledWith([
+        { name: 'default', value: 'default' },
+        { name: '開発工房', value: '開発工房' },
+        { name: 'Dev', value: 'Dev' },
+      ]);
+      interaction.options.getFocused = () => ({ name: 'name', value: 'DE' });
+      await handler(interaction as never);
+      expect(interaction.respond).toHaveBeenLastCalledWith([
+        { name: 'default', value: 'default' },
+        { name: 'Dev', value: 'Dev' },
+      ]);
+    });
+
+    it('limits results to 25 and omits names too long for a choice value', async () => {
+      const names = ['x'.repeat(101), ...Array.from({ length: 30 }, (_, i) => `workspace-${i}`)];
+      const { handler, interaction } = autocomplete(names);
+      await handler(interaction as never);
+      expect(interaction.respond).toHaveBeenCalledWith(
+        names.slice(1, 26).map((name) => ({ name, value: name }))
+      );
+    });
+
+    it.each([{ userId: 'unauthorized' }, { enabled: false }, { subcommand: 'set' }])(
+      'does not list workspaces for %j',
+      async (options) => {
+        const { handler, interaction, list } = autocomplete(['default'], '', options);
+        await handler(interaction as never);
+        expect(interaction.respond).toHaveBeenCalledWith([]);
+        expect(list).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each([{ names: [] }, { names: ['default'] }])(
+      'returns no candidates for an unmatched query (%j)',
+      async ({ names }) => {
+        const { handler, interaction } = autocomplete(names, 'missing');
+        await handler(interaction as never);
+        expect(interaction.respond).toHaveBeenCalledWith([]);
+      }
+    );
+
+    it('allows wildcard users to see workspace candidates', async () => {
+      const { handler, interaction } = autocomplete(['default'], '', { allowedUsers: ['*'] });
+      await handler(interaction as never);
+      expect(interaction.respond).toHaveBeenCalledWith([{ name: 'default', value: 'default' }]);
+    });
+
     it.each([false, true])(
       'shows the parent agent workspace without a local session (thread=%s)',
       async (thread) => {
@@ -813,6 +900,9 @@ describe('Discord Commands', () => {
       const workspace = commands.find((command) => command.name === 'workspace') as any;
 
       expect(workspace).toBeTruthy();
+      expect(
+        workspace.options.find((option: any) => option.name === 'use').options[0].autocomplete
+      ).toBe(true);
       expect(workspace.options.map((option: any) => option.name)).toEqual([
         'status',
         'list',

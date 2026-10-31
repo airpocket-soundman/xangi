@@ -1,15 +1,23 @@
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { collectDoctorChecks, doctorCmd } from '../src/cli/doctor-cmd.js';
 
 const originalPlatform = process.platform;
 const originalArch = process.arch;
 const originalPath = process.env.PATH;
 const originalPm2Log = process.env.PM2_LOG;
+let extensionFixtureDir: string;
 
-afterEach(() => {
+beforeEach(async () => {
+  extensionFixtureDir = await mkdtemp(join(tmpdir(), 'xangi-doctor-extensions-'));
+  // Backend/service fixtures must never discover or diagnose the user's managed extensions.
+  vi.stubEnv('XANGI_EXTENSIONS_FILE', join(extensionFixtureDir, 'extensions.json'));
+});
+
+afterEach(async () => {
+  await rm(extensionFixtureDir, { recursive: true, force: true });
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   Object.defineProperty(process, 'platform', { value: originalPlatform });
