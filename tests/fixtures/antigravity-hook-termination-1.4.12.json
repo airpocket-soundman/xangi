@@ -1,0 +1,21 @@
+{
+  "note": "Captured from Agy 1.4.12 PreInvocation termination in JSON and stream-json modes. Conversation IDs and timing normalized; result and stderr agree in both modes.",
+  "exitCode": 3,
+  "stderr": "error: AGY_HOOK_BLOCKED: pre-invocation policy stopped this turn.\nAGY_ERROR: {\"short_error\":\"AGY_HOOK_BLOCKED: pre-invocation policy stopped this turn.\",\"retryable\":false}\n",
+  "result": {
+    "conversation_id": "hook-termination-conversation",
+    "status": "ERROR",
+    "response": "",
+    "error": "AGY_HOOK_BLOCKED: pre-invocation policy stopped this turn.",
+    "duration_seconds": 0.2,
+    "num_turns": 1,
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "thinking_tokens": 0,
+      "cache_read_tokens": 0,
+      "total_tokens": 0
+    },
+    "finished_reason": "error"
+  }
+}
