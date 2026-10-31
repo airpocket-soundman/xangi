@@ -13,7 +13,7 @@ import type { BaseRunnerOptions } from './base-runner.js';
 import { inferEffortFromModelName } from './backend-effort.js';
 import { CliRunnerBase, extractNestedText, type CliStreamParser } from './cli-runner-core.js';
 import { clearManagedCliProcess, registerManagedCliProcess } from './cli-process.js';
-import { formatErrorDiagnostic } from './errors.js';
+import { AntigravityTurnError, formatErrorDiagnostic, isNonRetryableError } from './errors.js';
 import type { ChatPlatform } from './prompts/index.js';
 import { configuredBackendCommand } from './setup/backend-executable.js';
 import { spawn } from 'node:child_process';
@@ -26,6 +26,7 @@ export interface AntigravityOptions extends BaseRunnerOptions {
 }
 
 interface AntigravityJsonResponse {
+  finished_reason?: unknown;
   model?: string;
   denied_actions?: unknown;
   status?: string;
@@ -99,14 +100,21 @@ const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 const PRINT_TIMEOUT_NOTICE =
   '時間上限に達したため、この回答は未完了です。続きが必要な場合は同じ会話で依頼してください。';
 
-function hasPartialOutputTimeout(stderr: string): boolean {
+function hasFinishedReason(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function hasPartialOutputTimeout(stderr: string, finishedReason?: unknown): boolean {
+  if (hasFinishedReason(finishedReason)) return finishedReason === 'print_timeout';
   return /^\[agy\] print timeout after \S+ with turn in progress; returning partial output\s*$/m.test(
     stderr
   );
 }
 
-function withPrintTimeoutNotice(text: string, stderr: string): string {
-  return hasPartialOutputTimeout(stderr)
+function withPrintTimeoutNotice(text: string, stderr: string, finishedReason?: unknown): string {
+  // Preserve zero-exit partial replies as results for compatibility. Scheduler completion policy
+  // is separate; the notice explicitly distinguishes these replies from a completed answer.
+  return hasPartialOutputTimeout(stderr, finishedReason)
     ? [text, PRINT_TIMEOUT_NOTICE].filter(Boolean).join('\n\n')
     : text;
 }
@@ -423,10 +431,14 @@ export class AntigravityRunner extends CliRunnerBase {
       });
       return { stdout, stderr };
     } catch (error) {
-      const outputError = error as AntigravityOutputError;
+      stderrDiagnostic ??= parseAntigravityStderrError(stderr);
+      const response = this.parseResponse(stdoutOnError);
+      const terminated = response
+        ? this.finishedReasonError(response, stderrDiagnostic, error)
+        : undefined;
+      const outputError = (terminated ?? error) as AntigravityOutputError;
       outputError.antigravityStdout = stdoutOnError;
       outputError.antigravityStderr = stderr;
-      stderrDiagnostic ??= parseAntigravityStderrError(stderr);
       if (stderrDiagnostic) this.attachDiagnostic(outputError, stderrDiagnostic);
       throw outputError;
     }
@@ -487,6 +499,7 @@ export class AntigravityRunner extends CliRunnerBase {
       );
     } catch (error) {
       const outputError = error as AntigravityOutputError;
+      if (isNonRetryableError(error)) throw error;
       const errorJson = this.parseResponse(outputError.antigravityStdout ?? '');
       if (errorJson?.status === 'ERROR') {
         this.outputCapability = 'json';
@@ -616,6 +629,7 @@ export class AntigravityRunner extends CliRunnerBase {
         }
       );
     } catch (error) {
+      if (isNonRetryableError(error)) throw error;
       if (this.isUnsupportedOutputFormat(error)) {
         // This failure happens during flag parsing, before agy executes the prompt.
         this.streamOutputCapability = 'legacy';
@@ -646,6 +660,7 @@ export class AntigravityRunner extends CliRunnerBase {
     let sawErrorResult = false;
     let lastToolError: string | undefined;
     let sawResult = false;
+    let finalResponse: AntigravityJsonResponse | undefined;
     let emptySuccess = false;
     let deniedActions: unknown;
     let sawNativeEvent = false;
@@ -725,7 +740,11 @@ export class AntigravityRunner extends CliRunnerBase {
         if (event.event === 'result' && event.result) {
           sawResult = true;
           const result = event.result;
+          finalResponse = result;
           sessionId = result.conversation_id ?? sessionId;
+
+          // Wait for close so stderr diagnostics and process ownership are finalized before rejection.
+          if (this.finishedReasonError(result)) return undefined;
 
           if (result.status === 'ERROR') {
             sawErrorResult = true;
@@ -786,6 +805,12 @@ export class AntigravityRunner extends CliRunnerBase {
           }
           throw new Error('Antigravity CLI stream ended without a result event');
         }
+        const terminated = finalResponse
+          ? this.finishedReasonError(finalResponse, stderrError)
+          : undefined;
+        if (terminated) {
+          throw stderrError ? this.attachDiagnostic(terminated, stderrError) : terminated;
+        }
         if (errorDetail || sawErrorResult) {
           const conversationError = new AntigravityConversationError(
             errorDetail ?? stderrError?.short_error ?? 'Antigravity CLI returned ERROR',
@@ -796,7 +821,11 @@ export class AntigravityRunner extends CliRunnerBase {
             : conversationError;
         }
         const denialNotice = this.withDeniedActions({ denied_actions: deniedActions });
-        if (!hasPartialOutputTimeout(stderr) && !denialNotice && (emptySuccess || !fullText)) {
+        if (
+          !hasPartialOutputTimeout(stderr, finalResponse?.finished_reason) &&
+          !denialNotice &&
+          (emptySuccess || !fullText)
+        ) {
           const conversationError = new AntigravityConversationError(
             lastToolError ??
               stderrError?.short_error ??
@@ -809,7 +838,8 @@ export class AntigravityRunner extends CliRunnerBase {
         }
         const result = withPrintTimeoutNotice(
           this.withDeniedActions({ response: fullText, denied_actions: deniedActions }),
-          stderr
+          stderr,
+          finalResponse?.finished_reason
         );
         if (result !== fullText) callbacks.onText?.(result.slice(fullText.length), result);
         const modelEvidence = models.result();
@@ -824,6 +854,9 @@ export class AntigravityRunner extends CliRunnerBase {
       exitErrorDetail: (stderr = '') => {
         const stderrError = getStderrError(stderr);
         return (
+          (finalResponse
+            ? this.finishedReasonError(finalResponse, stderrError)?.message
+            : undefined) ??
           errorDetail ??
           (emptySuccess ? lastToolError : undefined) ??
           stderrError?.short_error ??
@@ -831,11 +864,17 @@ export class AntigravityRunner extends CliRunnerBase {
         );
       },
       wrapExitError: (error, stderr = '') => {
+        const stderrError = getStderrError(stderr);
+        const terminated = finalResponse
+          ? this.finishedReasonError(finalResponse, stderrError, error)
+          : undefined;
+        if (terminated) {
+          return stderrError ? this.attachDiagnostic(terminated, stderrError) : terminated;
+        }
         const wrapped =
           sessionId && isAntigravityWorkspaceArtifactPathError(error)
             ? new AntigravityConversationError(error.message, sessionId, { cause: error })
             : error;
-        const stderrError = getStderrError(stderr);
         return stderrError ? this.attachDiagnostic(wrapped, stderrError) : wrapped;
       },
     };
@@ -887,8 +926,16 @@ export class AntigravityRunner extends CliRunnerBase {
       }
 
       this.outputCapability = 'json';
+      const terminated = this.finishedReasonError(response, stderrError);
+      if (terminated) {
+        throw stderrError ? this.attachDiagnostic(terminated, stderrError) : terminated;
+      }
       if (response.status === 'SUCCESS') {
-        const result = withPrintTimeoutNotice(this.withDeniedActions(response), stderr);
+        const result = withPrintTimeoutNotice(
+          this.withDeniedActions(response),
+          stderr,
+          response.finished_reason
+        );
         if (!result) {
           const emptySuccessError = new Error(
             stderrError?.short_error ?? 'Antigravity CLI returned SUCCESS JSON without a response'
@@ -1041,11 +1088,49 @@ export class AntigravityRunner extends CliRunnerBase {
     error: unknown,
     options?: RunOptions
   ): string | undefined {
+    if (isNonRetryableError(error)) return undefined;
     if (!isAntigravityWorkspaceArtifactPathError(error)) return undefined;
     if (error instanceof AntigravityConversationError && error.conversationId) {
       return error.conversationId;
     }
     return options?.sessionId;
+  }
+
+  private finishedReasonError(
+    response: AntigravityJsonResponse,
+    stderrError?: AntigravityStderrError,
+    cause?: unknown
+  ): AntigravityTurnError | undefined {
+    const reason = response.finished_reason;
+    if (!hasFinishedReason(reason) || (reason === 'print_timeout' && cause === undefined)) return;
+    const kind =
+      reason === 'interrupted'
+        ? 'interrupted'
+        : reason === 'error' || reason === 'print_timeout'
+          ? 'error'
+          : 'unknown';
+    const fallback =
+      kind === 'interrupted'
+        ? 'Antigravity CLI was interrupted'
+        : kind === 'unknown'
+          ? 'Antigravity CLI returned an unrecognized finished_reason'
+          : 'Antigravity CLI ended with finished_reason=error';
+    const detail =
+      this.extractErrorMessage(response) ??
+      stderrError?.short_error ??
+      (cause instanceof Error ? cause.message : undefined) ??
+      fallback;
+    // Expose useful enum-like values, never arbitrary provider text or control sequences.
+    const reasonSuffix =
+      kind === 'unknown' && typeof reason === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(reason)
+        ? ` (finished_reason=${reason})`
+        : '';
+    return new AntigravityTurnError(
+      kind,
+      reasonSuffix && !detail.includes(reasonSuffix) ? detail + reasonSuffix : detail,
+      response.conversation_id,
+      cause === undefined ? undefined : { cause }
+    );
   }
 
   private looksLikeNativeJsonEnvelope(output: string): boolean {

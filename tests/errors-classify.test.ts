@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  AntigravityTurnError,
   IncompleteAgentTurnError,
   LlmTimeoutError,
   classifyAgentError,
   formatErrorDiagnostic,
   formatAgentErrorForUser,
+  isNonRetryableError,
 } from '../src/errors.js';
 import { consumeRestartNote, resetRestartNoteStateForTest } from '../src/restart-note.js';
 
@@ -21,6 +23,20 @@ const claudeLimitErrors = [
 ];
 
 describe('classifyAgentError', () => {
+  it('classifies structured Agy interruptions without relying on message text', () => {
+    const error = new AntigravityTurnError('interrupted', 'ETIMEDOUT from a stopped turn');
+    expect(classifyAgentError(error)).toBe('antigravity-interrupted');
+    expect(isNonRetryableError(error)).toBe(true);
+    expect(formatAgentErrorForUser(error)).toContain('中断');
+  });
+
+  it('preserves hook messages even when they resemble other error kinds', () => {
+    const error = new AntigravityTurnError('error', 'Policy blocked: validation timed out');
+    expect(classifyAgentError(error)).toBe('antigravity-terminated');
+    expect(isNonRetryableError(error)).toBe(true);
+    expect(formatAgentErrorForUser(error)).toContain('Policy blocked: validation timed out');
+  });
+
   it.each([
     ['Request cancelled by user', 'cancelled'],
     ['Claude Code CLI timed out after 300000ms', 'timeout'],

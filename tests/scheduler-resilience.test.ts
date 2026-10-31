@@ -3,7 +3,7 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Scheduler, type Schedule } from '../src/scheduler.js';
-import { NonRetryableError } from '../src/errors.js';
+import { AntigravityTurnError, NonRetryableError } from '../src/errors.js';
 
 function makeScheduler(): Scheduler {
   const dir = mkdtempSync(join(tmpdir(), 'xangi-sched-test-'));
@@ -78,6 +78,26 @@ describe('Scheduler 再発火ガード', () => {
 });
 
 describe('Scheduler transient リトライ', () => {
+  it.each(['error', 'interrupted'] as const)(
+    'does not retry a structured Agy %s even with network-like diagnostics',
+    async (reason) => {
+      const scheduler = makeScheduler();
+      const runner = vi.fn().mockRejectedValue(
+        new AntigravityTurnError(reason, 'Hook stopped this turn: ETIMEDOUT', 'stopped-session', {
+          cause: new Error('fetch failed'),
+        })
+      );
+      scheduler.registerAgentRunner('discord', runner);
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await (scheduler as unknown as ExecutableScheduler).executeJob(makeSchedule('agyStopped'));
+        expect(runner).toHaveBeenCalledOnce();
+      } finally {
+        errorLog.mockRestore();
+      }
+    }
+  );
+
   it('DNS 一時失敗はバックオフ後に 1 回リトライして成功する', async () => {
     const scheduler = makeScheduler();
     const runner = vi
