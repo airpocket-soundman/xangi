@@ -1,3 +1,6 @@
+import type { PlatformCompletionRefs } from '../src/platform-completion.js';
+import { registerLineSchedulerBridge, LineChatQueue } from '../src/line.js';
+import { registerTelegramSchedulerBridge } from '../src/telegram.js';
 // HTTP tests must not discover or probe authenticated CLIs in the developer's home.
 vi.mock('../src/backend-auth-status.js', () => ({ backendAuthenticationSnapshot: async () => [] }));
 import { requestUserInput, normalizeQuestions } from '../src/user-input.js';
@@ -23,18 +26,26 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
+import { createHash } from 'crypto';
 import { createServer, type Server } from 'http';
 import { startWebChat } from '../src/web-chat.js';
+import { DeliveryUnavailable } from '../src/conversation-service.js';
+import { WEB_SCHEDULE_NEW_SESSION_ID } from '../src/web-schedules.js';
+import { registerDiscordSchedulerBridge } from '../src/discord/scheduler-bridge.js';
+import { registerSlackSchedulerBridge } from '../src/slack.js';
 import {
   initSessions,
   clearSessions,
   listAllSessions,
   getSessionEntry,
   getActiveSessionId,
+  getSessionLifecycle,
+  updateSessionTitle,
   createSession,
   createSchedulerSession,
   createWebSession,
   closeSession,
+  removeSession,
   archiveSession,
   setProviderSessionId,
   replaceSessionProgressCard,
@@ -354,6 +365,7 @@ describe('web-chat HTTP API', () => {
   let server: Server | null = null;
   let baseUrl = '';
   let runner: FakeRunner;
+  let completionBridgeRefs: PlatformCompletionRefs;
   let slackRemoteInputRef: { current?: SlackRemoteInputBridge };
   let discordRemoteInputRef: { current?: DiscordRemoteInputBridge };
   let destinationLabelResolverRef: {
@@ -371,6 +383,7 @@ describe('web-chat HTTP API', () => {
   const prevExtensionsFile = process.env.XANGI_EXTENSIONS_FILE;
 
   let webServer: ReturnType<typeof startWebChat>;
+  let webConfig: Config;
   const previousCheckInterval = process.env.AGENT_PARENT_CHECK_INTERVAL_MS;
   beforeEach(async () => {
     process.env.AGENT_PARENT_CHECK_INTERVAL_MS = "1000";
@@ -410,19 +423,22 @@ describe('web-chat HTTP API', () => {
     });
     discordRemoteInputRef = {};
     slackRemoteInputRef = {};
+    completionBridgeRefs = { line: {}, telegram: {} };
     destinationLabelResolverRef = {};
     externalChatUrlResolvers = {};
     const port = await freePort();
     // startWebChat は server を返さないので、内部で動作する http サーバの listen を待つために
     // setTimeout で次のティックを待ち、URL を保持する。
     initSettings(process.env.DATA_DIR!);
+    webConfig = {features: {}, discord: {}, slack: {}, web: {}, scheduler: {}, completion: {}, sessionTitle: {}} as Config;
     webServer = startWebChat({
-      config: {features: {}, discord: {}, slack: {}, web: {}, scheduler: {}, completion: {}, sessionTitle: {}} as Config,
+      config: webConfig,
       agentRunner: runner,
       port,
       replySuggestions: { replySuggestions: true, replySuggestionCount: 3 },
       discordRemoteInputRef,
       slackRemoteInputRef,
+      completionBridgeRefs,
       destinationLabelResolverRef,
       settingsChannelListers: {
         discord: async () => [{ id: 'discord-channel-id', name: '#開発', group: 'テストサーバー' }],
@@ -1020,6 +1036,7 @@ describe('web-chat HTTP API', () => {
       expect(resumed).toHaveLength(1);
       expect(runner.prompts.at(-1)).toContain(run.id);
       expect(runner.prompts.at(-1)).toContain('succeeded');
+      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${sessionId}`);
       await vi.waitFor(async () => {
         const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
         expect(detail.run.parentNotifiedAt).toBeTruthy();
@@ -1097,7 +1114,7 @@ describe('web-chat HTTP API', () => {
 
   it('runs a configured Team leader, dispatches only members, and integrates before notifying the parent', async () => {
     const deliveries: string[] = [];
-    scheduler.registerAgentRunner('discord', async prompt => { deliveries.push(prompt); return 'delivered'; });
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: async ({ text }) => { deliveries.push(text); return ['answer']; } };
     const provider = runner.runStream.bind(runner);
     vi.spyOn(runner, 'runStream').mockImplementation((prompt, callbacks, options) => {
       const snapshot = getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
@@ -1108,6 +1125,7 @@ describe('web-chat HTTP API', () => {
     const { agent: worker } = await (await post('/api/agents', {name:'Worker'})).json();
     const { agent: reviewer } = await (await post('/api/agents', {name:'Reviewer'})).json();
     const { team } = await (await post('/api/teams', {name:'Led team', leaderAgentId:leader.id, members:[{agentId:worker.id},{agentId:reviewer.id}], prompt:'Check evidence'})).json();
+    createSession('configured-parent', { platform: 'discord' });
     const context = { channelId:'configured-parent', platform:'discord' as const };
     const run = JSON.parse(await executeTeamCommand({action:'run',team:team.id,task:'Complete the project'},context));
     const leaderKey = `web-chat:${run.appSessionId}`;
@@ -1142,13 +1160,15 @@ describe('web-chat HTTP API', () => {
     expect(deliveries).toHaveLength(0);
     runner.nextResult = 'Integrated answer';
     runner.release(leaderKey);
+    await vi.waitFor(() => expect(runner.pending.has(context.channelId)).toBe(true));
+    runner.release(context.channelId);
     await vi.waitFor(() => expect(deliveries).toHaveLength(1));
     expect(JSON.parse(await executeTeamCommand({action:'status',id:run.id},context)).result).toBe('Integrated answer');
   });
 
   it('dispatches a complete caller-led batch through the API concurrently and notifies the original leader once', async () => {
     const deliveries: string[] = [];
-    scheduler.registerAgentRunner('discord', async prompt => { deliveries.push(prompt); return 'delivered'; });
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: async ({ text }) => { deliveries.push(text); return ['answer']; } };
     const provider = runner.runStream.bind(runner);
     vi.spyOn(runner,'runStream').mockImplementation((prompt,callbacks,options)=>{
       const snapshot=getSessionEntry(options?.appSessionId || '')?.selectedAgentConfig?.team;
@@ -1168,6 +1188,7 @@ describe('web-chat HTTP API', () => {
     const {team}=await (await post('/api/teams',{name:'caller-test',members})).json();
     expect(team.leadership).toBe('caller');
     const assignments=members.map(m=>({agentId:m.agentId,task:`${m.role}を調査`}));
+    createSession('caller-parent', { platform: 'discord' });
     const context={channelId:'caller-parent',platform:'discord' as const};
     await expect(executeTeamCommand({action:'run',team:team.id,task:'共和周辺'},context)).rejects.toThrow('assignments-json');
     expect(runner.pending.size).toBe(0);
@@ -1188,8 +1209,10 @@ describe('web-chat HTTP API', () => {
     expect(deliveries).toHaveLength(0);
     runner.nextResult='調査結果';
     for (const id of [...runner.pending.keys()]) runner.release(id);
+    await vi.waitFor(()=>expect(runner.pending.has(context.channelId)).toBe(true));
+    expect(runner.prompts.at(-1)).toContain(run.id);
+    runner.release(context.channelId);
     await vi.waitFor(()=>expect(deliveries).toHaveLength(1));
-    expect(deliveries[0]).toContain(run.id);
     expect(JSON.parse(await executeTeamCommand({action:'status',id:run.id},context)).status).toBe('succeeded');
     const finished=JSON.parse(await executeTeamCommand({action:'status',id:run.id},context));
     const member=finished.members.find((m:any)=>m.agentId===members[0].agentId);
@@ -1199,51 +1222,370 @@ describe('web-chat HTTP API', () => {
     expect(continued).not.toBe(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
     expect(runner.prompts.at(-1)).toContain('詳細を追加して');
     runner.release(continued);
+    await vi.waitFor(()=>expect(runner.pending.has(context.channelId)).toBe(true));
+    expect(runner.prompts.at(-1)).toContain(member.id);
+    runner.release(context.channelId);
     await vi.waitFor(()=>expect(deliveries).toHaveLength(2));
-    expect(deliveries[1]).toContain(member.id);
     expect(runner.pending.size).toBe(0);
 
   });
 
-  it('delivers a child result to a Discord parent conversation', async () => {
-    const deliveries: Array<{ prompt: string; channelId: string }> = [];
-    scheduler.registerAgentRunner('discord', async (prompt, channelId) => {
-      deliveries.push({ prompt, channelId });
-      return 'delivered';
-    });
-    const post = async (path: string, body: unknown) => {
-      const response = await fetch(`${baseUrl}${path}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      expect(response.ok).toBe(true);
-      return response.json();
+  it.each(['discord', 'slack', 'web', 'line', 'telegram'] as const)('resumes the original %s parent through shared conversation execution', async (platform) => {
+    webConfig.sessionTitle.mode = 'ai';
+    const titleRun = vi.spyOn(runner, 'run');
+    const contextKey = platform === 'web' ? undefined : `completion-${platform}`;
+    const parentId = contextKey ? createSession(contextKey, { platform }) : createWebSession();
+    const parent = getSessionEntry(parentId)!;
+    setProviderSessionId(parentId, 'original-provider');
+    const deliverResult = vi.fn().mockResolvedValue(['parent-answer']);
+    const scheduled = vi.fn().mockResolvedValue('wrong session');
+    scheduler.registerAgentRunner(platform, scheduled);
+    const bridge = { continueSession: vi.fn(), deliverResult };
+    if (platform === 'discord') discordRemoteInputRef.current = bridge;
+    if (platform === 'slack') slackRemoteInputRef.current = bridge;
+    if (platform === 'line' || platform === 'telegram') completionBridgeRefs[platform]!.current = {
+      isBusy: () => false, enqueue: async (_key, execute) => execute(), deliverResult,
     };
-    const childPath = mkdtempSync(join(tmpdir(), 'web-chat-child-'));
-    try {
-      const { workspace } = await post('/api/workspaces', { name: 'Discord child', path: childPath });
-      const { agent: parentAgent } = await post('/api/agents', { name: 'Parent', backend: 'codex' });
-      const { agent: childAgent } = await post('/api/agents', {
-        name: 'Child', backend: 'codex', workspaceId: workspace.id,
-      });
-      const { project } = await post('/api/projects', {
-        name: 'Discord completion',
-        });
-      const run = JSON.parse(await executeProjectAgentCommand({
-        action: 'run', agent: childAgent.id, task: 'Review one module',
-      }, { channelId: 'discord-thread-123', platform: 'discord' }));
-      await vi.waitFor(() => expect(runner.pending.has(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`)).toBe(true));
-      runner.release(`${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
-      await vi.waitFor(() => expect(deliveries).toHaveLength(1));
-      expect(deliveries[0].channelId).toBe('discord-thread-123');
-      expect(deliveries[0].prompt).toContain(run.id);
-      await vi.waitFor(async () => {
-        const detail = await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json();
-        expect(detail.run.parentNotifiedAt).toBeTruthy();
-      });
-    } finally {
-      rmSync(childPath, { recursive: true, force: true });
+    const response = await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Completion child' }),
+    });
+    const { agent } = await response.json();
+    const run = JSON.parse(await executeProjectAgentCommand({
+      action: 'run', agent: agent.id, task: 'Review one module',
+    }, { channelId: parent.contextKey, platform }));
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    setProviderSessionId(parentId, 'latest-provider');
+    runner.release(childKey);
+    await vi.waitFor(() => expect(runner.pending.has(parent.contextKey)).toBe(true));
+    expect(run.parentAppSessionId).toBe(parentId);
+    expect(runner.options.at(-1)).toMatchObject({
+      channelId: parent.contextKey, appSessionId: parentId, sessionId: 'latest-provider',
+      workdir: parent.workspacePath || testDir,
+    });
+    expect(runner.prompts.at(-1)).toContain(run.id);
+    expect(runner.prompts.at(-1)).not.toContain('[発言者: Web]');
+    expect(scheduled).not.toHaveBeenCalled();
+    expect(deliverResult).not.toHaveBeenCalled();
+    const concurrent = await fetch(`${baseUrl}/api/sessions/${parentId}/turns`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: 'concurrent-user-input', message: 'Continue' }),
+    });
+    expect(concurrent.status).toBe(platform === 'line' || platform === 'telegram' ? 404 : 409);
+    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+    expect((await read()).parentNotifiedAt).toBeUndefined();
+    runner.release(parent.contextKey);
+    await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
+    if (platform !== 'web') {
+      expect(deliverResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ appSessionId: parentId }));
+      expect(deliverResult.mock.calls[0][0]).not.toHaveProperty('webInput');
+    } else expect(deliverResult).not.toHaveBeenCalled();
+    expect(runner.callOrder.filter((key) => key === parent.contextKey)).toHaveLength(1);
+    expect(titleRun).not.toHaveBeenCalled();
+  });
+
+  it.each(['line', 'telegram'] as const)('waits for an offline %s adapter before executing the parent', async (platform) => {
+    const key = `offline-${platform}`;
+    const parentId = createSession(key, { platform });
+    setProviderSessionId(parentId, 'original-provider');
+    const wrongRunner = vi.fn();
+    scheduler.registerAgentRunner(platform, wrongRunner);
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' }, { channelId: key, platform }));
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+    await vi.waitFor(async () => expect((await read()).parentDeliveryError).toContain('接続'));
+    expect(runner.pending.has(key)).toBe(false);
+    expect(wrongRunner).not.toHaveBeenCalled();
+    const deliverResult = vi.fn().mockResolvedValue(['answer']);
+    const enqueue = vi.fn(async (_key, execute) => execute());
+    completionBridgeRefs[platform]!.current = { isBusy: () => false, enqueue, deliverResult };
+    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true), { timeout: 3500 });
+    runner.release(key);
+    await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
+    expect(runner.callOrder.filter(value => value === key)).toHaveLength(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(deliverResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ appSessionId: parentId }));
+  });
+
+  it.each(['discord', 'slack', 'line', 'telegram'].flatMap(platform => ['agent', 'team'].flatMap(kind => [true, false].map(hasInteractive => ({ platform: platform as 'discord' | 'slack' | 'line' | 'telegram', kind, hasInteractive })))))('returns scheduled $platform $kind results without changing the interactive session (existing=$hasInteractive)', async ({ platform, kind, hasInteractive }) => {
+    const key = platform === 'discord' ? 'scheduled-channel' : platform === 'slack' ? 'C_SCHEDULE:123.456' : platform === 'line' ? `line:U${'a'.repeat(32)}` : 'telegram:chat:-100123:topic:7';
+    const interactive = hasInteractive ? createSession(key, { platform }) : undefined;
+    if (interactive) setProviderSessionId(interactive, 'interactive-provider');
+    const interactiveBefore = interactive ? structuredClone(getSessionEntry(interactive)) : undefined;
+    webConfig.agent = { backend: 'codex', config: { workdir: testDir, skipPermissions: false } } as Config['agent'];
+    const thinking = { id: 'thinking', edit: vi.fn(async () => {}), delete: vi.fn(async () => {}) };
+    if (platform === 'discord') registerDiscordSchedulerBridge({
+      scheduler, agentRunner: runner, config: webConfig,
+      client: { channels: { fetch: async () => ({ send: async () => thinking }) } } as any,
+    });
+    else if (platform === 'slack') registerSlackSchedulerBridge({
+      scheduler, agentRunner: runner, config: webConfig,
+      client: { chat: { postMessage: async () => ({ ts: 'thinking' }), update: async () => ({ ok: true }) } } as any,
+    });
+    else if (platform === 'line') registerLineSchedulerBridge({scheduler, agentRunner: runner,
+      queue: new LineChatQueue(), client: {pushMessage: vi.fn().mockResolvedValue({})} as any,
+      allowedUsers: ['*'], allowAll: true});
+    else { webConfig.telegram = {} as Config['telegram']; registerTelegramSchedulerBridge({scheduler, agentRunner: runner, config: webConfig,
+      bot: {api: {sendMessage: vi.fn().mockResolvedValue({chat:{id:-100123},message_id:1}), editMessageText: vi.fn().mockResolvedValue({})}} as any}); }
+    const deliver = vi.fn().mockResolvedValue(['scheduled-answer']);
+    const bridge = { continueSession: vi.fn(), deliverResult: deliver };
+    if (platform === 'discord') discordRemoteInputRef.current = bridge;
+    else if (platform === 'slack') slackRemoteInputRef.current = bridge;
+    else completionBridgeRefs[platform]!.current = {isBusy: () => false, enqueue: async (_key, execute) => execute(), deliverResult: deliver};
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    let team: { id: string } | undefined;
+    if (kind === 'team') ({ team } = await (await fetch(`${baseUrl}/api/teams`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Scheduled team', members: [{ agentId: agent.id }] }),
+    })).json());
+    const scheduled = scheduler.getAgentRunner(platform)!('Do scheduled work', key);
+    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+    const scheduledId = runner.options.at(-1)!.appSessionId!;
+    expect(scheduledId).not.toBe(interactive);
+    const run = JSON.parse(kind === 'team'
+      ? await executeTeamCommand({ action: 'run', team: team!.id, task: 'Work',
+          'assignments-json': JSON.stringify([{ agentId: agent.id, task: 'Work' }]) }, { channelId: key, platform })
+      : await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' }, { channelId: key, platform }));
+    expect(run.parentAppSessionId).toBe(scheduledId);
+    runner.release(key);
+    await scheduled;
+    expect(getSessionLifecycle(scheduledId)).toBe('closed');
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+    expect(runner.options.at(-1)).toMatchObject({
+      appSessionId: scheduledId, channelId: key, sessionId: `provider-${key}`,
+      runnerKey: `scheduled-parent:${scheduledId}`,
+    });
+    expect(getActiveSessionId(key)).toBe(interactive);
+    runner.release(key);
+    await vi.waitFor(async () => {
+      const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      expect(detail.parentNotifiedAt).toBeTruthy();
+    });
+    expect(deliver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ appSessionId: scheduledId }));
+    if (interactive) expect(getSessionEntry(interactive)).toEqual(interactiveBefore);
+    expect(getSessionLifecycle(scheduledId)).toBe('closed');
+  });
+
+  it('returns a scheduled Web child to its new parent session without changing an existing Web conversation', async () => {
+    const existing = createWebSession();
+    const snapshot = structuredClone(getSessionEntry(existing));
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const original = runner.run.bind(runner);
+    let run: { id: string; appSessionId: string; parentAppSessionId: string };
+    let scheduledId: string;
+    let key: string;
+    vi.spyOn(runner, 'run').mockImplementationOnce(async (prompt, options) => {
+      scheduledId = options!.appSessionId!; key = options!.channelId!;
+      run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
+        { channelId: key, platform: 'web' }));
+      return original(prompt, options);
+    });
+    await scheduler.getAgentRunner('web')!('Scheduled work', WEB_SCHEDULE_NEW_SESSION_ID);
+    expect(run!.parentAppSessionId).toBe(scheduledId!);
+    expect(scheduledId!).not.toBe(existing);
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run!.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    await vi.waitFor(() => expect(runner.pending.has(key!)).toBe(true));
+    expect(runner.options.at(-1)).toMatchObject({ appSessionId: scheduledId!, channelId: key!, sessionId: `provider-${key!}` });
+    runner.release(key!);
+    await vi.waitFor(async () => {
+      expect((await (await fetch(`${baseUrl}/api/agent-runs/${run!.id}`)).json()).run.parentNotifiedAt).toBeTruthy();
+    });
+    expect(getSessionEntry(existing)).toEqual(snapshot);
+  });
+
+  it.each(['explicit-close', 'archived', 'missing-provider'] as const)('does not resume a scheduled parent after %s', async (condition) => {
+    const key = 'scheduled-stop';
+    const interactive = createSession(key, { platform: 'discord' });
+    const snapshot = structuredClone(getSessionEntry(interactive));
+    webConfig.agent = { backend: 'codex', config: { workdir: testDir } } as Config['agent'];
+    const thinking = { id: 'thinking', edit: async () => {}, delete: async () => {} };
+    registerDiscordSchedulerBridge({ scheduler, config: webConfig, agentRunner: runner,
+      client: { channels: { fetch: async () => ({ send: async () => thinking }) } } as any });
+    const deliver = vi.fn().mockResolvedValue(['answer']);
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const scheduled = scheduler.getAgentRunner('discord')!('Scheduled work', key);
+    await vi.waitFor(() => expect(runner.pending.has(key)).toBe(true));
+    const scheduledId = runner.options.at(-1)!.appSessionId!;
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
+      { channelId: key, platform: 'discord' }));
+    runner.release(key); await scheduled;
+    if (condition === 'explicit-close') closeSession(scheduledId, 'monitor');
+    if (condition === 'archived') archiveSession(scheduledId);
+    if (condition === 'missing-provider') setProviderSessionId(scheduledId, '');
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    await vi.waitFor(async () => {
+      const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      expect(detail.parentDeliveryError).toContain('no longer active');
+      expect(detail.parentNotifiedAt).toBeUndefined();
+    });
+    expect(runner.callOrder.filter(k => k === key)).toHaveLength(1);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(getSessionEntry(interactive)).toEqual(snapshot);
+  });
+
+  it.each(['discord', 'slack', 'web', 'line', 'telegram'].flatMap(platform => ['switched', 'closed', 'deleted', 'missing'].map(condition => ({ platform: platform as 'discord' | 'slack' | 'web' | 'line' | 'telegram', condition }))))('does not resume a $condition $platform parent or fall back to a schedule', async ({ platform, condition }) => {
+    const parentId = createSession('completion-stale', { platform });
+    if (condition === 'missing') removeSession(parentId);
+    const scheduled = vi.fn();
+    scheduler.registerAgentRunner(platform, scheduled);
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
+      { channelId: 'completion-stale', platform }));
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    if (condition === 'switched') createSession('completion-stale', { platform });
+    if (condition === 'closed') closeSession(parentId, 'user');
+    if (condition === 'deleted') removeSession(parentId);
+    runner.release(childKey);
+    await vi.waitFor(async () => {
+      const detail = (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+      expect(detail.parentDeliveryError).toContain(condition === 'missing' ? 'identity is missing' : 'no longer active');
+      expect(detail.parentNotifiedAt).toBeUndefined();
+    });
+    expect(scheduled).not.toHaveBeenCalled();
+    expect(runner.callOrder).not.toContain('completion-stale');
+  });
+
+  it.each(['offline', 'unknown', 'execution-failed'] as const)('does not repeat parent execution after %s', async (failure) => {
+    const parentId = createSession('completion-retry', { platform: 'discord' });
+    const deliver = vi.fn().mockResolvedValue(['answer']);
+    if (failure === 'offline') deliver.mockRejectedValueOnce(new DeliveryUnavailable('offline'));
+    if (failure === 'unknown') deliver.mockRejectedValue(new Error('connection lost after sending'));
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
+    const fallback = vi.fn().mockResolvedValue(undefined);
+    scheduler.registerSender('discord', fallback);
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
+      { channelId: 'completion-retry', platform: 'discord' }));
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    await vi.waitFor(() => expect(runner.pending.has('completion-retry')).toBe(true));
+    if (failure === 'execution-failed') runner.nextFailed = true;
+    runner.release('completion-retry');
+    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+    await vi.waitFor(async () => expect((await read()).parentDeliveryRequestId).toBeTruthy());
+    const receiptId = (await read()).parentDeliveryRequestId;
+    if (failure === 'offline') {
+      await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy(), { timeout: 3500 });
+      expect(deliver).toHaveBeenCalledTimes(2);
+      expect(fallback).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(async () => expect((await read()).parentDeliveryAttempts).toBeGreaterThanOrEqual(2), { timeout: 3500 });
+      expect((await read()).parentNotifiedAt).toBeUndefined();
+      expect(deliver).toHaveBeenCalledTimes(failure === 'unknown' ? 1 : 0);
     }
+    expect((await read()).parentDeliveryRequestId).toBe(receiptId);
+    const receipt = (await (await fetch(`${baseUrl}/api/sessions/${parentId}/turn-requests/${receiptId}`)).json()).turn;
+    expect(receipt.source).toBe('agent-completion');
+    expect(receipt.state).toBe(failure === 'execution-failed' ? 'failed' : 'completed');
+    expect(runner.callOrder.filter((key) => key === 'completion-retry')).toHaveLength(1);
+  });
+
+  it('keeps new child results separate from a saved completion awaiting delivery', async () => {
+    createSession('completion-batches', { platform: 'discord' });
+    const deliver = vi.fn().mockRejectedValueOnce(new DeliveryUnavailable('offline')).mockResolvedValue(['answer']);
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult: deliver };
+    const runs = [];
+    for (const name of ['First', 'Second']) {
+      const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      })).json();
+      runs.push(JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: name },
+        { channelId: 'completion-batches', platform: 'discord' })));
+    }
+    const keys = runs.map((run) => `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`);
+    await vi.waitFor(() => expect(keys.every((key) => runner.pending.has(key))).toBe(true));
+    runner.release(keys[0]);
+    await vi.waitFor(() => expect(runner.pending.has('completion-batches')).toBe(true));
+    runner.release('completion-batches');
+    const read = async (id: string) => (await (await fetch(`${baseUrl}/api/agent-runs/${id}`)).json()).run;
+    await vi.waitFor(async () => expect((await read(runs[0].id)).parentDeliveryError).toBeTruthy());
+    runner.release(keys[1]);
+    await vi.waitFor(() => expect(runner.pending.has('completion-batches')).toBe(true));
+    expect(runner.prompts.at(-1)).toContain(runs[1].id);
+    expect(runner.prompts.at(-1)).not.toContain(runs[0].id);
+    runner.release('completion-batches');
+    await vi.waitFor(async () => {
+      expect((await read(runs[0].id)).parentNotifiedAt).toBeTruthy();
+      expect((await read(runs[1].id)).parentNotifiedAt).toBeTruthy();
+    }, { timeout: 3500 });
+    expect((await read(runs[0].id)).parentDeliveryRequestId).not.toBe((await read(runs[1].id)).parentDeliveryRequestId);
+    expect(runner.callOrder.filter((key) => key === 'completion-batches')).toHaveLength(2);
+    expect(deliver).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['completed', 'interrupted'] as const)('recovers a %s completion receipt after restart without repeating the parent', async (state) => {
+    const parentId = createWebSession();
+    const parentKey = getSessionEntry(parentId)!.contextKey;
+    const { agent } = await (await fetch(`${baseUrl}/api/agents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Child' }),
+    })).json();
+    const run = JSON.parse(await executeProjectAgentCommand({ action: 'run', agent: agent.id, task: 'Work' },
+      { channelId: parentKey, platform: 'web' }));
+    const childKey = `${WEB_CHAT_CONTEXT_PREFIX}${run.appSessionId}`;
+    await vi.waitFor(() => expect(runner.pending.has(childKey)).toBe(true));
+    runner.release(childKey);
+    await vi.waitFor(() => expect(runner.pending.has(parentKey)).toBe(true));
+    runner.release(parentKey);
+    const read = async () => (await (await fetch(`${baseUrl}/api/agent-runs/${run.id}`)).json()).run;
+    await vi.waitFor(async () => expect((await read()).parentNotifiedAt).toBeTruthy());
+    const requestId = (await read()).parentDeliveryRequestId;
+    webServer.closeAllConnections();
+    await new Promise<void>((resolve) => webServer.close(() => resolve()));
+    const path = join(process.env.DATA_DIR!, 'agent-runs.json');
+    const saved = JSON.parse(readFileSync(path, 'utf8'));
+    const persisted = saved.runs.find((r: { id: string }) => r.id === run.id);
+    delete persisted.parentNotifiedAt;
+    delete persisted.parentDeliveryAttemptAt;
+    writeFileSync(path, JSON.stringify(saved));
+    if (state === 'interrupted') {
+      const filename = createHash('sha256').update(JSON.stringify([parentId, requestId])).digest('hex') + '.json';
+      const receiptPath = join(process.env.DATA_DIR!, 'conversation-turns', filename);
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      receipt.state = 'running';
+      receipt.delivery = 'none';
+      delete receipt.result;
+      writeFileSync(receiptPath, JSON.stringify(receipt));
+    }
+    const port = await freePort();
+    webServer = startWebChat({ agentRunner: runner, port, resolver, scheduler });
+    baseUrl = `http://127.0.0.1:${port}`;
+    await new Promise<void>((resolve) => webServer.listening ? resolve() : webServer.once('listening', resolve));
+    await vi.waitFor(async () => {
+      const detail = await read();
+      if (state === 'completed') expect(detail.parentNotifiedAt).toBeTruthy();
+      else {
+        expect(detail.parentDeliveryError).toContain('interrupted');
+        expect(detail.parentNotifiedAt).toBeUndefined();
+      }
+    }, { timeout: 2500 });
+    expect(runner.callOrder.filter((key) => key === parentKey)).toHaveLength(1);
+    expect((await read()).parentDeliveryRequestId).toBe(requestId);
   });
 
   it('reports completed children without waiting for other running children', async () => {
@@ -2925,6 +3267,229 @@ process.stdin.on('end', () => process.exit(0));
     ref.current = undefined;
   });
 
+  it('legacy Web first turn requests an AI title in AI mode', async () => {
+    webConfig.sessionTitle.mode = 'ai';
+    const id = createWebSession();
+    const context = getSessionEntry(id)!.contextKey;
+    runner.nextResult = 'AIが生成した画像確認タイトル';
+    const titleRun = vi.spyOn(runner, 'run');
+    const pendingResponse = fetch(`${baseUrl}/api/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appSessionId: id, message: 'テストです。どうかな？画像見えてる？' }),
+    });
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    runner.release(context);
+    await (await pendingResponse).text();
+    await vi.waitFor(() => expect(titleRun).toHaveBeenCalledWith(
+      expect.any(String), expect.objectContaining({ internalTask: true })
+    ));
+    expect(getSessionEntry(id)?.title).toBe('AIが生成した画像確認タイトル');
+  });
+
+  it.each(['web', 'discord', 'slack'] as const)('shared %s first turn requests an AI title in AI mode', async (platform) => {
+    webConfig.sessionTitle.mode = 'ai';
+    const id = platform === 'web' ? createWebSession() : createSession(`title-${platform}`, { platform });
+    const context = getSessionEntry(id)!.contextKey;
+    if (platform === 'discord') {
+      discordRemoteInputRef.current = {
+        continueSession: vi.fn(),
+        prepareSessionTitle: vi.fn().mockResolvedValue({
+          onTitle: async (title: string) => { updateSessionTitle(id, title); },
+        }),
+      };
+    }
+    runner.nextResult = 'AIが生成した画像確認タイトル';
+    const titleRun = vi.spyOn(runner, 'run');
+    const response = await fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'title-investigation', message: 'テストです。どうかな？画像見えてる？', attachments: [] }),
+    });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    runner.release(context);
+    await vi.waitFor(async () => {
+      const receipt = await (await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-investigation`)).json();
+      expect(receipt.turn.state).toBe('completed');
+    });
+    expect(titleRun, `stored title=${getSessionEntry(id)?.title}`).toHaveBeenCalledWith(
+      expect.any(String), expect.objectContaining({ internalTask: true })
+    );
+    expect(getSessionEntry(id)?.title).toBe('AIが生成した画像確認タイトル');
+  });
+
+  it.each(['manual', 'new', 'failure', 'prefix', 'attachment'] as const)('shared AI title preserves response delivery and title policy (%s)', async (scenario) => {
+    webConfig.sessionTitle.mode = scenario === 'prefix' ? 'prefix' : 'ai';
+    const id = createWebSession();
+    const context = getSessionEntry(id)!.contextKey;
+    let resolveTitle!: (result: RunResult) => void;
+    let rejectTitle!: (error: Error) => void;
+    const titleRun = vi.spyOn(runner, 'run').mockImplementation(() => new Promise((resolve, reject) => {
+      resolveTitle = resolve; rejectTitle = reject;
+    }));
+    const message = scenario === 'attachment' ? '' : '最初の質問';
+    const attachments: string[] = [];
+    if (scenario === 'attachment') {
+      const form = new FormData();
+      form.append('file', new Blob(['image']), 'cat.png');
+      const uploaded = await (await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form })).json();
+      attachments.push(uploaded.files[0].path);
+    }
+    const post = (requestId: string) => fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId, message, attachments }),
+    });
+    expect((await post('title-policy-first')).status).toBe(202);
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    runner.callbacks.get(context)?.onBackendReady?.();
+    runner.emitText(context, '回答中');
+    expect(titleRun).toHaveBeenCalledTimes(scenario === 'prefix' ? 0 : 1);
+    runner.release(context);
+    await vi.waitFor(async () => {
+      const receipt = await (await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-policy-first`)).json();
+      expect(receipt.turn.state).toBe('completed');
+    });
+    if (scenario === 'prefix') {
+      expect(getSessionEntry(id)?.title).toBe(message);
+      return;
+    }
+    if (scenario === 'manual') updateSessionTitle(id, '手動タイトル');
+    if (scenario === 'new') createSession(context, { platform: 'web' });
+    if (scenario === 'failure') rejectTitle(new Error('title backend unavailable'));
+    else resolveTitle({ result: 'AIタイトル', sessionId: 'title-provider' });
+    await vi.waitFor(() => expect(runner.destroyed.has(`session-title:${id}`)).toBe(true));
+    // Flush the asynchronous onTitle callback as well as runner cleanup.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getSessionEntry(id)?.title).toBe(scenario === 'manual' ? '手動タイトル' : scenario === 'attachment' ? 'AIタイトル' : message);
+    if (scenario === 'attachment') {
+      expect((await post('title-policy-next')).status).toBe(202);
+      await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+      runner.release(context);
+      await vi.waitFor(async () => {
+        const receipt = await (await fetch(`${baseUrl}/api/sessions/${id}/turn-requests/title-policy-next`)).json();
+        expect(receipt.turn.state).toBe('completed');
+      });
+      expect(titleRun).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('does not recover or rewrite UI receipts when starting a headless companion server', async () => {
+    const id = createWebSession();
+    const requestId = 'headless-request';
+    const directory = join(process.env.DATA_DIR!, 'conversation-turns');
+    mkdirSync(directory, { recursive: true });
+    const filename = createHash('sha256').update(JSON.stringify([id, requestId])).digest('hex') + '.json';
+    const path = join(directory, filename);
+    const original = JSON.stringify({ appSessionId: id, requestId, id: 'running-turn', state: 'running', delivery: 'none' });
+    writeFileSync(path, original);
+    const headless = startWebChat({ agentRunner: runner, port: await freePort(), uiEnabled: false });
+    try {
+      await new Promise<void>((resolve) => headless.listening ? resolve() : headless.once('listening', resolve));
+      expect(readFileSync(path, 'utf8')).toBe(original);
+      expect(runner.callOrder).toHaveLength(0);
+    } finally {
+      headless.closeAllConnections();
+      await new Promise<void>((resolve) => headless.close(() => resolve()));
+    }
+  });
+
+  it.each(['discord', 'slack', 'web'] as const)('accepts a %s turn before completion and resumes the same provider context', async (platform) => {
+    const key = platform === 'web' ? undefined : `shared-${platform}`;
+    const id = key ? createSession(key, { platform }) : createWebSession();
+    const context = getSessionEntry(id)!.contextKey;
+    setProviderSessionId(id, 'existing-provider');
+    const deliver = vi.fn().mockResolvedValue(['posted-result']);
+    const legacy = vi.fn();
+    if (platform === 'discord') discordRemoteInputRef.current = { continueSession: legacy, deliverResult: deliver };
+    if (platform === 'slack') slackRemoteInputRef.current = { continueSession: legacy, deliverResult: deliver };
+    const post = (body: unknown) => fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const body = { requestId: 'request-shared-1234', message: '続けて', attachments: [] };
+    const response = await post(body);
+    expect(response.status).toBe(202);
+    const receipt = (await response.json()).turn;
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    expect(runner.options.at(-1)).toMatchObject({ appSessionId: id, channelId: context, sessionId: 'existing-provider' });
+    expect(deliver).not.toHaveBeenCalled(); expect(legacy).not.toHaveBeenCalled();
+    expect((await (await post(body)).json()).turn.id).toBe(receipt.id);
+    expect((await post({ ...body, requestId: 'request-concurrent' })).status).toBe(409);
+    expect((await post({ ...body, message: '違う入力' })).status).toBe(409);
+    const read = () => fetch(`${baseUrl}/api/sessions/${id}/turn-requests/${body.requestId}`).then((r) => r.json());
+    expect((await read()).turn.state).toBe('running');
+    runner.release(context);
+    await vi.waitFor(async () => expect((await read()).turn.state).toBe('completed'));
+    if (platform !== 'web') await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+    else expect(deliver).not.toHaveBeenCalled();
+    expect(runner.callOrder.filter((k) => k === context)).toHaveLength(1);
+    expect(getSessionEntry(id)?.agent?.providerSessionId).toBe(`provider-${context}`);
+    expect((await post(body)).status).toBe(202);
+  });
+
+  it.each([true, false])('delivers Web input attachments with the answering agent identity (selected=%s)', async (selected) => {
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const { agent } = await (await post('/api/agents', { name: 'ボルト' })).json();
+    const { project } = await (await post('/api/projects', { name: 'ソフト開発' })).json();
+    const context = 'input-and-result';
+    const id = createSession(context, { platform: 'discord', projectId: project.id, ...(selected ? { selectedAgentId: agent.id } : {}) });
+    const deliverResult = vi.fn().mockResolvedValue(['answer', 'input']);
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult };
+    const form = new FormData();
+    form.append('file', new Blob(['image']), 'user.png');
+    const { files } = await (await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form })).json();
+    const body = { requestId: 'request-input-label', message: '画像を確認して', attachments: [files[0].path] };
+    expect((await post(`/api/sessions/${id}/turns`, body)).status).toBe(202);
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    runner.release(context);
+    await vi.waitFor(() => expect(deliverResult).toHaveBeenCalledTimes(1));
+    expect(deliverResult).toHaveBeenCalledWith(expect.objectContaining({
+      appSessionId: id,
+      text: 'ok',
+      attachments: [],
+      webInput: { message: body.message, attachments: body.attachments },
+      assistantName: selected ? 'ボルト' : basename(testDir),
+    }));
+    expect((await post(`/api/sessions/${id}/turns`, body)).status).toBe(202);
+    expect(deliverResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a completed result when chat delivery is unavailable and retries only that delivery', async () => {
+    const context = 'offline-delivery';
+    const id = createSession(context, { platform: 'discord' });
+    const path = `/api/sessions/${id}/turn-requests/request-offline`;
+    const response = await fetch(`${baseUrl}/api/sessions/${id}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'request-offline', message: '結果だけ投稿', attachments: [] }),
+    });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(runner.pending.has(context)).toBe(true));
+    runner.release(context);
+    await vi.waitFor(async () => expect((await (await fetch(`${baseUrl}${path}`)).json()).turn.delivery).toBe('failed'));
+    const deliverResult = vi.fn().mockResolvedValue(['posted']);
+    discordRemoteInputRef.current = { continueSession: vi.fn(), deliverResult };
+    const retried = await fetch(`${baseUrl}${path}/retry-delivery`, { method: 'POST' });
+    expect(retried.status).toBe(200);
+    expect((await retried.json()).turn.delivery).toBe('delivered');
+    expect(runner.callOrder.filter((k) => k === context)).toHaveLength(1);
+    expect(deliverResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      webInput: { message: '結果だけ投稿', attachments: [] },
+    }));
+  });
+
+  it('rejects untrusted attachments, cross-origin admission, and durable secret turns', async () => {
+    const id = createWebSession();
+    const secret = createWebSession({ secret: true });
+    const post = (sessionId: string, body: unknown, origin?: string) => fetch(`${baseUrl}/api/sessions/${sessionId}/turns`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: JSON.stringify(body),
+    });
+    const body = { requestId: 'request-validate', message: 'test', attachments: ['/etc/passwd'] };
+    expect((await post(id, body)).status).toBe(400);
+    expect((await post(id, { ...body, attachments: [] }, 'https://invalid.example')).status).toBe(403);
+    expect((await post(secret, { ...body, attachments: [] })).status).toBe(404);
+    expect(runner.callOrder).toHaveLength(0);
+  });
+
   it('POST /api/sessions/:id/discord-continue forwards input to the Discord bridge', async () => {
     const id = createSession('discord-thread-123', { platform: 'discord' });
     const continueSession = vi.fn().mockResolvedValue({ response: 'Discord response' });
@@ -2943,6 +3508,45 @@ process.stdin.on('end', () => process.exit(0));
       message: '同じ会話で続けて',
     });
   });
+
+  it.each(['discord', 'slack'] as const)(
+    'forwards uploaded attachments to %s and rejects untrusted paths',
+    async (platform) => {
+      const id = createSession(`attachment-${platform}`, { platform });
+      const continuation = vi.fn().mockResolvedValue({ response: null });
+      const ref = platform === 'discord' ? discordRemoteInputRef : slackRemoteInputRef;
+      ref.current = { createSession: vi.fn(), continueSession: continuation };
+      const form = new FormData();
+      form.append('file', new Blob(['sample']), 'sample.txt');
+      const upload = await fetch(`${baseUrl}/api/upload`, { method: 'POST', body: form });
+      expect(upload.status).toBe(200);
+      const { files } = await upload.json();
+      const post = (attachments: unknown, message = '') =>
+        fetch(`${baseUrl}/api/sessions/${id}/${platform}-continue`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ message, attachments }),
+        });
+      expect((await post([files[0].path])).status).toBe(200);
+      expect(continuation).toHaveBeenCalledWith({
+        appSessionId: id,
+        message: '',
+        attachments: [files[0].path],
+      });
+      for (const paths of [
+        [join(testDir, 'outside.txt')],
+        ['/etc/passwd'],
+        [42],
+        'bad',
+        Array(11).fill(files[0].path),
+      ]) {
+        expect((await post(paths, 'check')).status).toBe(400);
+      }
+      expect((await post([])).status).toBe(400);
+      expect(continuation).toHaveBeenCalledTimes(1);
+      ref.current = undefined;
+    }
+  );
 
   it('GET /api/sessions/:id/external-chat-link resolves a Discord source', async () => {
     const sourceId = createSession('123456789', { platform: 'discord' });

@@ -30,7 +30,8 @@ export type { ModelExecution } from './model-execution.js';
 
 export type SessionScope = 'interactive' | 'scheduler';
 export type SessionLifecycle = 'open' | 'closed';
-export type SessionCloseReason = 'new' | 'leave' | 'monitor' | 'web' | 'archive' | 'other';
+export type SessionCloseReason =
+  'new' | 'leave' | 'monitor' | 'web' | 'archive' | 'scheduled' | 'other';
 export type ProviderSessionMode = 'stateful' | 'stateless';
 
 export interface AgentInfo {

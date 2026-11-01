@@ -1,3 +1,4 @@
+import type { PlatformCompletionBridge } from './platform-completion.js';
 import { isSecretSession } from './secret.js';
 import { Bot, webhookCallback, type Api, type Context } from 'grammy';
 import { Agent as HttpsAgent } from 'node:https';
@@ -21,6 +22,9 @@ import {
 } from './telegram-feedback.js';
 import {
   ensureSession,
+  createSchedulerSession,
+  closeSession,
+  setProviderSessionId,
   archiveSession,
   getActiveSessionId,
   getSessionEntry,
@@ -50,7 +54,7 @@ import {
   type TelegramMediaCandidate,
 } from './telegram-media.js';
 import { executeModelsCommand, parseModelsCommand } from './models-command.js';
-import { appendScheduleRunCompletion } from './scheduler-run.js';
+import { createSchedulerRunId, appendScheduleRunCompletion } from './scheduler-run.js';
 import { appendCompletionSummary, DEFAULT_COMPLETION_DISPLAY } from './completion-summary.js';
 
 const TELEGRAM_RETRY_BASE_MS = 1_000;
@@ -477,6 +481,10 @@ export class TelegramChatQueue {
     string,
     { generation: number; reason: 'reset' | 'stop' }
   >();
+
+  isBusy(contextKey: string): boolean {
+    return this.queues.has(contextKey);
+  }
 
   getGeneration(contextKey: string): number {
     return this.generations.get(contextKey) ?? 0;
@@ -1007,82 +1015,55 @@ export function shouldProcessMessage(params: {
   return false;
 }
 
-/**
- * Telegram Botを起動する
- */
-export async function startTelegramBot(opts: {
+/** Delivery-only adapter for the requesting Telegram conversation. */
+export function createTelegramCompletionBridge(
+  api: Pick<Api, 'sendMessage' | 'sendPhoto' | 'sendVideo' | 'sendDocument'>,
+  config: Config['telegram'],
+  queue: TelegramChatQueue = telegramChatQueue
+): PlatformCompletionBridge {
+  return {
+    isBusy: (key) => queue.isBusy(key),
+    enqueue: (key, execute) => queue.enqueue(key, execute),
+    async deliverResult({ appSessionId, text, attachments }) {
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'telegram')
+        throw new Error('Telegramセッションが見つかりません');
+      const { chatId, messageThreadId } = parseTelegramScheduleTarget(entry.contextKey);
+      if (entry.contextKey.startsWith('telegram:dm:')) {
+        if (!config.allowedUsers?.includes('*') && !config.allowedUsers?.includes(String(chatId)))
+          throw new Error('Telegramの配送先は許可されていません');
+      } else if (config.allowedChats?.length && !config.allowedChats.includes(String(chatId))) {
+        throw new Error('Telegramの配送先は許可されていません');
+      }
+      const ids: string[] = [];
+      for (const chunk of telegramTextChunks(text || '✅', config.format)) {
+        await deliverTelegramFormattedChunk(chunk, async (value, parseMode) => {
+          const sent = await api.sendMessage(chatId, value, {
+            ...(messageThreadId === undefined ? {} : { message_thread_id: messageThreadId }),
+            ...(parseMode ? { parse_mode: parseMode } : {}),
+          });
+          ids.push(String(sent.message_id));
+        });
+      }
+      if (config.mediaEnabled && attachments.length) {
+        const result = await sendTelegramAttachments(api, chatId, attachments, messageThreadId);
+        if (result.failures.length) throw new Error('Telegramへの添付配送に失敗しました');
+      }
+      return ids;
+    },
+  };
+}
+
+/** Scheduled work always has its own session; child completion uses the conversation service. */
+export function registerTelegramSchedulerBridge(options: {
+  scheduler: Scheduler;
+  bot: Pick<Bot, 'api'>;
   config: Config;
   agentRunner: AgentRunner;
-  resolver: BackendResolver;
-  scheduler: Scheduler;
-}): Promise<void> {
-  const { config, agentRunner, resolver, scheduler } = opts;
+}): void {
+  const { scheduler, bot, config, agentRunner } = options;
   const tcfg = config.telegram;
-  let draftSupported = true;
-  const draftRegistry = new TelegramDraftRegistry();
-  const ackReaction = parseTelegramReaction(tcfg.ackReaction, '👀', (message) =>
-    console.warn(`[xangi-telegram] ${message}`)
-  );
-  const doneReaction = parseTelegramReaction(tcfg.doneReaction, '', (message) =>
-    console.warn(`[xangi-telegram] ${message}`)
-  );
-  const reactionWarningChats = new Set<number>();
-  const warnReactionFailure = (chatId: number, error: unknown) => {
-    if (reactionWarningChats.has(chatId)) return;
-    reactionWarningChats.add(chatId);
-    console.warn(
-      `[xangi-telegram] Reaction unavailable in ${chatId}: ${formatTelegramError(error)}`
-    );
-  };
-
-  if (!tcfg.enabled || !tcfg.botToken) {
-    return;
-  }
-
-  const bot = new Bot(
-    tcfg.botToken,
-    tcfg.forceIpv4
-      ? {
-          client: {
-            baseFetchConfig: {
-              agent: new HttpsAgent({ keepAlive: true, family: 4 }),
-            },
-          },
-        }
-      : undefined
-  );
-
-  if (tcfg.forceIpv4) {
-    console.log('[xangi-telegram] IPv4-only API connections enabled');
-  }
-
   const mediaEnabled = tcfg.mediaEnabled === true;
-  const mediaMaxBytes = (tcfg.mediaMaxDownloadMb ?? 20) * 1024 * 1024;
-  const configuredMediaMimeTypes = tcfg.mediaAllowedMimeTypes;
-  const mediaAllowedMimeTypes: string[] =
-    configuredMediaMimeTypes && configuredMediaMimeTypes.length > 0
-      ? configuredMediaMimeTypes
-      : [...DEFAULT_TELEGRAM_MEDIA_MIME_TYPES];
-  const mediaRetentionHours = tcfg.mediaRetentionHours ?? 24;
-  if (mediaEnabled && mediaRetentionHours > 0) {
-    const removed = cleanupTelegramMedia(mediaRetentionHours);
-    if (removed > 0) {
-      console.log(`[xangi-telegram] Removed ${removed} expired media file(s)`);
-    }
-    const cleanupTimer = setInterval(
-      () => cleanupTelegramMedia(mediaRetentionHours),
-      60 * 60 * 1000
-    );
-    cleanupTimer.unref();
-  }
-
-  // 未捕捉のハンドラエラーをキャッチしてポーリングを継続する
-  bot.catch((err) => {
-    console.error(
-      `[xangi-telegram] Unhandled update error: ${formatTelegramError(err.error ?? err)}`
-    );
-  });
-
   // sendMessage は非冪等。応答待ちのタイムアウト時はTelegram側で成功済みの可能性があるため、
   // 自動再試行せずat-most-onceを優先して二重投函を防ぐ。
   scheduler.registerSender('telegram', async (channelId, msg) => {
@@ -1131,8 +1112,12 @@ export async function startTelegramBot(opts: {
           .catch(() => {});
       });
 
+      const appSessionId = createSchedulerRunId('telegram');
+      createSchedulerSession(appSessionId, contextKey, {
+        platform: 'telegram',
+        title: _schedule?.label || prompt,
+      });
       try {
-        const appSessionId = ensureSession(contextKey, { platform: 'telegram' });
         const messageId = `sched-${Date.now()}`;
         let runResult: Awaited<ReturnType<typeof runWithBubbleEvents>>;
 
@@ -1156,7 +1141,9 @@ export async function startTelegramBot(opts: {
             {
               channelId: contextKey,
               appSessionId,
-              sessionId: getProviderSessionId(contextKey),
+              sessionId: undefined,
+              runnerKey: `schedule:${appSessionId}`,
+              platform: 'telegram',
             }
           );
         } catch (error) {
@@ -1187,6 +1174,7 @@ export async function startTelegramBot(opts: {
           throw error;
         }
 
+        if (runResult.sessionId) setProviderSessionId(appSessionId, runResult.sessionId);
         const { filePaths, displayText } = mediaEnabled
           ? buildAttachmentResult(runResult.result, runResult.attachments)
           : { filePaths: [], displayText: runResult.result };
@@ -1280,10 +1268,95 @@ export async function startTelegramBot(opts: {
         });
         return runResult.result || '';
       } finally {
-        unregisterFinalizer();
+        try {
+          agentRunner.destroy?.(`schedule:${appSessionId}`);
+        } finally {
+          closeSession(appSessionId, 'scheduled');
+          unregisterFinalizer();
+        }
       }
     });
   });
+}
+
+export async function startTelegramBot(opts: {
+  config: Config;
+  agentRunner: AgentRunner;
+  resolver: BackendResolver;
+  scheduler: Scheduler;
+  completionBridgeRef?: { current?: PlatformCompletionBridge };
+}): Promise<void> {
+  const { config, agentRunner, resolver, scheduler } = opts;
+  const tcfg = config.telegram;
+  let draftSupported = true;
+  const draftRegistry = new TelegramDraftRegistry();
+  const ackReaction = parseTelegramReaction(tcfg.ackReaction, '👀', (message) =>
+    console.warn(`[xangi-telegram] ${message}`)
+  );
+  const doneReaction = parseTelegramReaction(tcfg.doneReaction, '', (message) =>
+    console.warn(`[xangi-telegram] ${message}`)
+  );
+  const reactionWarningChats = new Set<number>();
+  const warnReactionFailure = (chatId: number, error: unknown) => {
+    if (reactionWarningChats.has(chatId)) return;
+    reactionWarningChats.add(chatId);
+    console.warn(
+      `[xangi-telegram] Reaction unavailable in ${chatId}: ${formatTelegramError(error)}`
+    );
+  };
+
+  if (!tcfg.enabled || !tcfg.botToken) {
+    return;
+  }
+
+  const bot = new Bot(
+    tcfg.botToken,
+    tcfg.forceIpv4
+      ? {
+          client: {
+            baseFetchConfig: {
+              agent: new HttpsAgent({ keepAlive: true, family: 4 }),
+            },
+          },
+        }
+      : undefined
+  );
+
+  if (tcfg.forceIpv4) {
+    console.log('[xangi-telegram] IPv4-only API connections enabled');
+  }
+
+  const mediaEnabled = tcfg.mediaEnabled === true;
+  const mediaMaxBytes = (tcfg.mediaMaxDownloadMb ?? 20) * 1024 * 1024;
+  const configuredMediaMimeTypes = tcfg.mediaAllowedMimeTypes;
+  const mediaAllowedMimeTypes: string[] =
+    configuredMediaMimeTypes && configuredMediaMimeTypes.length > 0
+      ? configuredMediaMimeTypes
+      : [...DEFAULT_TELEGRAM_MEDIA_MIME_TYPES];
+  const mediaRetentionHours = tcfg.mediaRetentionHours ?? 24;
+  if (mediaEnabled && mediaRetentionHours > 0) {
+    const removed = cleanupTelegramMedia(mediaRetentionHours);
+    if (removed > 0) {
+      console.log(`[xangi-telegram] Removed ${removed} expired media file(s)`);
+    }
+    const cleanupTimer = setInterval(
+      () => cleanupTelegramMedia(mediaRetentionHours),
+      60 * 60 * 1000
+    );
+    cleanupTimer.unref();
+  }
+
+  // 未捕捉のハンドラエラーをキャッチしてポーリングを継続する
+  bot.catch((err) => {
+    console.error(
+      `[xangi-telegram] Unhandled update error: ${formatTelegramError(err.error ?? err)}`
+    );
+  });
+
+  if (opts.completionBridgeRef)
+    opts.completionBridgeRef.current = createTelegramCompletionBridge(bot.api, tcfg);
+
+  registerTelegramSchedulerBridge({ scheduler, bot, config, agentRunner });
   const botInfo = await retryTelegramOperation('Bot API', () => bot.api.getMe());
   bot.botInfo = botInfo;
   console.log(`[xangi-telegram] Ready! Logged in as @${botInfo.username} (${botInfo.id})`);

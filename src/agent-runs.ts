@@ -35,6 +35,8 @@ export interface AgentRun {
   delegatedMemberCount?: number;
   delegationTeam?: TeamSnapshot;
   parentContextKey?: string;
+  /** Identity of the requesting conversation, independent of its current active session. */
+  parentAppSessionId?: string;
   /** Platform of the parent conversation, used for completion delivery. */
   parentPlatform?: 'discord' | 'slack' | 'telegram' | 'web' | 'line';
   backend: AgentBackend;
@@ -55,6 +57,7 @@ export interface AgentRun {
   parentDeliveryAttempts?: number;
   parentDeliveryAttemptAt?: string;
   parentDeliveryError?: string;
+  parentDeliveryRequestId?: string;
   parentDeliveryFallbackAttempted?: boolean;
   parentProgressAt?: string;
   durationMs?: number;
@@ -92,6 +95,7 @@ export interface CreateAgentRunInput {
   delegatedMemberCount?: number;
   delegationTeam?: TeamSnapshot;
   parentContextKey?: string;
+  parentAppSessionId?: string;
   parentPlatform?: AgentRun['parentPlatform'];
   task: string;
   backend: AgentBackend;
@@ -151,6 +155,7 @@ export class AgentRunStore {
       delegatedMemberCount: input.delegatedMemberCount,
       delegationTeam: input.delegationTeam && structuredClone(input.delegationTeam),
       parentContextKey: input.parentContextKey,
+      parentAppSessionId: input.parentAppSessionId,
       parentPlatform: input.parentPlatform,
       parentDeliveryTracked: Boolean(input.parentContextKey) && !input.delegationRootId,
       backend: input.backend,
@@ -184,6 +189,7 @@ export class AgentRunStore {
       delete run.parentDeliveryAttempts;
       delete run.parentDeliveryAttemptAt;
       delete run.parentDeliveryError;
+      delete run.parentDeliveryRequestId;
       delete run.parentDeliveryFallbackAttempted;
       delete run.parentProgressAt;
     });
@@ -259,6 +265,13 @@ export class AgentRunStore {
       run.parentDeliveryAttemptAt = new Date().toISOString();
       delete run.parentDeliveryError;
     });
+  }
+
+  bindParentDelivery(ids: string[], requestId: string): void {
+    for (const run of this.state.runs) {
+      if (ids.includes(run.id)) run.parentDeliveryRequestId = requestId;
+    }
+    this.persist();
   }
   setParentDeliveryError(id: string, error: string) {
     return this.update(id, (run) => {

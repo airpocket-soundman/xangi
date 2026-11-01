@@ -5,6 +5,25 @@ import { join } from 'node:path';
 import { AgentRunStore } from '../src/agent-runs.js';
 
 describe('AgentRunStore', () => {
+  it('persists the original parent and receipt across restart, then clears only the receipt for follow-up', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'agent-runs-parent-'));
+    const store = AgentRunStore.fromDataDir(dataDir);
+    const run = store.create({
+      task: 'Work', backend: 'codex', workspaceId: 'workspace',
+      workspacePath: '/tmp/workspace', appSessionId: 'child',
+      parentContextKey: 'thread', parentPlatform: 'discord', parentAppSessionId: 'original-parent',
+    });
+    store.markSucceeded(run.id, { result: 'done', sessionId: 'provider' });
+    store.bindParentDelivery([run.id], 'agent-completion-receipt');
+    const restored = AgentRunStore.fromDataDir(dataDir);
+    expect(restored.get(run.id)).toMatchObject({
+      parentAppSessionId: 'original-parent', parentDeliveryRequestId: 'agent-completion-receipt',
+    });
+    restored.markRunning(run.id);
+    expect(restored.get(run.id)?.parentAppSessionId).toBe('original-parent');
+    expect(restored.get(run.id)?.parentDeliveryRequestId).toBeUndefined();
+  });
+
   it('persists a reproducible manifest and terminal usage', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'agent-runs-test-'));
     const store = AgentRunStore.fromDataDir(dataDir);

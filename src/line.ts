@@ -1,3 +1,4 @@
+import type { PlatformCompletionBridge } from './platform-completion.js';
 import { isSecretSession } from './secret.js';
 /**
  * LINE Messaging API platform integration.
@@ -23,6 +24,7 @@ import {
   archiveSession,
   createSchedulerSession,
   closeSession,
+  setProviderSessionId,
 } from './sessions.js';
 import { threadIdFor, turnIdFor } from './events-emitter.js';
 import { runWithBubbleEvents } from './bubble-events-runner.js';
@@ -337,7 +339,7 @@ export class LineChatQueue {
    * contextKey ごとに task を直列化する。
    * 直前の task が失敗しても後続を止めない (`then(task, task)`)。
    */
-  enqueue(contextKey: string, task: () => Promise<void>): Promise<void> {
+  enqueue<T>(contextKey: string, task: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(contextKey) ?? Promise.resolve();
     const result = previous.then(task, task);
     const tail = result.then(
@@ -411,6 +413,32 @@ export function snapLoadingSeconds(value: number | undefined): number {
   return best;
 }
 
+export function createLineCompletionBridge(
+  client: LineBotClient,
+  queue: LineChatQueue,
+  allowedUsers: readonly string[]
+): PlatformCompletionBridge {
+  return {
+    isBusy: (key) => queue.isBusy(key),
+    enqueue: (key, execute) => queue.enqueue(key, execute),
+    async deliverResult({ appSessionId, text, attachments }) {
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'line') throw new Error('LINEセッションが見つかりません');
+      const { userId } = parseLineScheduleTarget(entry.contextKey);
+      if (!allowedUsers.includes('*') && !allowedUsers.includes(userId))
+        throw new Error('LINEの配送先は許可されていません');
+      // LINE's existing text transport cannot upload generated files.
+      await pushLineText(
+        client,
+        userId,
+        (text || '✅') +
+          (attachments.length ? '\n添付ファイルはWebの会話履歴で確認してください。' : '')
+      );
+      return [];
+    },
+  };
+}
+
 export interface LineBotOptions extends Omit<
   Config['line'],
   | 'enabled'
@@ -431,6 +459,7 @@ export interface LineBotOptions extends Omit<
   completionNotifyAfterMs?: number;
   /** 指定すると LINE 宛のスケジュール配信・エージェント実行を登録する */
   scheduler?: Scheduler;
+  completionBridgeRef?: { current?: PlatformCompletionBridge };
 }
 
 /**
@@ -466,6 +495,8 @@ export async function startLineBot(options: LineBotOptions): Promise<Server> {
   const client = LineBotClient.fromChannelAccessToken({ channelAccessToken });
   const queue = new LineChatQueue();
   const imageSets = new LineImageSetBuffer();
+  if (options.completionBridgeRef)
+    options.completionBridgeRef.current = createLineCompletionBridge(client, queue, allowedUsers);
 
   if (options.scheduler) {
     registerLineSchedulerBridge({
@@ -618,7 +649,13 @@ export function registerLineSchedulerBridge(deps: {
               userText: prompt,
             },
             {},
-            { channelId: contextKey, appSessionId }
+            {
+              channelId: contextKey,
+              appSessionId,
+              runnerKey: `schedule:${appSessionId}`,
+              sessionId: undefined,
+              platform: 'line',
+            }
           );
         } catch (error) {
           console.error('[xangi-line] scheduled run failed:', error);
@@ -634,12 +671,17 @@ export function registerLineSchedulerBridge(deps: {
           throw error;
         }
 
+        if (runResult.sessionId) setProviderSessionId(appSessionId, runResult.sessionId);
         agentResult = runResult.result || '…';
         await deliver(
           appendScheduleRunCompletion(agentResult, Date.now() - startedAt, completionDisplay)
         );
       } finally {
-        closeSession(appSessionId, 'other');
+        try {
+          agentRunner.destroy?.(`schedule:${appSessionId}`);
+        } finally {
+          closeSession(appSessionId, 'scheduled');
+        }
       }
     });
     return agentResult;

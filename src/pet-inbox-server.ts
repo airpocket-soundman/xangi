@@ -25,6 +25,7 @@
  */
 
 import { webSessionTurns } from './web-session-turns.js';
+import { conversationBusy } from './conversation-locks.js';
 import { isSecretSession } from './secret.js';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { AgentRunner, RunOptions } from './agent-runner.js';
@@ -255,7 +256,7 @@ export async function handlePetInboxRequest(
     sendJson(res, 409, { error: 'Session is closed' });
     return true;
   }
-  if (busy.has(appSessionId)) {
+  if (busy.has(appSessionId) || conversationBusy(entry.contextKey)) {
     sendJson(res, 409, { error: 'Session is busy' });
     return true;
   }

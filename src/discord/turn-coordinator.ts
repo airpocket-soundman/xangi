@@ -1,8 +1,14 @@
+import {
+  conversationBusy,
+  reserveConversation,
+  waitForConversation,
+} from '../conversation-locks.js';
+
 export class DiscordTurnCoordinator {
   private readonly tails = new Map<string, Promise<void>>();
 
   isBusy(key: string): boolean {
-    return this.tails.has(key);
+    return this.tails.has(key) || conversationBusy(key);
   }
 
   async tryRun<T>(key: string, task: () => Promise<T>): Promise<{ accepted: boolean; result?: T }> {
@@ -16,7 +22,15 @@ export class DiscordTurnCoordinator {
 
   enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(key) ?? Promise.resolve();
-    const result = previous.then(task, task);
+    const execute = async () => {
+      const release = reserveConversation(key) ?? (await waitForConversation(key));
+      try {
+        return await task();
+      } finally {
+        release();
+      }
+    };
+    const result = previous.then(execute, execute);
     const tail = result.then(
       () => undefined,
       () => undefined

@@ -1,3 +1,4 @@
+import type { PlatformCompletionRefs } from './platform-completion.js';
 import { answerUserInput, listUserInputs, requestUserInput } from './user-input.js';
 import { configuredChannelsSnapshot } from './configured-channels.js';
 import { proxyExtensionRequest, attachExtensionWebSockets } from './extension-web-proxy.js';
@@ -35,7 +36,17 @@ import { latestModelExecution } from './model-execution-display.js';
  * 同時に複数のセッションを保持・操作できる。
  */
 import { webSessionTurns } from './web-session-turns.js';
+import {
+  ConversationService,
+  ConversationError,
+  DeliveryUnavailable,
+} from './conversation-service.js';
+import { conversationBusy } from './conversation-locks.js';
+import { resolveRunningSession } from './running-session-context.js';
+import { createLinkedConversation, forgetLinkedConversation } from './conversation-creation.js';
+import { buildAttachmentResult, buildPromptWithAttachments } from './file-utils.js';
 import { createServer } from 'http';
+import { createHash } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   readFileSync,
@@ -65,6 +76,7 @@ import {
   createWebSession,
   clearResumedFromSessionId,
   setProviderSessionId,
+  activateSession,
   removeSession,
   closeSession,
   closeSessions,
@@ -80,6 +92,7 @@ import {
   updateMessageContent,
   updateLatestMessageUsage,
   attachLatestAssistantAttachments,
+  attachPlatformMessageId,
   deleteMessage as deleteTranscriptMessage,
   deleteSessionTranscript,
   ensureVisibleAssistantResponse,
@@ -285,6 +298,10 @@ function sessionThreadId(session: {
   if (session.platform === 'web') return threadIdFor('web', session.id);
   if (session.platform === 'discord') return threadIdFor('discord', session.contextKey);
   if (session.platform === 'slack') return threadIdFor('slack', session.contextKey);
+  if (session.platform === 'line')
+    return threadIdFor('line', session.contextKey.replace(/^line:/, ''));
+  if (session.platform === 'telegram')
+    return threadIdFor('telegram', session.contextKey.replace(/^telegram:(?:chat|dm):/, ''));
   return null;
 }
 
@@ -316,6 +333,7 @@ interface WebChatOptions {
   };
   settingsChannelListers?: SettingsChannelListers;
   skillsRef?: { current: Skill[] };
+  completionBridgeRefs?: PlatformCompletionRefs;
   slackRemoteInputRef?: { current?: SlackRemoteInputBridge };
   discordRemoteInputRef?: { current?: DiscordRemoteInputBridge };
   host?: string;
@@ -392,18 +410,44 @@ export function startWebChat(options: WebChatOptions) {
   const webProjects = new ProjectCatalog(dataDir);
   const extensionFavorites = new ExtensionFavorites(join(dataDir, 'extension-favorites.json'));
   const agentRuns = AgentRunStore.fromDataDir(dataDir);
+  const parentSessionAvailable = (id: string, contextKey: string, platform?: string) => {
+    const entry = getSessionEntry(id);
+    if (
+      !entry ||
+      entry.contextKey !== contextKey ||
+      (platform && entry.platform !== platform) ||
+      entry.archived ||
+      isSecretSession(id)
+    )
+      return false;
+    if (entry.scope === 'scheduler') {
+      // A scheduled turn ends without becoming the channel's interactive conversation.
+      // Only its automatic close may resume; an explicit close still cancels continuation.
+      return (
+        Boolean(entry.agent?.providerSessionId) &&
+        (getSessionLifecycle(id) === 'open' || entry.closeReason === 'scheduled')
+      );
+    }
+    return getSessionLifecycle(id) === 'open' && getActiveSessionId(contextKey) === id;
+  };
   const completionDestination = (
     run: AgentRun
-  ): { parent?: string; platform?: AgentRun['parentPlatform'] } => {
+  ): { parent?: string; platform?: AgentRun['parentPlatform']; sessionId?: string } => {
     // Team member follow-ups report to the original caller, never wake the Team execution session.
     if (run.teamTurnId && run.parentContextKey?.startsWith(WEB_CHAT_CONTEXT_PREFIX)) {
       const owner = agentRuns
         .list()
         .find((r) => `${WEB_CHAT_CONTEXT_PREFIX}${r.appSessionId}` === run.parentContextKey);
-      if (owner) return { parent: owner.parentContextKey, platform: owner.parentPlatform };
+      if (owner)
+        return {
+          parent: owner.parentContextKey,
+          platform: owner.parentPlatform,
+          sessionId: owner.parentAppSessionId,
+        };
     }
     return {
       parent: run.parentContextKey,
+      sessionId: run.parentAppSessionId,
       platform:
         run.parentPlatform ??
         (run.parentContextKey?.startsWith(WEB_CHAT_CONTEXT_PREFIX) ? 'web' : undefined),
@@ -413,41 +457,44 @@ export function startWebChat(options: WebChatOptions) {
   const completionDeliveries = new Set<string>();
   const notifyAgentRunParent = (completed: AgentRun) => {
     // The leader synchronously collects nested results; do not start a second leader turn.
-    if (completed.delegationRootId) return;
+    if (!uiEnabled || completed.delegationRootId) return;
     const destinationInfo = completionDestination(completed);
     const parent = destinationInfo.parent;
-    if (!parent || !options.scheduler || completionDeliveries.has(parent)) return;
-    if (agentRunner.getTimeoutState?.(parent).active) return;
+    if (!parent || completionDeliveries.has(parent)) return;
+    if (
+      agentRunner.getTimeoutState?.(parent).active ||
+      conversationBusy(parent) ||
+      Boolean(options.platformTurnBusy?.(parent)) ||
+      Object.values(options.completionBridgeRefs ?? {}).some((ref) => ref.current?.isBusy(parent))
+    )
+      return;
     const platform =
       destinationInfo.platform ?? (parent.startsWith(WEB_CHAT_CONTEXT_PREFIX) ? 'web' : undefined);
     if (!platform) return;
-    const parentRunner = options.scheduler.getAgentRunner(platform);
-    if (!parentRunner) {
-      for (const run of agentRuns
-        .list()
-        .filter(
-          (run) =>
-            completionDestination(run).parent === parent &&
-            parentDeliveryDue(run, Date.now(), watchSettings.checkMs)
-        )) {
-        agentRuns.markParentDeliveryAttempt(run.id);
-        agentRuns.setParentDeliveryError(run.id, `No completion runner for ${platform}`);
-      }
-      console.warn(`[agent-run] No completion runner for ${platform}`);
-      return;
-    }
-    const destination =
-      platform === 'web' && parent.startsWith(WEB_CHAT_CONTEXT_PREFIX)
-        ? parent.slice(WEB_CHAT_CONTEXT_PREFIX.length)
-        : parent;
-    const pending = agentRuns
+    const due = agentRuns
       .list()
       .filter(
         (run) =>
           completionDestination(run).parent === parent &&
           parentDeliveryDue(run, Date.now(), watchSettings.checkMs)
       );
-    if (!pending.length) return;
+    if (!due.length) return;
+    const first = due[0];
+    const sessionId = completionDestination(first).sessionId;
+    // Retry the same durable receipt; never merge newly completed children into an old request.
+    const pending = due.filter(
+      (run) =>
+        completionDestination(run).sessionId === sessionId &&
+        run.parentDeliveryRequestId === first.parentDeliveryRequestId
+    );
+    const requestId =
+      first.parentDeliveryRequestId ||
+      'agent-' +
+        createHash('sha256')
+          .update(
+            JSON.stringify(pending.map((run) => [run.id, run.completedAt, run.workRevision]).sort())
+          )
+          .digest('hex');
     const results = pending.map((run) => ({
       id: run.id,
       status: run.status,
@@ -464,7 +511,40 @@ export function startWebChat(options: WebChatOptions) {
     completionDeliveries.add(parent);
     void (async () => {
       for (const run of pending) agentRuns.markParentDeliveryAttempt(run.id);
-      await parentRunner(prompt, destination);
+      {
+        if (!sessionId) throw new Error('Parent session identity is missing');
+        if (!conversationService) throw new Error('Conversation execution is unavailable');
+        if (!parentSessionAvailable(sessionId, parent, platform))
+          throw new Error('The requesting parent session is no longer active');
+        if (
+          (platform === 'line' || platform === 'telegram') &&
+          !options.completionBridgeRefs?.[platform]?.current
+        )
+          throw new DeliveryUnavailable('元のチャットに接続できません');
+        agentRuns.bindParentDelivery(
+          pending.map((run) => run.id),
+          requestId
+        );
+        const previous = conversationService.lookup(sessionId, requestId);
+        if (!previous)
+          conversationService.submit({
+            source: 'agent-completion',
+            requestId,
+            appSessionId: sessionId,
+            contextKey: parent,
+            message: prompt,
+            attachments: [],
+          });
+        let receipt = await conversationService.settled(sessionId, requestId);
+        if (previous && receipt.state === 'completed' && receipt.delivery === 'failed')
+          receipt = await conversationService.retryDelivery(sessionId, requestId);
+        if (receipt.state !== 'completed' || !['none', 'delivered'].includes(receipt.delivery))
+          throw new Error(
+            receipt.error ||
+              receipt.deliveryError ||
+              `Parent completion ${receipt.state}/${receipt.delivery}`
+          );
+      }
       for (const run of pending) {
         const current = agentRuns.get(run.id);
         if (current?.completedAt === run.completedAt && current?.workRevision === run.workRevision)
@@ -501,7 +581,7 @@ export function startWebChat(options: WebChatOptions) {
   };
   let checkingParents = false;
   const parentWatch = setInterval(() => {
-    if (checkingParents || !options.scheduler) return;
+    if (!uiEnabled || checkingParents) return;
     checkingParents = true;
     void checkAgentParents({
       store: agentRuns,
@@ -537,11 +617,12 @@ export function startWebChat(options: WebChatOptions) {
       throw new AgentRunError('この環境ではAgent Runを利用できません', 503);
     }
     const parentKey = typeof body.parentContextKey === 'string' ? body.parentContextKey : undefined;
-    const parentId = parentKey?.startsWith(WEB_CHAT_CONTEXT_PREFIX)
-      ? parentKey.slice(WEB_CHAT_CONTEXT_PREFIX.length)
-      : parentKey
-        ? getActiveSessionId(parentKey)
-        : undefined;
+    const parentId = parentKey
+      ? (resolveRunningSession(parentKey) ??
+        (parentKey.startsWith(WEB_CHAT_CONTEXT_PREFIX)
+          ? parentKey.slice(WEB_CHAT_CONTEXT_PREFIX.length)
+          : getActiveSessionId(parentKey)))
+      : undefined;
     const parentProjectId = parentId ? getSessionEntry(parentId)?.projectId : undefined;
     const projectId =
       typeof body.projectId === 'string'
@@ -638,6 +719,7 @@ ${delegatedTeam.prompt}`
       delegatedMemberCount: body.delegatedMemberCount as number | undefined,
       delegationTeam: delegatedTeam,
       parentContextKey: body.parentContextKey as string | undefined,
+      parentAppSessionId: parentId,
       parentPlatform: body.parentPlatform as AgentRun['parentPlatform'],
     });
     try {
@@ -711,6 +793,7 @@ ${delegatedTeam.prompt}`
     runner: agentRunner,
     busy: (contextKey) =>
       busySessions.has(contextKey.replace(/^web-chat:/, '')) ||
+      conversationBusy(contextKey) ||
       Boolean(options.platformTurnBusy?.(contextKey)),
   });
   registerProjectAgents({
@@ -1004,7 +1087,7 @@ ${delegatedTeam.prompt}`
             ? sessionThreadId(s)
             : null;
       const activity = threadId ? getActivity(threadId) : undefined;
-      const isActive = activity?.active === true;
+      const isActive = activity?.active === true || conversationBusy(s.contextKey);
       const timeoutState =
         isActive && s.contextKey ? agentRunner.getTimeoutState?.(s.contextKey) : undefined;
       const storedTitle = s.title || '';
@@ -1231,6 +1314,285 @@ ${delegatedTeam.prompt}`
     }
   };
   const unsubscribeSessionChanges = subscribeSessionChanges(invalidateSessionSnapshots);
+
+  const conversationService = uiEnabled
+    ? new ConversationService({
+        directory: join(dataDir, 'conversation-turns'),
+        busy: (input) =>
+          busySessions.has(input.appSessionId) ||
+          Boolean(options.platformTurnBusy?.(input.contextKey)) ||
+          Object.values(options.completionBridgeRefs ?? {}).some((ref) =>
+            ref.current?.isBusy(input.contextKey)
+          ),
+        changed: invalidateSessionSnapshots,
+        execute: async (turn, cancelled) => {
+          const initialEntry = getSessionEntry(turn.appSessionId);
+          const nativePlatform = initialEntry?.platform;
+          const nativeBridge =
+            nativePlatform === 'line' || nativePlatform === 'telegram'
+              ? options.completionBridgeRefs?.[nativePlatform]?.current
+              : undefined;
+          if ((nativePlatform === 'line' || nativePlatform === 'telegram') && !nativeBridge)
+            throw new DeliveryUnavailable('元のチャットに接続できません');
+          const execute = async () => {
+            const entry = getSessionEntry(turn.appSessionId);
+            const completion = turn.source === 'agent-completion';
+            if (completion && !parentSessionAvailable(turn.appSessionId, turn.contextKey))
+              throw new Error('The requesting parent session is no longer active');
+            if (!entry || (entry.platform === 'web' && getSessionLifecycle(entry.id) === 'closed'))
+              throw new Error('Session is closed or missing');
+            if (isSecretSession(entry.id))
+              throw new Error('Secret sessions use the private execution path');
+            const platform = entry.platform as 'web' | 'discord' | 'slack' | 'line' | 'telegram';
+            const workspace = await resolveSessionWorkspace(entry.id);
+            const project = webProjects.execution(
+              entry.projectId,
+              entry.selectedAgentId,
+              entry.selectedAgentConfig
+            );
+            const assistantName =
+              platform === 'discord'
+                ? webProjects.execution(undefined, entry.selectedAgentId, entry.selectedAgentConfig)
+                    ?.name || basename(workspace.path)
+                : undefined;
+            const defaults = platform === 'web' ? projectBackendDefault(project) : undefined;
+            const settingsKey =
+              entry.agentBindingKey ||
+              (platform === 'slack' ? entry.contextKey.split(':')[0] : entry.contextKey);
+            const backend = options.resolver?.resolve(settingsKey, defaults);
+            const previousSession = entry.agent?.providerSessionId;
+            const backendChanged =
+              platform === 'web' &&
+              Boolean(previousSession && backend && entry.agent?.backend !== backend.backend);
+            let message = buildPromptWithAttachments(turn.message, turn.attachments);
+            let history = '';
+            if (
+              entry.resumedFromSessionId ||
+              backendChanged ||
+              (!previousSession && historyPrefetch.enabled)
+            ) {
+              const past = readSessionMessages(
+                workspace.path,
+                entry.resumedFromSessionId || entry.id
+              ).slice(-historyPrefetch.count);
+              history =
+                buildPrefetchedHistoryBlock(
+                  (
+                    {
+                      web: 'Web',
+                      discord: 'Discord',
+                      slack: 'Slack',
+                      line: 'LINE',
+                      telegram: 'Telegram',
+                    } as const
+                  )[platform],
+                  past.map((m) => ({
+                    timestamp: new Date(m.createdAt),
+                    id: m.id,
+                    author: m.role === 'user' ? 'ユーザー' : 'AI',
+                    content: stripPromptMetadata(
+                      typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+                    ),
+                  }))
+                ) + '\n\n';
+            }
+            message = `[プラットフォーム: ${platform === 'web' ? 'Web' : platform}]\n[発言者: ${completion ? '子エージェント完了通知' : 'Web'}]\n${prependWebProjectPrompt(project, history + message)}`;
+            const suggestions = loadReplySuggestionsEnabled(replySuggestions.replySuggestions);
+            if (suggestions)
+              message = appendReplySuggestionInstruction(
+                message,
+                replySuggestions.replySuggestionCount
+              );
+            if (!completion) activateSession(entry.contextKey, entry.id);
+            const prefixTitle = truncateSessionTitle(
+              turn.message || basename(turn.attachments[0] || '添付')
+            );
+            let titleTarget: { onTitle: (title: string) => void | Promise<void> } | undefined;
+            if (completion) {
+              titleTarget = undefined;
+            } else if (platform === 'discord') {
+              try {
+                if (options.config?.sessionTitle?.mode === 'ai') {
+                  titleTarget = await options.discordRemoteInputRef?.current?.prepareSessionTitle?.(
+                    {
+                      appSessionId: entry.id,
+                      prefixTitle,
+                    }
+                  );
+                }
+              } catch (error) {
+                console.warn('[session-title] Failed to prepare Discord title:', error);
+              }
+            } else if (platform === 'web' || platform === 'slack') {
+              titleTarget = {
+                onTitle: (title) => {
+                  const current = getSessionEntry(entry.id);
+                  if (!current || (current.title && current.title !== prefixTitle)) return;
+                  if (getActiveSessionId(entry.contextKey) !== entry.id) return;
+                  updateSessionTitle(entry.id, title);
+                },
+              };
+            }
+            let aiTitleStarted = false;
+            const startTitleIfNeeded = () => {
+              if (
+                aiTitleStarted ||
+                !titleTarget ||
+                cancelled() ||
+                options.config?.sessionTitle?.mode !== 'ai'
+              )
+                return;
+              const current = getSessionEntry(entry.id);
+              if (!current || current.title) return;
+              aiTitleStarted = startAiSessionTitle({
+                runner: agentRunner,
+                appSessionId: entry.id,
+                userText: turn.message || prefixTitle,
+                runOptions: {
+                  settingsChannelId: settingsKey,
+                  platform,
+                  workdir: workspace.path,
+                  defaultBackend: defaults?.backend,
+                  defaultModel: defaults?.model,
+                  defaultEffort: defaults?.effort,
+                  defaultLocalLlmMode: defaults?.localLlmMode,
+                  defaultLocalLlmReasoningEffort: defaults?.localLlmReasoningEffort,
+                },
+                onTitle: titleTarget.onTitle,
+              });
+            };
+            let partial = '';
+            const retainPartial = () => {
+              if (partial)
+                ensureVisibleAssistantResponse(
+                  workspace.path,
+                  entry.id,
+                  '',
+                  stripReplySuggestionMarkup(partial)
+                );
+            };
+            const unregister = registerStreamFinalizer(async () => retainPartial());
+            try {
+              if (cancelled()) throw new Error('Request cancelled by user');
+              if (completion && !parentSessionAvailable(entry.id, turn.contextKey))
+                throw new Error('The requesting parent session is no longer active');
+              const result = await runWithBubbleEvents(
+                agentRunner,
+                message,
+                {
+                  threadId: sessionThreadId(entry)!,
+                  turnId: turn.id,
+                  platform,
+                  threadLabel: entry.title,
+                  userText: buildPromptWithAttachments(turn.message, turn.attachments),
+                  eventTextSanitizer: stripReplySuggestionMarkup,
+                  isShutdownInterrupted: () => unregister.isFinalized(),
+                },
+                {
+                  onBackendReady: startTitleIfNeeded,
+                  onText: (_chunk, fullText) => {
+                    startTitleIfNeeded();
+                    partial = fullText;
+                  },
+                  onUserInput: (request, signal) =>
+                    requestUserInput(
+                      `web:${entry.id}`,
+                      'web',
+                      request,
+                      signal,
+                      async () => undefined
+                    ),
+                },
+                {
+                  channelId: entry.contextKey,
+                  ...(completion && entry.scope === 'scheduler'
+                    ? { runnerKey: `scheduled-parent:${entry.id}` }
+                    : {}),
+                  settingsChannelId: settingsKey,
+                  appSessionId: entry.id,
+                  sessionId: backendChanged ? undefined : previousSession,
+                  workdir: workspace.path,
+                  platform,
+                  defaultBackend: defaults?.backend,
+                  defaultModel: defaults?.model,
+                  defaultEffort: defaults?.effort,
+                  defaultLocalLlmMode: defaults?.localLlmMode,
+                  defaultLocalLlmReasoningEffort: defaults?.localLlmReasoningEffort,
+                }
+              );
+              if (unregister.isFinalized()) throw new Error('Request cancelled by user');
+              if (result.failed) throw new Error('AI処理が完了しませんでした');
+              setProviderSessionId(entry.id, result.sessionId);
+              clearResumedFromSessionId(entry.id);
+              incrementMessageCount(entry.id);
+              if (!completion && !getSessionEntry(entry.id)?.title)
+                updateSessionTitle(entry.id, prefixTitle);
+              if (result.attachments?.length)
+                attachLatestAssistantAttachments(workspace.path, entry.id, result.attachments);
+              const extracted = sanitizeReplySuggestionOutput(
+                result.result,
+                suggestions,
+                replySuggestions.replySuggestionCount
+              );
+              const attachments = buildAttachmentResult(
+                extracted.text,
+                result.attachments,
+                workspace.path
+              );
+              const assistantMessageId = [...readSessionMessages(workspace.path, entry.id)]
+                .reverse()
+                .find((m) => m.role === 'assistant')?.id;
+              return {
+                text: attachments.displayText,
+                attachments: attachments.filePaths,
+                assistantMessageId,
+                assistantName,
+              };
+            } catch (error) {
+              if (
+                cancelled() ||
+                (error instanceof Error && error.message === 'Request cancelled by user')
+              )
+                retainPartial();
+              throw error;
+            } finally {
+              unregister();
+            }
+          };
+          return nativeBridge ? nativeBridge.enqueue(turn.contextKey, execute) : execute();
+        },
+        deliver: async (turn) => {
+          const entry = getSessionEntry(turn.appSessionId);
+          if (!entry) throw new DeliveryUnavailable('会話の投稿先が見つかりません');
+          if (entry.platform === 'web') return undefined;
+          const bridge =
+            entry.platform === 'line' || entry.platform === 'telegram'
+              ? options.completionBridgeRefs?.[entry.platform]?.current
+              : entry.platform === 'discord'
+                ? options.discordRemoteInputRef?.current
+                : options.slackRemoteInputRef?.current;
+          if (!bridge?.deliverResult)
+            throw new DeliveryUnavailable('元のチャットに接続できません。Webの結果は保存済みです');
+          const ids = await bridge.deliverResult({
+            appSessionId: turn.appSessionId,
+            text: turn.result || '',
+            attachments: turn.resultAttachments || [],
+            ...(entry.platform === 'discord' && turn.source !== 'agent-completion'
+              ? {
+                  webInput: { message: turn.message, attachments: turn.attachments },
+                  assistantName: turn.assistantName,
+                }
+              : {}),
+          });
+          if (ids[0] && turn.assistantMessageId) {
+            const workspace = await resolveSessionWorkspace(entry.id);
+            attachPlatformMessageId(workspace.path, entry.id, turn.assistantMessageId, ids[0]);
+          }
+          return ids;
+        },
+      })
+    : undefined;
+  conversationService?.resume();
 
   const handleExtensionMutation = async (
     req: IncomingMessage,
@@ -2843,12 +3205,7 @@ ${delegatedTeam.prompt}`
     }
 
     // GET /api/sessions/:id — セッション詳細
-    if (
-      url.startsWith('/api/sessions/') &&
-      !url.includes('/resume') &&
-      !url.includes('/timeout') &&
-      req.method === 'GET'
-    ) {
+    if (/^\/api\/sessions\/[^/]+$/.test(url) && req.method === 'GET') {
       const appSessionId = decodeURIComponent(url.replace('/api/sessions/', ''));
       const entry = getSessionEntry(appSessionId);
       const searchParams = new URL(rawUrl, 'http://localhost').searchParams;
@@ -2961,7 +3318,8 @@ ${delegatedTeam.prompt}`
             entry?.projectId && (entry.platform === 'discord' || entry.platform === 'slack')
           ),
           lifecycle: entry ? getSessionLifecycle(entry.id) : 'closed',
-          isActive: activity?.active === true,
+          isActive:
+            activity?.active === true || Boolean(entry && conversationBusy(entry.contextKey)),
           activity,
           messages,
           modelExecution: latestModelExecution(entry),
@@ -3039,6 +3397,83 @@ ${delegatedTeam.prompt}`
       return;
     }
 
+    const turnRoute = url.match(
+      /^\/api\/sessions\/([^/]+)\/(turns|turn-requests)(?:\/([a-zA-Z0-9_-]+)(\/retry-delivery)?)?$/
+    );
+    if (turnRoute) {
+      if (!conversationService) {
+        sendJson(res, 404, { error: 'Web UI is disabled' });
+        return;
+      }
+      res.removeHeader('Access-Control-Allow-Origin');
+      if (!acceptsSameHostMutation(req)) {
+        sendJson(res, 403, { error: 'cross-origin turn access is not allowed' });
+        return;
+      }
+      const id = decodeURIComponent(turnRoute[1]);
+      const entry = getSessionEntry(id);
+      if (!entry || !['web', 'discord', 'slack'].includes(entry.platform) || isSecretSession(id)) {
+        sendJson(res, 404, { error: 'Session not found' });
+        return;
+      }
+      try {
+        if (turnRoute[2] === 'turn-requests' && turnRoute[3]) {
+          if (req.method === 'POST' && turnRoute[4]) {
+            sendJson(res, 200, { turn: await conversationService.retryDelivery(id, turnRoute[3]) });
+            return;
+          }
+          if (req.method === 'GET' && !turnRoute[4]) {
+            const turn = conversationService.lookup(id, turnRoute[3]);
+            sendJson(res, turn ? 200 : 404, turn ? { turn } : { error: '受付が見つかりません' }, {
+              'Cache-Control': 'no-store',
+            });
+            return;
+          }
+        } else if (req.method === 'POST' && !turnRoute[3]) {
+          const body = await readBody(req);
+          if (typeof body.message !== 'string' || typeof body.requestId !== 'string')
+            throw new ConversationError('入力が不正です', 400);
+          const attachments = body.attachments ?? [];
+          const previous = conversationService.lookup(id, body.requestId);
+          if (
+            !Array.isArray(attachments) ||
+            attachments.length > 10 ||
+            attachments.some(
+              (path) =>
+                typeof path !== 'string' ||
+                (!previous && !isRealFileWithin(join(workdir, 'tmp', 'web-uploads'), path))
+            )
+          )
+            throw new ConversationError(
+              '添付はアップロード済みファイルを10件まで指定してください',
+              400
+            );
+          if (!body.message.trim() && !attachments.length)
+            throw new ConversationError('メッセージまたはファイルを指定してください', 400);
+          if (!previous && entry.platform === 'web' && getSessionLifecycle(id) === 'closed')
+            throw new ConversationError('Session is closed', 409);
+          const turn = conversationService.submit({
+            appSessionId: id,
+            requestId: body.requestId,
+            contextKey: entry.contextKey,
+            message: body.message.trim(),
+            attachments,
+          });
+          sendJson(res, 202, { turn });
+          return;
+        }
+        sendJson(res, 405, { error: 'Method not allowed' });
+      } catch (error) {
+        sendJson(res, error instanceof ConversationError ? error.status : 500, {
+          error:
+            error instanceof ConversationError
+              ? error.message
+              : '受付状態を保存・取得できませんでした',
+        });
+      }
+      return;
+    }
+
     // POST /api/sessions — 新規 Web セッション（既存セッションはそのまま並存）
     if (url === '/api/sessions' && req.method === 'POST') {
       try {
@@ -3062,10 +3497,21 @@ ${delegatedTeam.prompt}`
               '接続先チャンネルを確認できません。Project設定を確認してください',
               409
             );
-          const result = await bridge.createSession(
-            channelId,
-            truncateSessionTitle(body.message.trim().replace(/\s+/g, ' '))
-          );
+          const create = () =>
+            bridge.createSession!(
+              channelId,
+              truncateSessionTitle(body.message.trim().replace(/\s+/g, ' '))
+            );
+          const result =
+            body.requestId === undefined
+              ? await create()
+              : await createLinkedConversation(
+                  join(dataDir, 'conversation-creations'),
+                  body.requestId,
+                  project.id,
+                  body.message.trim(),
+                  create
+                );
           invalidateSessionSnapshots();
           sendJson(res, 200, { ok: true, sessionId: result.sessionId });
           return;
@@ -3094,7 +3540,10 @@ ${delegatedTeam.prompt}`
         invalidateSessionSnapshots();
         sendJson(res, 200, { ok: true, sessionId: newAppId });
       } catch (error) {
-        const status = error instanceof WebProjectError ? error.status : 400;
+        const status =
+          error instanceof WebProjectError || error instanceof ConversationError
+            ? error.status
+            : 400;
         sendJson(res, status, { error: error instanceof Error ? error.message : String(error) });
       }
       return;
@@ -3149,11 +3598,28 @@ ${delegatedTeam.prompt}`
       try {
         const body = await readBody(req);
         const message = String(body.message || '').trim();
-        if (!message) {
-          sendJson(res, 400, { error: 'メッセージを入力してください' });
+        const attachments = body.attachments ?? [];
+        if (
+          !Array.isArray(attachments) ||
+          attachments.length > 10 ||
+          attachments.some(
+            (path) =>
+              typeof path !== 'string' ||
+              !isRealFileWithin(join(workdir, 'tmp', 'web-uploads'), path)
+          )
+        ) {
+          sendJson(res, 400, { error: '添付はアップロード済みファイルを10件まで指定してください' });
           return;
         }
-        const result = await bridge.continueSession({ appSessionId: sourceId, message });
+        if (!message && !attachments.length) {
+          sendJson(res, 400, { error: 'メッセージまたはファイルを指定してください' });
+          return;
+        }
+        const result = await bridge.continueSession({
+          appSessionId: sourceId,
+          message,
+          ...(attachments.length ? { attachments } : {}),
+        });
         invalidateSessionSnapshots();
         sendJson(res, 200, { ok: true, ...result });
       } catch (error) {
@@ -3260,6 +3726,7 @@ ${delegatedTeam.prompt}`
       const targetId = decodeURIComponent(url.replace('/api/sessions/', '').replace('/stop', ''));
       const entry = getSessionEntry(targetId);
       stopWebStreams.get(targetId)?.();
+      conversationService?.cancel(targetId);
       let stopped = false;
       if (entry?.contextKey) {
         // 進行中の処理があれば cancel、その上で runner プロセスを破棄
@@ -3303,6 +3770,7 @@ ${delegatedTeam.prompt}`
         if (
           entry.scope === 'scheduler' ||
           busySessions.has(id) ||
+          conversationBusy(entry.contextKey) ||
           (current &&
             (options.platformTurnBusy?.(entry.contextKey) ||
               (threadId && getActivity(threadId)?.active)))
@@ -3356,6 +3824,7 @@ ${delegatedTeam.prompt}`
       const threadId = current ? sessionThreadId(entry) : null;
       const running =
         busySessions.has(targetId) ||
+        conversationBusy(entry.contextKey) ||
         (entry.scope === 'scheduler' && getSessionLifecycle(targetId) === 'open') ||
         (current &&
           (options.platformTurnBusy?.(entry.contextKey) ||
@@ -3367,6 +3836,7 @@ ${delegatedTeam.prompt}`
         );
         return;
       }
+      conversationService?.cancel(targetId);
       if (current) agentRunner.destroy?.(entry.contextKey);
       busySessions.delete(targetId);
       closeSession(targetId, entry.platform === 'web' ? 'web' : 'monitor');
@@ -3390,6 +3860,15 @@ ${delegatedTeam.prompt}`
       }
       const entry = getSessionEntry(targetId);
       // ランナーも破棄（web セッションの場合のみ）
+      try {
+        conversationService?.forget(targetId);
+        forgetLinkedConversation(join(dataDir, 'conversation-creations'), targetId);
+      } catch (error) {
+        sendJson(res, error instanceof ConversationError ? error.status : 500, {
+          error: error instanceof Error ? error.message : '受付記録を削除できません',
+        });
+        return;
+      }
       if (entry?.platform === 'web') {
         agentRunner.destroy?.(webContextKey(targetId));
       }
@@ -3709,7 +4188,7 @@ ${delegatedTeam.prompt}`
       }
       const sessionId = questionRoute[1];
       const entry = getSessionEntry(sessionId);
-      if (!entry || entry.platform !== 'web') {
+      if (!entry || !['web', 'discord', 'slack'].includes(entry.platform)) {
         sendJson(res, 404, { error: 'Session not found' });
         return;
       }
@@ -3813,7 +4292,7 @@ ${delegatedTeam.prompt}`
         }
 
         // 並行送信ロック
-        if (busySessions.has(appSessionId)) {
+        if (busySessions.has(appSessionId) || conversationBusy(entry.contextKey)) {
           sendJson(res, 409, { error: 'Session is busy' });
           return;
         }
@@ -4209,6 +4688,7 @@ ${delegatedTeam.prompt}`
   });
 
   server.on('close', unsubscribeSessionChanges);
+  server.on('close', () => conversationService?.close());
   server.on('close', () => clearInterval(parentWatch));
 
   attachExtensionWebSockets(server, resolveDevelopmentExtensionService, uiEnabled);
