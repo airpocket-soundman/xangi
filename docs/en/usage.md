@@ -380,6 +380,8 @@ During installation, `[1/6]` through `[6/6]` identify manifest download and veri
 
 ## Terminal CLI (xangi)
 
+`xangi --help` / `xangi -h` and command-level `--help` / `-h` display help before executing actions. `xangi settings --help` does not open the GUI; help also skips startup, updates and deletion. `xangi tool --help` is equivalent to `xangi tool help`, and `xangi tool <operation> --help` to `xangi tool help <operation>`. Detailed tool, agent, team and workspace help still requires the connected tool server.
+
 `xangi` is a thin terminal client for humans to connect to xangi Web sessions. It consumes the existing Even Terminal compatible API (`/api/sessions`, `/api/prompt`, `/api/messages`, `/api/status`) and does not spawn Claude Code, Codex CLI, or other backends directly. The actual backend / model is resolved by the xangi server or the `XANGI_EVEN_TERMINAL_BACKEND` settings.
 
 `xangi` is the canonical CLI for session, service, and agent-facing tool operations. Agents and integration scripts use `xangi tool <operation>`. The legacy `xangi-cmd <operation>` command remains a compatibility shim backed by the same dispatcher, but new documentation and scripts should use `xangi tool`.
