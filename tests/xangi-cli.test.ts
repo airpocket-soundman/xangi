@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { spawn, spawnSync } from 'child_process';
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -56,10 +57,11 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 function runCli(
   args: string[],
   env: Record<string, string> = {},
-  stdinText?: string
+  stdinText?: string,
+  executable = XANGI
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const proc = spawn(XANGI, args, {
+    const proc = spawn(executable, args, {
       env: {
         ...process.env,
         XANGI_CONFIG: '/tmp/xangi-cli-test-missing-config.json',
@@ -115,7 +117,7 @@ beforeAll(async () => {
       return;
     }
     if (parsedUrl.pathname === '/api/prompt') {
-      json(res, 202, { ok: true, sessionId: 'sess-1', provider: 'codex' });
+      json(res, 202, { ok: true, sessionId: 'sess-1', provider: 'codex', after: 100 });
       return;
     }
     if (parsedUrl.pathname === '/api/messages') {
@@ -126,7 +128,7 @@ beforeAll(async () => {
         state: messagesPollCount >= 2 ? 'idle' : 'busy',
         messages:
           messagesPollCount >= 2
-            ? [{ id: 1, type: 'result', success: true, text: 'assistant reply' }]
+            ? [{ id: 101, type: 'result', success: true, text: 'assistant reply' }]
             : [],
       });
       return;
@@ -215,6 +217,39 @@ exit 0
     await runCliInProcess([name, '--help'], env);
     expect(requests.at(-1)?.body).toMatchObject({ command: 'help', flags: { topic: name } });
   });
+
+  it.each([
+    ['tool', '--help'],
+    ['tool', '-h'],
+    ['tool', 'system_restart', '--help'],
+    ['agent', 'run', 'test-agent', '--help'],
+    ['team', 'run', 'test-team', '-h'],
+    ['workspace', 'delete', 'test-workspace', '--help'],
+  ])('routes help without executing the action for %j', async (...args) => {
+    await runCliInProcess(args, { XANGI_TOOL_SERVER: serverUrl });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body).toMatchObject({
+      command: 'help',
+      flags:
+        args[0] === 'tool'
+          ? args[1].startsWith('-')
+            ? {}
+            : { topic: args[1] }
+          : { topic: args[0] },
+    });
+  });
+
+  it.each([['-h'], ['settings', '--help'], ['settings', '-h']])(
+    'exits successfully through the launcher for help: %j',
+    async (...args) => {
+      const result = await runCli(args);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('Usage:');
+      if (args[0] === 'settings') expect(result.stdout).toContain('xangi settings');
+      expect(result.stderr).toBe('');
+      expect(requests).toHaveLength(0);
+    }
+  );
 
   it('documents managed install and update commands in help', async () => {
     const stdout = await runCliInProcess(['help']);
@@ -522,26 +557,56 @@ exit 0
     }
   });
 
-  it('uses its own checkout when no dir is passed, regardless of inherited directory and mode', async () => {
-    const fakePm2 = createFakePm2();
-    writeFileSync(join(fakePm2.dir, '.env'), 'XANGI_PROCESS_NAME=wrong\n');
-    try {
-      const result = await runCli(['service', 'status'], {
-        XANGI_SKIP_ENV_FILE: 'false',
-        XANGI_INSTALLATION_KIND: 'managed',
-        XANGI_DIR: fakePm2.dir,
-        XANGI_PROCESS_NAME: 'caller',
-        PATH: `${fakePm2.dir}:${process.env.PATH || ''}`,
-      });
-      expect(result.code, result.stderr).toBe(0);
-      const log = readFileSync(fakePm2.logFile, 'utf8');
-      expect(log).toContain(`describe ${basename(join(__dirname, '..'))}`);
-      expect(log).not.toContain('wrong');
-      expect(log).not.toContain('describe caller');
-    } finally {
-      rmSync(fakePm2.dir, { recursive: true, force: true });
+  it.each([false, true])(
+    'uses its own isolated checkout without --dir (checkout env: %s)',
+    async (withCheckoutEnv) => {
+      const fakePm2 = createFakePm2();
+      const projectRoot = join(__dirname, '..');
+      const checkout = mkdtempSync(join(tmpdir(), 'xangi-cli-checkout-'));
+      try {
+        // Copy source so import.meta.url resolves inside the fixture, never the
+        // developer's checkout. Only dependencies are shared with this test run.
+        cpSync(join(projectRoot, 'src'), join(checkout, 'src'), { recursive: true });
+        cpSync(join(projectRoot, 'bin'), join(checkout, 'bin'), { recursive: true });
+        cpSync(join(projectRoot, 'package.json'), join(checkout, 'package.json'));
+        symlinkSync(join(projectRoot, 'node_modules'), join(checkout, 'node_modules'), 'dir');
+        mkdirSync(join(checkout, '.git'));
+        writeFileSync(join(fakePm2.dir, '.env'), 'XANGI_PROCESS_NAME=wrong\n');
+        const fixturePath = `${fakePm2.dir}:${process.env.PATH || ''}`;
+        if (withCheckoutEnv) {
+          writeFileSync(
+            join(checkout, '.env'),
+            `XANGI_PROCESS_NAME=fixture-status\nPATH=${fixturePath}\n`
+          );
+        }
+        const result = await runCli(
+          ['service', 'status'],
+          {
+            XANGI_SKIP_ENV_FILE: 'false',
+            XANGI_INSTALLATION_KIND: 'managed',
+            XANGI_DIR: fakePm2.dir,
+            XANGI_PROCESS_NAME: 'caller',
+            XANGI_ENV_PATH: join(fakePm2.dir, '.env'),
+            XDG_CONFIG_HOME: join(checkout, 'config'),
+            HOME: checkout,
+            PATH: fixturePath,
+          },
+          undefined,
+          join(checkout, 'bin', 'xangi')
+        );
+        expect(result.code, result.stderr).toBe(0);
+        const log = readFileSync(fakePm2.logFile, 'utf8');
+        expect(log).toContain(
+          `describe ${withCheckoutEnv ? 'fixture-status' : basename(checkout)}`
+        );
+        expect(log).not.toContain('wrong');
+        expect(log).not.toContain('describe caller');
+      } finally {
+        rmSync(checkout, { recursive: true, force: true });
+        rmSync(fakePm2.dir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('uses the checkout workspace state with the saved setup config', async () => {
     const fakePm2 = createFakePm2();
@@ -723,6 +788,7 @@ exit 0
     expect(result.code).toBe(0);
     expect(result.stderr).toContain('session: sess-1');
     expect(result.stdout).toContain('assistant reply');
+    expect(requests.find(r => r.url?.startsWith('/api/messages'))?.url).toContain('after=100');
     const prompt = requests.find((r) => r.url === '/api/prompt');
     expect(prompt?.body).toEqual({ text: 'hello', provider: 'codex', sessionId: 'sess-1' });
   });

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import { ensureManagedEnv } from './managed-env.js';
+import { readEnvFile, resolveEnvFilePath } from '../env-file.js';
+import { managedEnvPath, ensureManagedEnv } from './managed-env.js';
 import { loadRuntimeEnvFile } from '../env-file.js';
 import { pathToFileURL } from 'node:url';
 import { parseSetupConfig } from '../setup/schema.js';
@@ -10,14 +11,27 @@ export const SETUP_STATE_DIR_ENV = 'XANGI_SETUP_STATE_DIR';
 
 export async function loadSetupRuntimeEnv(
   configPath: string,
-  stateDir: string
+  stateDir: string,
+  runtimeEnvPath = managedEnvPath(configPath)
 ): Promise<NodeJS.ProcessEnv> {
   if (!isAbsolute(stateDir)) throw new Error('Runtime state directory must be an absolute path');
   const config = parseSetupConfig(JSON.parse(await readFile(configPath, 'utf8')) as unknown);
+  const saved = readEnvFile(runtimeEnvPath);
+  const globalOverride =
+    saved.XANGI_GLOBAL_BACKEND_OVERRIDE === 'true' ? saved.AGENT_BACKEND?.trim() : undefined;
   return {
-    AGENT_BACKEND: config.backend,
-    ...(config.backendExecutable ? { XANGI_BACKEND_EXECUTABLE: config.backendExecutable } : {}),
-    ...(config.model ? { AGENT_MODEL: config.model } : {}),
+    AGENT_BACKEND: globalOverride || config.backend,
+    ...(!globalOverride && config.backendExecutable
+      ? { XANGI_BACKEND_EXECUTABLE: config.backendExecutable }
+      : {}),
+    ...(globalOverride
+      ? { AGENT_MODEL: saved.AGENT_MODEL ?? '' }
+      : config.model
+        ? { AGENT_MODEL: config.model }
+        : {}),
+    ...(globalOverride
+      ? { AGENT_EFFORT: saved.AGENT_EFFORT ?? '', XANGI_BACKEND_EXECUTABLE: '' }
+      : {}),
     ...(config.opencodeConfigPath ? { OPENCODE_CONFIG: config.opencodeConfigPath } : {}),
     WORKSPACE_PATH: config.workspacePath,
     DATA_DIR: stateDir,
@@ -45,7 +59,16 @@ export async function applySetupRuntimeEnvFromProcess(
       `${SETUP_CONFIG_PATH_ENV} and ${SETUP_STATE_DIR_ENV} must be provided together`
     );
   }
-  Object.assign(env, await loadSetupRuntimeEnv(configPath, stateDir));
+  Object.assign(
+    env,
+    await loadSetupRuntimeEnv(
+      configPath,
+      stateDir,
+      env.XANGI_INSTALLATION_KIND === 'managed'
+        ? managedEnvPath(configPath)
+        : resolveEnvFilePath(env)
+    )
+  );
   return true;
 }
 

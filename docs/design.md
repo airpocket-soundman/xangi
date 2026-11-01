@@ -127,7 +127,7 @@ flowchart LR
 - React + TypeScript + Vite の単一画面を `web/app` へbuildし、`WEB_CHAT_PORT` で配信する
 - 指名問い合わせは既定でBearer認証付きHTTPを使い、`INTER_INSTANCE_CHAT_PEERS`から宛先を解決する。受信側は送信元ごとの通常Web sessionを再利用し、transcriptとprovider文脈を永続化する。別instanceの内容はユーザー承認として扱わない
 - 指名問い合わせの受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`で制限できる。未設定または`*`は正しい共有tokenを持つ全instanceを許可する
-- Discordセッションは、履歴を引き継ぐWeb分岐と、Bot投稿を表示したうえで同じDiscord `contextKey` / appSessionIdを直接処理するリモート入力の2経路を持つ。後者はBot自身の`MessageCreate`を経由せず、無限ループを避ける。Discord / Slack由来のセッションは元チャットURLを専用APIで解決し、Web Chatのペイン上部から開ける。Web分岐は履歴注入後も消えない起点セッションIDを保持する
+- Discordセッションは、履歴を引き継ぐWeb分岐と、共通受付から同じDiscord `contextKey` / appSessionIdを継続する入力の2経路を持つ。共通受付ではAI処理完了後、Webからのユーザー本文・添付を元スレッドへ送り、その後でAI回答・添付を送る。本文先頭の `👤 ユーザー（Web）` と `🤖 AI：エージェント名` で発言者を区別する。エージェント未選択時は作業ディレクトリ名を表示する。Discordの投稿アカウントは接続済みBotのままであり、Webの共有認証から個人名を推測しない。回答者名は実行開始時に確定して受付記録へ保存し、配送の再試行でも保持する。配送失敗が投稿前に確定した場合だけ再試行でき、部分配送・応答消失など結果不明の投稿は重複を避けて自動再送しない。AI処理失敗・中断時にはこの完了時配送を行わない。Slackの共通受付は従来どおり結果だけを配送する。共通受付はBot自身の`MessageCreate`を経由せず、無限ループを避ける。Discord / Slack由来のセッションは元チャットURLを専用APIで解決し、Web Chatのペイン上部から開ける。Web分岐は履歴注入後も消えない起点セッションIDを保持する
 - 新規会話、最新100セッションの検索・選択、直近50メッセージ、SSE応答ストリーミングだけを主要操作にする
 - 添付アップロードは`XMLHttpRequest.upload`のprogress eventを使い、PC・スマートフォンともファイル名、複数選択時の順番、転送率を入力欄の直上へ表示する
 - workspace・upload済みファイルの配信は`Range` requestへ`206 Content-Range`で応答し、iPhone Safariを含むmedia elementのmetadata取得・seek・再生を可能にする。範囲外は`416`を返す
@@ -760,6 +760,8 @@ env で OFF (`XANGI_TOOL_TRAJECTORY_LOG=false`) にすればロガーは完全 n
 
 AI CLIが xangi の機能（Discord操作・スケジュール・システム）を安全に呼び出すための HTTP API サーバー。
 
+command実行とGitHub token発行は接続元socketのloopback判定とOrigin検証を通したlocal client専用とする。外部triggerは別のBearer認証境界を維持する。通常Web APIはGETを含め同一hostのOriginを検証し、拡張device ingressの独立した認証・CORS契約とは分離する。
+
 ```
 AI CLI（Claude Code等）
   → xangi tool（正規CLI。xangi-cmdは互換shim）
@@ -883,6 +885,8 @@ skills/
 既定の`SESSION_TITLE_MODE=ai`では、初回ターンのbackend受付通知後（通知非対応時は最初の本文受信後）、同じbackend・modelへタイトル専用の独立リクエストを開始する。タイトル処理は通常セッションとUserPromptSubmit hookから隔離し、Local LLMではchat modeでツールを無効化する。本編からはawaitしない。成功時はセッション台帳を更新し、Discordスレッドもrenameする。失敗・空出力・timeout時はprefixを正本として維持する。AI生成を使わない場合は`SESSION_TITLE_MODE=prefix`を指定する。
 
 Codex backendでは、CLIの`turn.started`、toolの`item.started` / `item.completed`、`turn.completed`を同じレコードの`backend_trace`へ保存する。`tool_wall_ms`はtool実行区間の重複をまとめた実時間、`non_tool_backend_ms`はbackend turn全体からtool区間を引いた時間で、モデル推論とCLI orchestrationの両方を含む。toolの入力と出力本文は保存せず、tool名、経過時刻、終了状態、exit code、出力byte数だけを記録する。backendが対応イベントを提供しない場合、`backend_trace`は省略する。
+
+Web共通受付も同じAIタイトル処理を起動する。Discord連携では起動前に新規スレッドの命名対象を確保し、結果適用時に現在のスレッド名・アクティブSession・手動タイトルを再確認する。既存スレッドは現在の名前を引き継ぎ、AI生成を再起動しない。
 
 ### スケジュール実行フロー
 
@@ -1311,6 +1315,10 @@ DocumentAttachmentsが検証済みファイルのコピー、形式判定、Libr
 
 ### 子Agentの経過確認と結果通知
 
+予定起点のDiscord・Slack・LINE・Telegramの依頼は、同じ投稿先の通常会話ではなく`resolveRunningSession`で実行中の予定セッションを親として記録します。予定ターンの終了は`closeReason: scheduled`で保存し、子完了時は保存済みprovider sessionでその予定の履歴だけを再開します。予定セッションはclosedのまま保持し、通常会話のactiveポインタを変更しません。専用runner keyで通常会話の永続runnerとも分離します。明示的な終了・アーカイブ・provider情報の欠落は再開せず、従来の代替通知に進みます。通常の予定発火は引き続き毎回新規セッションです。
+
+Discord・Slack・Web・LINE・Telegramの子完了は予定実行用runnerを呼ばず、`ConversationService`の共通受付・排他・実行・結果配送を通ります。依頼時に`parentAppSessionId`を保存し、配送時と実行直前に元の会話が有効か確認します。親を特定できない旧記録や終了・削除・切替済みの親は自動再開しません。各完了バッチの受付IDをAgent Runへ保存し、再試行と再起動後も同じreceiptを参照します。実行が成功して配送先の未接続が確定した場合は結果だけを再送します。実行失敗・中断・配送結果不明を自動再実行せず、既存の試行上限と代替通知へ進みます。内部通知にはWebからの利用者入力表示やAIタイトル生成を付けません。LINE・Telegramは通常入力と同じプラットフォームキューで再開を直列化し、結果だけを各APIへ配送します。LINEは従来どおりテキスト配送（添付はWeb履歴で確認）、Telegramはtopic・書式・media設定を保持します。配送先の許可を再確認し、結果不明の送信を自動再送しません。全プラットフォームの予定実行は通常会話と別の新規セッションを使い、provider sessionと自動終了理由を保存します。
+
 詳しくは[子Agentの経過確認と結果通知](usage.md#子agentの経過確認と結果通知)を参照してください。
 
 再通知・経過報告は、新規依頼または明示的に再実行した際に通知追跡を有効にした実行だけを対象にします。追跡情報のない旧記録は、未通知印がなくても自動通知しません。Webの結果返却は既存セッションを更新し、終了済み・存在しない会話のルーティング補完で空の会話を生成しません。
@@ -1407,3 +1415,16 @@ Even G2はこの仕組みを利用する一例で、`deviceIngress.capability`�
 `StreamCallbacks.onUserInput(request, signal)` がCodexと共通の表示側を接続する。他のバックエンドの質問連携は追加せず、Claude Codeの実行方式も変更しない。`user-input.ts` は質問の正規化、回答の検証、会話・回答者・一回限りのID・最長10分の受付を管理する。外側の実行の終了または停止でAbortSignalを発火し、遅れて届いた回答を破棄する。Codexの`serverRequest/resolved`も受付を終了する。未対応経路には質問コールバックを渡さない。
 
 Webは既存HTTP境界内の`GET/POST /api/user-input/:appSessionId`を使用し、実行中のWeb会話だけを1.5秒間隔で確認する。POSTは同一ホスト検査とセッション種別検査を行う。Discordは回答ボタンとモーダル、SlackはBoltのaction/viewハンドラを使用する。各チャットの認証済みユーザーIDと開始時の依頼者を照合する。同期質問は保留中のRPCへ回答する。Codexの非同期質問は`agentMessage`の`delivery: async`と`questions`を受け取り、`turn/steer`で回答する。元のターンが完了済みなら同じthreadで`turn/start`して続行する。フォームと外側の実行は回答まで保持し、会話・ターン照合と項目IDによる重複防止を行う。起動オプションは`AGENT_USER_INPUT`、初期値true。
+
+
+### Webと元チャットで共有する受付・実行
+
+通常Web/Discord/Slack会話のWeb入力は`ConversationService`へ集約する。既存`appSessionId`と`contextKey`/provider sessionを維持し、Web経由であることを理由に別セッションへ分岐しない。Discord/Slackのnative handlerは既存の整形・制御経路を維持し、`conversation-locks.ts`の共通実行キーを使ってWeb入力との競合を防ぐ。共通HTTPサーバーが停止していてもnative handlerの単独運用は維持する。
+
+- `POST /api/sessions/:id/turns`: `{requestId, message, attachments}`を検証し、受付記録保存後に202で`{turn}`を返す。同ID・同内容は既存turnを返し、異なる内容は409。
+- `GET /api/sessions/:id/turn-requests/:requestId`: 保存済みの実行・結果配送状態を取得する。
+- `POST /api/sessions/:id/turn-requests/:requestId/retry-delivery`: 未配送または接続不能の配送だけを再試行し、AIは起動しない。Discordでは元の本文・入力添付も配送に含める。成否不明の外部投稿は409で自動再送を防ぐ。
+- 通常会話の受付と結果を`DATA_DIR/conversation-turns`へ一時ファイルからrenameして保存する。受付前の保存失敗ではAIを実行しない。再起動時は未開始のacceptedだけ実行し、runningはinterrupted、sendingはunknownとして復元する。completed/pendingは結果配送だけを再開する。secretは既存の非永続経路を維持する。
+- runnerの完了後に結果を保存し、bridgeの`deliverResult`で元チャットへ配送する。DiscordはWebのユーザー本文・入力添付を先に投稿し、発言者を表示してから回答・出力添付を投稿する。Slackは従来どおり結果だけを投稿する。回答者名は実行開始時に取得して受付記録へ保存する。返却するplatform message IDの先頭は回答のIDとし、確定したassistant transcript entryへ紐付ける。
+- 進捗は既存thread_idのevents SSEで配信し、最終状態は受付照会で復元する。旧`/api/chat`と`*-continue`は互換経路として残す。Web起点の質問はWebの既存質問UIから回答する。
+- 新規連携会話の`POST /api/sessions`は任意の`requestId`を受け、`DATA_DIR/conversation-creations`の記録から同じsessionIdを返す。外部作成の成否不明は自動再作成しない。

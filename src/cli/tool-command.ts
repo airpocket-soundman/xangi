@@ -38,6 +38,16 @@ async function readStdinJson(): Promise<string> {
 }
 
 export function parseToolCommandArgs(args: string[]): ParsedToolCommand {
+  // Never forward a help flag alongside a mutating operation. Resolve it before
+  // stdin handling, restart validation, or sending a request to the tool server.
+  const helpFlag = (arg: string): boolean => arg === '--help' || arg === '-h';
+  if (helpFlag(args[0]) || args.slice(1).some(helpFlag)) {
+    const topic = args[0] === 'help' || helpFlag(args[0]) ? args[1] : args[0];
+    return {
+      command: 'help',
+      flags: topic && !topic.startsWith('-') ? { topic } : {},
+    };
+  }
   const command = args[0] || 'help';
   const flags: Record<string, string> = {};
   const positionals: string[] = [];

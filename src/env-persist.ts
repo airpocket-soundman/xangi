@@ -43,7 +43,7 @@ export function updateEnvKeyValues(updates: Record<string, string | undefined>):
     } else {
       const newLine = `${key}=${value}\n`;
       content = pattern.test(content)
-        ? content.replace(pattern, newLine)
+        ? content.replace(pattern, () => newLine)
         : `${content.trimEnd()}\n${newLine}`;
     }
   }
@@ -93,7 +93,7 @@ export function updateEnvKeyValue(key: string, value: string): UpdateEnvResult {
   const newLine = `${key}=${value}`;
   const pattern = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
   const updated = pattern.test(content)
-    ? content.replace(pattern, newLine)
+    ? content.replace(pattern, () => newLine)
     : content.trimEnd() + '\n' + newLine + '\n';
 
   try {

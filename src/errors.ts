@@ -35,6 +35,20 @@ export class NonRetryableError extends Error {
   }
 }
 
+/** Agy explicitly ended a turn; a new request must not bypass a stop hook or repeat side effects. */
+export class AntigravityTurnError extends NonRetryableError {
+  constructor(
+    public readonly finishedReason: 'interrupted' | 'error' | 'unknown',
+    message: string,
+    // Diagnostic only: failed turns do not establish or replace channel session bindings.
+    public readonly sessionId?: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = 'AntigravityTurnError';
+  }
+}
+
 /** CLI exited without confirming completion; side effects may already exist. */
 export class IncompleteAgentTurnError extends NonRetryableError {
   constructor(
@@ -68,6 +82,8 @@ export type AgentErrorKind =
   | 'usage-limit' // バックエンドの利用枠・支出予算の上限到達
   | 'antigravity-artifact-path' // Agy が通常ファイルを内部 artifact と誤分類
   | 'incomplete-turn' // Process exited without the backend's completion event
+  | 'antigravity-interrupted'
+  | 'antigravity-terminated'
   | 'unknown';
 
 const CANCEL_MESSAGE = 'Request cancelled by user';
@@ -75,6 +91,11 @@ const CANCEL_MESSAGE = 'Request cancelled by user';
 /** エラーメッセージから種類を判別する */
 export function classifyAgentError(error: unknown): AgentErrorKind {
   const msg = error instanceof Error ? error.message : String(error);
+  if (error instanceof AntigravityTurnError) {
+    return error.finishedReason === 'interrupted'
+      ? 'antigravity-interrupted'
+      : 'antigravity-terminated';
+  }
   if (error instanceof IncompleteAgentTurnError) return 'incomplete-turn';
   if (msg === CANCEL_MESSAGE) return 'cancelled';
   if (isAntigravityWorkspaceArtifactPathError(error)) return 'antigravity-artifact-path';
@@ -93,6 +114,10 @@ export function formatAgentErrorForUser(error: unknown, opts?: { timeoutMs?: num
   const msg = error instanceof Error ? error.message : String(error);
   const detail = msg.slice(0, 200);
   switch (classifyAgentError(error)) {
+    case 'antigravity-interrupted':
+      return '🛑 Agyの処理が中断されました。自動再実行はしていません。';
+    case 'antigravity-terminated':
+      return `❌ Agyの処理が終了しました: ${detail}`;
     case 'cancelled':
       return '🛑 タスクを停止しました';
     case 'timeout':

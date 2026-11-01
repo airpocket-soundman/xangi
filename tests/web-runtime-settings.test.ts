@@ -7,6 +7,7 @@ import type { AgentRunner } from '../src/agent-runner.js';
 import { BackendResolver } from '../src/backend-resolver.js';
 import type { AgentBackend, Config, EffortLevel } from '../src/config.js';
 import { clearSettingsCache, initSettings, loadSettings } from '../src/settings.js';
+import type { WorkspaceRegistry } from '../src/workspace-registry.js';
 import {
   updateWebRuntimeSetting,
   webChannelRuntimeSettingsSnapshot,
@@ -146,6 +147,7 @@ describe('Web runtime settings', () => {
     );
 
     expect(webChannelRuntimeSettingsSnapshot('discord', '123', config, resolver)).toEqual({
+      workspace: { enabled: false, value: 'inherit', effective: undefined },
       agent: null,
       team: null,
       backend: {
@@ -157,6 +159,26 @@ describe('Web runtime settings', () => {
       notify: { value: 'inherit', effective: 'message' },
       threadMode: { value: 'inherit', effective: 'off' },
     });
+  });
+  it('rejects invalid or disabled workspace changes before mutating the registry', async () => {
+    const bind = vi.fn();
+    const resetBinding = vi.fn();
+    const deps = {
+      config, resolver, agentRunner: {} as AgentRunner,
+      workspaceRegistry: { bind, resetBinding } as unknown as WorkspaceRegistry,
+    };
+    const input = { name: 'workspace', platform: 'discord', channelId: '123', action: 'set', value: 'work' };
+    for (const patch of [
+      { platform: 'web' }, { channelId: '' }, { channelId: '123/thread' },
+      { action: 'status' }, { value: '' }, { value: 123 },
+    ]) {
+      await expect(updateWebRuntimeSetting({ ...input, ...patch }, deps)).rejects.toThrow();
+    }
+    config.features!.workspaceSwitching = false;
+    await expect(updateWebRuntimeSetting(input, deps)).rejects.toThrow('disabled');
+    await expect(updateWebRuntimeSetting({ ...input, action: 'reset' }, deps)).rejects.toThrow('disabled');
+    expect(bind).not.toHaveBeenCalled();
+    expect(resetBinding).not.toHaveBeenCalled();
   });
   it('persists channel model, reasoning and mode through the Web API dispatcher and resolver reload', async () => {
     const old = process.env.CHANNEL_OVERRIDES;

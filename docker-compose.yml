@@ -51,6 +51,13 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.gpu
+    volumes:
+      - claude-data:/home/ubuntu/.claude
+      - codex-data:/home/ubuntu/.codex
+      - ${XANGI_WORKSPACE:-./workspace}:/workspace
+      - ./prompts:/app/prompts:ro
+      - ~/.gitconfig:/home/ubuntu/.gitconfig:ro
+      - ${GITHUB_APP_PRIVATE_KEY_PATH:-/dev/null}:/secrets/github-app.pem:ro
     depends_on:
       - ollama
     deploy:

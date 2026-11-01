@@ -17,7 +17,12 @@ import type { WorkspaceRegistry } from '../workspace-registry.js';
 import { prependDiscordTimestamp, resolveDiscordSettingsChannelId } from './thread-context.js';
 import { TurnLatencyRecorder } from '../turn-latency.js';
 import { DiscordTurnCoordinator } from './turn-coordinator.js';
-import { closeSession, createSchedulerSession, incrementMessageCount } from '../sessions.js';
+import {
+  closeSession,
+  createSchedulerSession,
+  incrementMessageCount,
+  setProviderSessionId,
+} from '../sessions.js';
 
 export interface SchedulerBridgeDeps {
   scheduler: Scheduler;
@@ -147,6 +152,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
           }
         );
         latency.markAgentComplete();
+        if (sessionId) setProviderSessionId(freshAppSessionId, sessionId);
         incrementMessageCount(freshAppSessionId);
 
         // 結果を送信（テキスト由来 + 構造化 attachments を合算・重複排除）
@@ -238,7 +244,7 @@ export function registerDiscordSchedulerBridge(deps: SchedulerBridgeDeps): void 
         latency.finish('error');
         throw error;
       } finally {
-        closeSession(freshAppSessionId, 'other');
+        closeSession(freshAppSessionId, 'scheduled');
         const entry = discordProcessingMessages.get(channelId);
         if (entry?.intervalId) clearInterval(entry.intervalId);
         discordProcessingMessages.delete(channelId);

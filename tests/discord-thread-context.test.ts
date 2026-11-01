@@ -24,6 +24,7 @@ import {
   createWebSession,
   getActiveSessionId,
   getSessionEntry,
+  updateSessionTitle,
   initSessions,
 } from '../src/sessions.js';
 import { logPrompt, readSessionMessages } from '../src/transcript-logger.js';
@@ -948,6 +949,110 @@ describe('Discord thread run lock', () => {
 });
 
 describe('Discord remote input bridge', () => {
+  it.each(['success', 'manual-thread', 'manual-session', 'new-session', 'fetch-race', 'rename-error', 'existing', 'second-turn', 'unrestricted-channel'] as const)(
+    'prepares a shared-turn AI title while protecting Discord naming (%s)', async (scenario) => {
+      const thread = {
+        id: 'shared-title-thread', name: '最初の質問',
+        isThread: () => scenario !== 'unrestricted-channel',
+        fetch: vi.fn(async () => ({ name: thread.name })),
+        setName: vi.fn().mockResolvedValue(undefined),
+      };
+      const client = {
+        user: { id: '999' }, on: vi.fn().mockReturnThis(),
+        channels: { fetch: vi.fn(async (id) => id === 'parent' ? {
+          type: 0, threads: { create: vi.fn().mockResolvedValue(thread) },
+        } : thread) },
+      } as unknown as Client;
+      const bridge = registerDiscordMessageHandlers({
+        client, agentRunner: {} as AgentRunner, workdir: tempDir!,
+        config: {
+          agent: { config: { workdir: tempDir } },
+          sessionTitle: { mode: 'ai' }, discord: { sessionTitleAiOnce: scenario !== 'unrestricted-channel' },
+        } as Config,
+      });
+      const id = scenario === 'existing'
+        ? createSession(thread.id, { platform: 'discord' })
+        : (await bridge.createSession!('parent', thread.name)).sessionId;
+      const input = { appSessionId: id, prefixTitle: '最初の質問' };
+      const target = await bridge.prepareSessionTitle!(input);
+      if (scenario === 'existing') {
+        expect(target).toBeUndefined();
+        expect(getSessionEntry(id)?.title).toBe(thread.name);
+        return;
+      }
+      expect(target).toBeDefined();
+      if (scenario === 'second-turn') {
+        expect(await bridge.prepareSessionTitle!(input)).toBeUndefined();
+        return;
+      }
+      updateSessionTitle(id, input.prefixTitle);
+      if (scenario === 'manual-thread') thread.name = '手動スレッド名';
+      if (scenario === 'manual-session') updateSessionTitle(id, '手動タイトル');
+      if (scenario === 'new-session') createSession(thread.id, { platform: 'discord' });
+      if (scenario === 'fetch-race') thread.fetch.mockImplementation(async () => {
+        updateSessionTitle(id, '取得中の手動タイトル');
+        return { name: thread.name };
+      });
+      if (scenario === 'rename-error') {
+        thread.setName.mockRejectedValueOnce(new Error('rename unavailable'));
+        await expect(target!.onTitle('AIタイトル')).rejects.toThrow('rename unavailable');
+        expect(getSessionEntry(id)?.title).toBe(input.prefixTitle);
+        return;
+      }
+      await target!.onTitle('AIタイトル');
+      if (scenario === 'success' || scenario === 'unrestricted-channel') {
+        if (scenario === 'success') expect(thread.setName).toHaveBeenCalledWith('AIタイトル');
+        else expect(thread.setName).not.toHaveBeenCalled();
+        expect(getSessionEntry(id)?.title).toBe('AIタイトル');
+      } else {
+        expect(thread.setName).not.toHaveBeenCalled();
+        expect(getSessionEntry(id)?.title).toBe(
+          scenario === 'manual-session' ? '手動タイトル' : scenario === 'fetch-race' ? '取得中の手動タイトル' : input.prefixTitle
+        );
+      }
+    }
+  );
+  it.each(['画像を確認して', '', '長文'.repeat(2500)])(
+    '完了したWeb入力と画像を回答より先に配送し、発言者を区別する',
+    async (message) => {
+      const appSessionId = createSession('delivery-thread', { platform: 'discord' });
+      const send = vi.fn().mockImplementation(async () => ({ id: `posted-${send.mock.calls.length}` }));
+      const client = {
+        on: vi.fn().mockReturnThis(),
+        channels: { fetch: vi.fn().mockResolvedValue({ send }) },
+      } as unknown as Client;
+      const bridge = registerDiscordMessageHandlers({ client, config: {} as Config } as Parameters<typeof registerDiscordMessageHandlers>[0]);
+      const ids = await bridge.deliverResult!({
+        appSessionId,
+        text: '確認しました',
+        attachments: ['/tmp/result.png'],
+        webInput: { message, attachments: ['/tmp/user.png'] },
+        assistantName: 'ボルト',
+      });
+      const payloads = send.mock.calls.map(([payload]) => payload);
+      expect(payloads[0].content).toContain('👤 ユーザー（Web）');
+      expect(payloads.filter((p) => p.content?.startsWith('👤'))).toHaveLength(1);
+      expect(payloads.slice(0, -2).map((p) => p.content).join('')).toContain(message);
+      expect(payloads.every((p) => !p.content || p.content.length <= 2000)).toBe(true);
+      expect(payloads.slice(0, -2).flatMap((p) => p.files || [])).toEqual([{ attachment: '/tmp/user.png' }]);
+      expect(payloads.at(-2)).toMatchObject({ content: '🤖 AI：ボルト\n確認しました' });
+      expect(payloads.at(-1)).toMatchObject({ files: [{ attachment: '/tmp/result.png' }] });
+      expect(payloads.every((p) => p.allowedMentions?.parse?.length === 0)).toBe(true);
+      // The first returned ID still links the assistant transcript to its answer.
+      expect(ids[0]).toBe(`posted-${payloads.length - 1}`);
+      expect(new Set(ids).size).toBe(payloads.length);
+    }
+  );
+
+  it('Web入力なしの従来の結果配送は本文を変更しない', async () => {
+    const appSessionId = createSession('legacy-delivery', { platform: 'discord' });
+    const send = vi.fn().mockResolvedValue({ id: 'result' });
+    const client = { on: vi.fn(), channels: { fetch: vi.fn().mockResolvedValue({ send }) } } as unknown as Client;
+    const bridge = registerDiscordMessageHandlers({ client, config: {} as Config } as Parameters<typeof registerDiscordMessageHandlers>[0]);
+    expect(await bridge.deliverResult!({ appSessionId, text: '既存の結果', attachments: [] })).toEqual(['result']);
+    expect(send).toHaveBeenCalledExactlyOnceWith({ content: '既存の結果', allowedMentions: { parse: [] } });
+  });
+
   it.each(['queued', 'running'])('scheduler taskが%sならWeb継続をbusy拒否する', async (state) => {
     const threadId = 'remote-busy-thread';
     const appSessionId = createSession(threadId, { platform: 'discord' });
@@ -998,7 +1103,7 @@ describe('Discord remote input bridge', () => {
     await queued;
   });
 
-  it('Web入力を元スレッドへ表示し、指定されたappSessionIdで処理する', async () => {
+  it.each([false, true])('Web入力と添付=%sを元スレッドへ表示し同じappSessionIdで処理する', async (withAttachment) => {
     const threadId = 'remote-thread-123';
     const appSessionId = createSession(threadId, { platform: 'discord' });
     const replyMessage = {
@@ -1073,11 +1178,13 @@ describe('Discord remote input bridge', () => {
     const result = await bridge.continueSession({
       appSessionId,
       message: '続きをお願いします',
+      ...(withAttachment ? { attachments: ['/tmp/web-uploads/sample.txt'] } : {}),
     });
 
     expect(result).toEqual({ response: 'Discordで回答' });
     expect(thread.send).toHaveBeenCalledWith({
       content: '🌐 Webから: 続きをお願いします',
+      ...(withAttachment ? { files: [{ attachment: '/tmp/web-uploads/sample.txt' }] } : {}),
       allowedMentions: { parse: [] },
     });
     expect(runStream).toHaveBeenCalledWith(
@@ -1088,6 +1195,7 @@ describe('Discord remote input bridge', () => {
         appSessionId,
       })
     );
+    if (withAttachment) expect(runStream.mock.calls[0][0]).toContain('[Attachment] /tmp/web-uploads/sample.txt');
     expect(getActiveSessionId(threadId)).toBe(appSessionId);
   });
   it.each([false, true])('AI-names a Web-created thread and preserves manual rename=%s', async (manualRename) => {

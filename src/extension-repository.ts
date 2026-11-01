@@ -148,7 +148,7 @@ export async function preparePublicGitHubExtension(
   const artifact = await (options.download ?? downloadBytes)(archiveUrl, MAX_ARCHIVE_BYTES);
   const dataDir = resolve(options.dataDir ?? defaultRemoteExtensionDataDir());
   const sourcesDir = join(dataDir, 'extensions', 'sources');
-  const destination = join(sourcesDir, inspection.repository.replace('/', '--'));
+  const destination = join(sourcesDir, encodeURIComponent(inspection.repository));
   const lockDir = join(dataDir, 'extension-source.lock');
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   await acquireLock(lockDir);
@@ -479,10 +479,21 @@ function parseRemoteExtensionSource(value: unknown, dataDir: string): RemoteExte
     resolve(dataDir),
     'extensions',
     'sources',
+    encodeURIComponent(value.repository),
+    'xangi-extension.json'
+  );
+  // Read old registrations; subsequent updates write the collision-free destination.
+  const legacyManifestPath = join(
+    resolve(dataDir),
+    'extensions',
+    'sources',
     value.repository.replace('/', '--'),
     'xangi-extension.json'
   );
-  if (resolve(value.manifestPath) !== expectedManifestPath) {
+  if (
+    resolve(value.manifestPath) !== expectedManifestPath &&
+    resolve(value.manifestPath) !== legacyManifestPath
+  ) {
     throw new Error('extension source manifest path mismatch');
   }
   return {

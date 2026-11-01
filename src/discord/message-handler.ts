@@ -967,11 +967,24 @@ export interface MessageHandlerDeps {
 }
 
 export interface DiscordRemoteInput {
+  attachments?: string[];
   appSessionId: string;
   message: string;
 }
 
 export interface DiscordRemoteInputBridge {
+  /** Capture first-thread eligibility before the shared Web turn starts. */
+  prepareSessionTitle?(input: {
+    appSessionId: string;
+    prefixTitle: string;
+  }): Promise<{ onTitle: (title: string) => Promise<void> } | undefined>;
+  deliverResult?(input: {
+    appSessionId: string;
+    text: string;
+    attachments: string[];
+    webInput?: { message: string; attachments: string[] };
+    assistantName?: string;
+  }): Promise<string[]>;
   createSession?(channelId: string, title: string): Promise<{ sessionId: string }>;
 
   continueSession(input: DiscordRemoteInput): Promise<{ response: string | null }>;
@@ -1231,6 +1244,101 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
   });
 
   return {
+    async prepareSessionTitle({ appSessionId, prefixTitle }) {
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'discord') return;
+      const createdThreadName = pendingThreadTitles.get(appSessionId) ?? null;
+      pendingThreadTitles.delete(appSessionId);
+      if (entry.title) return;
+      const channel = await client.channels.fetch(entry.contextKey);
+      if (!channel) return;
+      const thread = channel.isThread() ? channel : undefined;
+      const aiOnce = config.discord.sessionTitleAiOnce === true;
+      if (aiOnce && !thread) return;
+      if (aiOnce && createdThreadName === null) {
+        updateSessionTitle(appSessionId, truncateSessionTitle(thread!.name));
+      }
+      if (
+        !shouldStartDiscordAiSessionTitle({
+          mode: config.sessionTitle?.mode,
+          aiOnce,
+          createdThreadName,
+        })
+      )
+        return;
+      return {
+        onTitle: async (title) => {
+          const currentThreadName = thread ? (await thread.fetch()).name : null;
+          const current = getSessionEntry(appSessionId);
+          if (!current || (current.title && current.title !== prefixTitle)) return;
+          if (getActiveSessionId(entry.contextKey) !== appSessionId) return;
+          if (
+            !shouldApplyDiscordAiSessionTitle({
+              aiOnce,
+              appSessionId,
+              activeSessionId: getActiveSessionId(entry.contextKey),
+              createdThreadName,
+              currentThreadName,
+            })
+          )
+            return;
+          if (thread) await thread.setName(title);
+          // Renaming yields; do not overwrite a manual session title or a /new session.
+          const latest = getSessionEntry(appSessionId);
+          if (
+            getActiveSessionId(entry.contextKey) !== appSessionId ||
+            !latest ||
+            (latest.title && latest.title !== prefixTitle)
+          )
+            return;
+          updateSessionTitle(appSessionId, title);
+        },
+      };
+    },
+    async deliverResult({ appSessionId, text, attachments, webInput, assistantName }) {
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'discord')
+        throw new Error('Discordセッションが見つかりません');
+      const channel = await client.channels.fetch(entry.contextKey);
+      if (!channel || !('send' in channel) || typeof channel.send !== 'function')
+        throw new Error('Discordの投稿先を取得できません');
+      const inputIds: string[] = [];
+      if (webInput) {
+        const chunks = splitDiscordMessage(
+          `👤 ユーザー（Web）\n${webInput.message}`,
+          DISCORD_SAFE_LENGTH
+        );
+        for (const [index, content] of chunks.entries()) {
+          const posted = await channel.send({
+            content,
+            ...(index === 0 && webInput.attachments.length
+              ? { files: webInput.attachments.map((attachment) => ({ attachment })) }
+              : {}),
+            allowedMentions: { parse: [] },
+          });
+          inputIds.push(posted.id);
+        }
+      }
+      const name = assistantName
+        ?.replace(/[\r\n]/g, ' ')
+        .trim()
+        .slice(0, 100);
+      const answer = webInput ? `🤖 AI${name ? `：${name}` : ''}\n${text || '✅'}` : text || '✅';
+      const ids: string[] = [];
+      for (const content of splitDiscordMessage(answer, DISCORD_SAFE_LENGTH)) {
+        const posted = await channel.send({ content, allowedMentions: { parse: [] } });
+        ids.push(posted.id);
+      }
+      if (attachments.length) {
+        const posted = await channel.send({
+          files: attachments.map((attachment) => ({ attachment })),
+          allowedMentions: { parse: [] },
+        });
+        ids.push(posted.id);
+      }
+      // Callers attach ids[0] to the assistant transcript, so keep the answer first.
+      return [...ids, ...inputIds];
+    },
     async createSession(channelId, title) {
       const channel = await client.channels.fetch(channelId);
       if (!channel || !('threads' in channel) || channel.type !== 0)
@@ -1248,9 +1356,9 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
       pendingThreadTitles.set(result.appSessionId, title);
       return { sessionId: result.appSessionId };
     },
-    async continueSession({ appSessionId, message: inputMessage }) {
+    async continueSession({ appSessionId, message: inputMessage, attachments = [] }) {
       const text = inputMessage.trim();
-      if (!text) throw new Error('メッセージを入力してください');
+      if (!text && !attachments.length) throw new Error('メッセージを入力してください');
 
       const entry = getSessionEntry(appSessionId);
       if (!entry || entry.platform !== 'discord') {
@@ -1277,9 +1385,14 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
         activateSession(entry.contextKey, appSessionId);
         const mirroredMessage = await sourceChannel.send({
           content: `🌐 Webから: ${text}`,
+          ...(attachments.length
+            ? { files: attachments.map((attachment) => ({ attachment })) }
+            : {}),
           allowedMentions: { parse: [] },
         });
         let prompt = await fetchDiscordLinkContent(client, text);
+        if (attachments.length)
+          prompt += '\n' + attachments.map((path) => `[Attachment] ${path}`).join('\n');
         prompt = annotateChannelMentions(prompt);
         prompt = await fetchChannelMessages(client, prompt);
         if (config.discord.injectChannelTopic !== false) {
@@ -1321,7 +1434,9 @@ export function registerDiscordMessageHandlers(deps: MessageHandlerDeps): Discor
             name: 'Web',
             messageId: mirroredMessage.id,
             react: false,
-            userText: text,
+            userText: [text, ...attachments.map((path) => `[Attachment] ${path}`)]
+              .filter(Boolean)
+              .join('\n'),
             completionUserId: null,
           },
           workspaceRegistry

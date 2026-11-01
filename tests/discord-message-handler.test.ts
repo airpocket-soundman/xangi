@@ -8,6 +8,7 @@ import {
   shouldProcessDiscordMessage,
 } from '../src/discord/message-handler.js';
 import { DiscordTurnCoordinator } from '../src/discord/turn-coordinator.js';
+import { AntigravityTurnError } from '../src/errors.js';
 import { createCompletedButtons } from '../src/discord/ui.js';
 import { clearSessions, initSessions, setSession } from '../src/sessions.js';
 import { initSettings } from '../src/settings.js';
@@ -37,6 +38,14 @@ describe('shouldProcessDiscordMessage', () => {
 describe('processPrompt error completion', () => {
   it.each([
     [
+      new AntigravityTurnError('error', 'AGY_HOOK_BLOCKED: policy stopped this turn.'),
+      'AGY_HOOK_BLOCKED: policy stopped this turn.',
+    ],
+    [
+      new AntigravityTurnError('interrupted', 'Antigravity CLI was interrupted'),
+      'Agyの処理が中断されました',
+    ],
+    [
       "You've hit your session limit · resets 5am (Asia/Tokyo)",
       '💳 バックエンドの利用上限に達しています',
     ],
@@ -62,7 +71,7 @@ describe('processPrompt error completion', () => {
       callbacks.onText?.('途中の回答', '途中の回答');
       callbacks.onToolUse?.('Bash', { command: 'pwd' });
       if (shutdown) await finalizeActiveStreams();
-      const error = new Error(errorMessage);
+      const error = errorMessage instanceof Error ? errorMessage : new Error(errorMessage);
       callbacks.onError?.(error);
       throw error;
     });
@@ -98,7 +107,10 @@ describe('processPrompt error completion', () => {
           false,
           'session-limit-test',
           {
-            agent: { backend: 'claude-code', config: { workdir: testDir } },
+            agent: {
+              backend: errorMessage instanceof AntigravityTurnError ? 'antigravity' : 'claude-code',
+              config: { workdir: testDir },
+            },
             discord: { streaming: true, showButtons: false, replySuggestions: false },
           } as never,
           target as never,

@@ -732,6 +732,7 @@ export function Settings() {
                   platform={platform}
                   channelId={channelId}
                   snapshot={channelSettings}
+                  workspaces={workspaces}
                   backends={settings.backend.options}
                   enabled={settings.backend.enabled}
                 />

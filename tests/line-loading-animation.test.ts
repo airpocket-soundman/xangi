@@ -132,4 +132,13 @@ describe('LINE のローディング表示', () => {
 
     expect(h.showLoadingAnimation).toHaveBeenCalledTimes(0);
   });
+
+  it('R21 ignores group and room messages without invoking the runner or sending a reply', async () => {
+    for(const type of ['group','room']) {
+      const {ctx}=createHarness(async()=>{});const event=textEvent('private-context','group-test');
+      Object.assign(event.source,{type,groupId:'group',roomId:'room'});await handleLineEvent(event,ctx);
+      expect(ctx.agentRunner.runStream).not.toHaveBeenCalled();expect(ctx.client.replyMessage).not.toHaveBeenCalled();expect(ctx.client.pushMessage).not.toHaveBeenCalled();
+    }
+  });
+
 });

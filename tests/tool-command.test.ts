@@ -2,6 +2,33 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseToolCommandArgs, runToolCommand } from '../src/cli/tool-command.js';
 
 describe('tool command dispatcher', () => {
+  it.each([
+    ['--help'],
+    ['-h'],
+    ['help'],
+    ['system_restart', '--help'],
+    ['system_restart', '-h'],
+    ['extension_request', '--query-json-stdin', '--help'],
+  ])('sends only a help request for %j', async (...args) => {
+    const readStdin = vi.fn();
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        command: 'help',
+        flags: args[0].startsWith('-') || args[0] === 'help' ? {} : { topic: args[0] },
+      });
+      return new Response(JSON.stringify({ ok: true, result: 'Usage: help' }));
+    });
+    await expect(
+      runToolCommand(args, {
+        env: { XANGI_TOOL_SERVER: 'http://127.0.0.1:41001' },
+        fetchImpl,
+        readStdin,
+      })
+    ).resolves.toBe('Usage: help');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(readStdin).not.toHaveBeenCalled();
+  });
+
   it('preserves flag values as JSON data', () => {
     expect(
       parseToolCommandArgs(['discord_send', '--message', 'quote " newline\n backslash \\', '--silent'])

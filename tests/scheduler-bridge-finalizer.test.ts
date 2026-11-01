@@ -301,12 +301,17 @@ describe('scheduler-bridge stream finalizer (issue #293)', () => {
       initSessions(tmpDir);
       const interactiveId = createSession('channel-1', { platform: 'discord' });
       const interactiveBefore = structuredClone(getSessionEntry(interactiveId));
-      const { runner } = buildBridge(async () => ({ result: 'done', sessionId: 'scheduled' }));
+      const { runner, agentRunner } = buildBridge(async () => ({ result: 'done', sessionId: 'scheduled' }));
 
       await runner('scheduled prompt', 'channel-1');
 
       expect(getActiveSessionId('channel-1')).toBe(interactiveId);
       expect(getSessionEntry(interactiveId)).toEqual(interactiveBefore);
+      const scheduledId = agentRunner.runStream.mock.calls[0]?.[2]?.appSessionId as string;
+      expect(getSessionEntry(scheduledId)).toMatchObject({
+        lifecycle: 'closed', closeReason: 'scheduled',
+        agent: expect.objectContaining({ providerSessionId: 'scheduled' }),
+      });
     } finally {
       clearSessions();
       rmSync(tmpDir, { recursive: true, force: true });

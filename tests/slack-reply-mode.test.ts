@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ import {
   shouldProcessSlackMessage,
   shouldReplyInSlackThread,
   slackConversationKey,
+  slackDeletedThread,
   slackThreadParentTsFromActionBody,
 } from '../src/slack.js';
 
@@ -1592,7 +1593,7 @@ describe('Slack Web continuation', () => {
     await vi.waitFor(() => expect(getSessionEntry(sessionId)?.title).toBe('AIのタイトル'));
   });
 
-  it('mirrors one input, executes once in the same session, and rejects simultaneous input', async () => {
+  it.each([false, true])('mirrors input with attachments=%s and rejects simultaneous input before upload', async (withAttachment) => {
     const { createSlackRemoteInputBridge } = await import('../src/slack.js');
     const key = 'C_WEB:123.456';
     const id = ensureSession(key, { platform: 'slack' });
@@ -1602,21 +1603,45 @@ describe('Slack Web continuation', () => {
     const started = new Promise<void>(resolve => { running = resolve; });
     const runStream = vi.fn().mockImplementation(async () => { running(); await hold; return { result: 'done', sessionId: 'provider-web' }; });
     const postMessage = vi.fn().mockResolvedValue({ ts: '789.123' });
-    const client = { chat: { postMessage, update: vi.fn().mockResolvedValue({}) }, conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'test' } }) } } as unknown as WebClient;
+    const filesUploadV2 = vi.fn().mockResolvedValue({});
+    const client = { filesUploadV2, chat: { postMessage, update: vi.fn().mockResolvedValue({}) }, conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'test' } }) } } as unknown as WebClient;
     const runner = { runStream, getTimeoutState: () => undefined } as unknown as AgentRunner;
     const config = { agent: { config: { workdir: tempDir } }, slack: { streaming: false, showThinking: false, replySuggestions: false } } as Config;
     const bridge = createSlackRemoteInputBridge(client, runner, config);
     await withoutMinimumDisplayDelay(async () => {
-      const first = bridge.continueSession({ appSessionId: id, message: 'hello' });
+      const first = bridge.continueSession({ appSessionId: id, message: 'hello', ...(withAttachment ? { attachments: ['/tmp/web-uploads/sample.txt'] } : {}) });
       await started;
       try {
-        await expect(bridge.continueSession({ appSessionId: id, message: 'duplicate' })).rejects.toThrow('処理中');
+        await expect(bridge.continueSession({ appSessionId: id, message: 'duplicate', ...(withAttachment ? { attachments: ['/tmp/web-uploads/sample.txt'] } : {}) })).rejects.toThrow('処理中');
       } finally { release(); }
       await first;
     });
+    expect(filesUploadV2).toHaveBeenCalledTimes(withAttachment ? 1 : 0);
+    if (withAttachment) {
+      expect(filesUploadV2).toHaveBeenCalledWith({ channel_id: 'C_WEB', thread_ts: '123.456', file_uploads: [{file: '/tmp/web-uploads/sample.txt'}] });
+      expect(runStream.mock.calls[0][0]).toContain('/tmp/web-uploads/sample.txt');
+    }
     expect(runStream).toHaveBeenCalledTimes(1);
     expect(getActiveSessionId(key)).toBe(id);
     expect(postMessage.mock.calls.filter(([p]) => p.text.startsWith('🌐 Webから:'))).toHaveLength(1);
     expect(postMessage.mock.calls[0][0]).toMatchObject({ channel: 'C_WEB', thread_ts: '123.456', text: '🌐 Webから: hello', mrkdwn: false });
   });
+
+  it('R18 resolves deletion events from previous_message.thread_ts to the original thread', () => {
+    const thread=slackDeletedThread({previous_message:{thread_ts:THREAD_TS}});
+    expect(thread).toBe(THREAD_TS);expect(slackConversationKey(AUTO_REPLY_CHANNEL,thread)).toBe(slackConversationKey(AUTO_REPLY_CHANNEL,THREAD_TS));
+    expect(slackDeletedThread({thread_ts:THREAD_TS})).toBe(THREAD_TS);expect(slackDeletedThread({})).toBeUndefined();
+  });
+  it('R28 uploads final attachments from the selected workspace outside the default root', async () => {
+    const selected=mkdtempSync(join(tmpdir(),'xangi-slack-selected-'));const file=join(selected,'report.txt');writeFileSync(file,'synthetic report');
+    try {
+      const upload=vi.fn().mockResolvedValue({});
+      const client={chat:{postMessage:vi.fn().mockResolvedValue({ts:'progress'}),update:vi.fn().mockResolvedValue({})},conversations:{info:vi.fn().mockResolvedValue({channel:{name:'dev'}})},reactions:{remove:vi.fn().mockResolvedValue({})},filesUploadV2:upload} as unknown as WebClient;
+      const agentRunner={runStream:vi.fn().mockResolvedValue({result:'MEDIA:'+file,attachments:[file],sessionId:'provider'})} as unknown as AgentRunner;
+      const config={agent:{config:{skipPermissions:false,workdir:selected}},slack:{streaming:false,showThinking:false,replySuggestions:false}} as Config;
+      await processMessageWithoutMinimumDisplayDelay(AUTO_REPLY_CHANNEL,slackConversationKey(AUTO_REPLY_CHANNEL,THREAD_TS),THREAD_TS,'report','1783402632.322829',client,agentRunner,config);
+      expect(upload).toHaveBeenCalledWith(expect.objectContaining({filename:'report.txt',file:Buffer.from('synthetic report')}));
+    } finally {rmSync(selected,{recursive:true,force:true});}
+  });
+
 });

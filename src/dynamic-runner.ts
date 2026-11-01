@@ -100,6 +100,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   private channelRunners = new Map<string, { runner: AgentRunner; key: string }>();
   private activeRunnerUses = new Map<AgentRunner, number>();
   private retiredRunners = new Set<AgentRunner>();
+  private activeChannelRunners = new Map<string, AgentRunner>();
+  private workspaceHooks = new Map<string, ReloadingUserPromptSubmitHookRunner | null>();
 
   constructor(
     config: Config,
@@ -285,6 +287,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const { startedAt, resolved, runner, runOptions, enrichedPrompt, execution } =
       await this.prepareExecution(prompt, options);
     this.retainRunner(runner);
+    if (runOptions?.channelId) this.activeChannelRunners.set(runOptions.channelId, runner);
+    if (runOptions?.runnerKey) this.activeChannelRunners.set(runOptions.runnerKey, runner);
     try {
       const result = await withPrivateDiagnostics(Boolean(runOptions?.secret), () =>
         runner.run(enrichedPrompt, runOptions)
@@ -296,6 +300,10 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
       throw runOptions?.secret ? privateRunError(error) : error;
     } finally {
+      for (const key of [runOptions?.channelId, runOptions?.runnerKey]) {
+        if (key && this.activeChannelRunners.get(key) === runner)
+          this.activeChannelRunners.delete(key);
+      }
       this.releaseRunner(runner);
       if (runOptions?.secret && runOptions.channelId)
         this.destroyChannelRunner(runOptions.runnerKey ?? runOptions.channelId);
@@ -331,6 +339,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const { startedAt, resolved, runner, runOptions, enrichedPrompt, execution } =
       await this.prepareExecution(prompt, options);
     this.retainRunner(runner);
+    if (runOptions?.channelId) this.activeChannelRunners.set(runOptions.channelId, runner);
+    if (runOptions?.runnerKey) this.activeChannelRunners.set(runOptions.runnerKey, runner);
     const recorder =
       runOptions?.appSessionId && CLI_TRAJECTORY_BACKENDS.has(resolved.backend)
         ? new ToolTrajectoryStreamRecorder(
@@ -386,6 +396,10 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
       if (execution.status === 'running') await this.finishModelExecution(runOptions, execution);
       throw runOptions?.secret ? privateRunError(error) : error;
     } finally {
+      for (const key of [runOptions?.channelId, runOptions?.runnerKey]) {
+        if (key && this.activeChannelRunners.get(key) === runner)
+          this.activeChannelRunners.delete(key);
+      }
       this.releaseRunner(runner);
       if (runOptions?.secret && runOptions.channelId)
         this.destroyChannelRunner(runOptions.runnerKey ?? runOptions.channelId);
@@ -530,9 +544,19 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     options: RunOptions | undefined
   ): Promise<string> {
     const rawUserText = options?.userText;
-    if (!this.userPromptSubmitHooks || !rawUserText) return prompt;
-
-    const contexts = await this.userPromptSubmitHooks.run({
+    if (!rawUserText) return prompt;
+    const cwd = canonicalizeWorkdir(options.workdir ?? this.workdir);
+    if (!this.workspaceHooks.has(cwd)) {
+      this.workspaceHooks.set(
+        cwd,
+        cwd === canonicalizeWorkdir(this.workdir)
+          ? this.userPromptSubmitHooks
+          : createReloadingUserPromptSubmitHookRunner(cwd)
+      );
+    }
+    const hooks = this.workspaceHooks.get(cwd);
+    if (!hooks) return prompt;
+    const contexts = await hooks.run({
       hook_event_name: 'UserPromptSubmit',
       session_id:
         options.appSessionId ||
@@ -540,7 +564,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
         options.channelId ||
         options.settingsChannelId ||
         '',
-      cwd: this.workdir,
+      cwd,
       prompt: rawUserText,
       channel_id: options.channelId,
       platform: options.platform ?? this.platform,
@@ -680,6 +704,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     const delegated = channelId ? cancelTeamDelegation(channelId) : false;
     if (channelId && cancelTeam(channelId, this)) return true;
     if (channelId) {
+      const active = this.activeChannelRunners.get(channelId);
+      if (active) return (active.cancel?.(channelId) ?? false) || delegated;
       const channelEntry = this.channelRunners.get(channelId);
       if (channelEntry?.runner.cancel) {
         return channelEntry.runner.cancel(channelId) || delegated;
@@ -694,6 +720,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   destroy(channelId: string): boolean {
     cancelTeamDelegation(channelId);
     if (cancelTeam(channelId, this)) return true;
+    const activeDestroyed = this.activeChannelRunners.get(channelId)?.destroy?.(channelId) ?? false;
     // チャンネル専用ランナーがあれば破棄
     const hadChannelRunner = this.channelRunners.has(channelId);
     this.destroyChannelRunner(channelId);
@@ -701,7 +728,7 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
     // デフォルトランナーにもdestroy（RunnerManagerのプール内エントリ削除）
     const defaultDestroyed = this.initializedDefaultRunner?.destroy?.(channelId) ?? false;
 
-    return hadChannelRunner || defaultDestroyed;
+    return activeDestroyed || hadChannelRunner || defaultDestroyed;
   }
 
   /**
@@ -709,6 +736,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
    */
   hasRunner(channelId: string): boolean {
     if (teamTimeoutState(channelId, this)) return true;
+    const active = this.activeChannelRunners.get(channelId);
+    if (active) return active.hasRunner?.(channelId) ?? true;
     const channelEntry = this.channelRunners.get(channelId);
     if (channelEntry) {
       return channelEntry.runner.hasRunner?.(channelId) ?? false;
@@ -722,6 +751,8 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   getTimeoutState(channelId: string): TimeoutState {
     const team = teamTimeoutState(channelId, this);
     if (team) return team;
+    const active = this.activeChannelRunners.get(channelId);
+    if (active) return active.getTimeoutState?.(channelId) ?? { active: false };
     const channelEntry = this.channelRunners.get(channelId);
     if (channelEntry?.runner.getTimeoutState) {
       return channelEntry.runner.getTimeoutState(channelId);
@@ -736,6 +767,11 @@ export class DynamicRunnerManager extends EventEmitter implements AgentRunner {
   extendTimeout(channelId: string, additionalMs?: number): ExtendTimeoutResult {
     const team = extendTeamTimeout(channelId, this, additionalMs);
     if (team) return team;
+    const active = this.activeChannelRunners.get(channelId);
+    if (active)
+      return (
+        active.extendTimeout?.(channelId, additionalMs) ?? { ok: false, reason: 'unsupported' }
+      );
     const channelEntry = this.channelRunners.get(channelId);
     if (channelEntry?.runner.extendTimeout) {
       return channelEntry.runner.extendTimeout(channelId, additionalMs);

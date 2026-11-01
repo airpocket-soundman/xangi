@@ -128,7 +128,7 @@ With `WEB_CHAT_ENABLED=true`, it serves both the Web UI and APIs. A headless set
 - A single React + TypeScript + Vite screen builds into `web/app` and is served on `WEB_CHAT_PORT`
 - Directed requests use bearer-authenticated HTTP by default and resolve targets through `INTER_INSTANCE_CHAT_PEERS`. The receiver reuses one regular Web session per sender, preserving transcripts and provider context, and never treats another instance's content as user authorization
 - `INTER_INSTANCE_CHAT_ALLOWED_PEERS` can restrict directed-request senders; when unset or `*`, any instance holding the shared token is allowed
-- Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that mirrors the message through the bot and directly processes the same Discord `contextKey` / appSessionId. The latter bypasses the bot's own `MessageCreate` event to avoid loops. Sessions originating from Discord or Slack resolve their original chat URL through a dedicated API and expose it in the Web Chat pane header. Web branches retain a source-session ID that remains available after history injection
+- Discord sessions expose two continuation paths: a Web branch that inherits history, and remote input that uses shared admission to process the same Discord `contextKey` / appSessionId. After successful AI completion, the original user text and attachments are posted first, followed by the answer and output files. Message headers distinguish the Web user from the selected agent, with the working directory name as the fallback. The connected Bot remains the Discord author; shared Web authentication cannot identify an individual. Failed or cancelled AI turns do not publish the completion bundle. The latter bypasses the bot's own `MessageCreate` event to avoid loops. Sessions originating from Discord or Slack resolve their original chat URL through a dedicated API and expose it in the Web Chat pane header. Web branches retain a source-session ID that remains available after history injection
 - Primary interactions are limited to creating a conversation, searching/selecting the latest 100 sessions, showing the latest 50 messages, and streaming responses over SSE
 - Attachment uploads use `XMLHttpRequest.upload` progress events to show the file name, position within a multi-file selection, and transfer percentage above the composer on both desktop and mobile
 - Workspace and uploaded files honor byte `Range` requests with `206 Content-Range`, allowing media elements including iPhone Safari to load metadata, seek, and play. Unsatisfiable ranges return `416`
@@ -763,6 +763,8 @@ Manages periodic execution and reminders:
 
 An HTTP API server that allows AI CLIs to safely invoke xangi features (Discord operations, scheduling, system control).
 
+Command execution and GitHub token issuance require a loopback socket peer and a valid Origin when present. External triggers retain their separate Bearer authentication boundary. Ordinary Web APIs validate same-host Origin for reads as well as mutations, independently of extension device ingress authentication and CORS.
+
 ```
 AI CLI (Claude Code, etc.)
   → xangi tool (canonical CLI; xangi-cmd is a compatibility shim)
@@ -886,6 +888,8 @@ Prefetched history is wrapped as quoted data so instructions inside it are not t
 With the default `SESSION_TITLE_MODE=ai`, xangi starts an isolated title request with the same backend and model after the main backend reports readiness, or after the first response text when that signal is unavailable. The title task is separated from the normal provider session and UserPromptSubmit hooks; Local LLM runs it in tool-free chat mode. The main response does not await it. Success updates the session registry and renames a Discord thread; failure, empty output, or timeout preserves the prefix title. Set `SESSION_TITLE_MODE=prefix` to disable AI title generation.
 
 For the Codex backend, CLI `turn.started`, tool `item.started` / `item.completed`, and `turn.completed` events are stored in the same record under `backend_trace`. `tool_wall_ms` is the union wall time of overlapping tool intervals. `non_tool_backend_ms` is the backend turn duration minus tool intervals, so it includes both model inference and CLI orchestration. Tool inputs and output text are not persisted; the trace only stores the tool name, relative timestamps, completion status, exit code, and output byte count. `backend_trace` is omitted when a backend does not provide the required events.
+
+The shared Web receipt path also starts the AI title task. For linked Discord conversations, it captures new-thread eligibility before execution and checks the current thread name, active session, and manual session title again before applying the result. Existing threads inherit their current name without starting another AI title task.
 
 ### Schedule Execution Flow
 
@@ -1313,6 +1317,10 @@ See [Teams (member groups)](usage.md#teams-member-groups).
 
 ### Child agent status checks and result delivery
 
+Requests made by a scheduled Discord or Slack turn capture the running schedule session through `resolveRunningSession`, rather than the interactive conversation at the same destination. The scheduled turn closes with `closeReason: scheduled`; child completion resumes only that schedule history using its saved provider session. The schedule remains closed and never replaces the interactive active pointer. A dedicated runner key also isolates persistent runners. Explicit close, archive, or missing provider identity prevents resumption and uses the existing fallback notice. Each normal schedule firing still starts a fresh session.
+
+Child completion on Discord, Slack, Web, LINE, and Telegram uses the shared admission, execution lock, runner, and delivery in `ConversationService`, independently of scheduled-task runners. Each run captures `parentAppSessionId`; delivery and execution validate that the requesting conversation is still active. Legacy runs without this identity and closed, deleted, or switched parents are not resumed automatically. Each completion batch persists its receipt ID in Agent Run and reuses that receipt after retries or restarts. A definitely unavailable transport retries only delivery of the saved result. Failed or interrupted execution and uncertain delivery are not replayed automatically; the existing retry limit and fallback notice apply. Internal completions do not mirror Web user input or generate AI titles. LINE and Telegram serialize continuation in the same native queue as incoming messages and use delivery-only adapters. LINE retains text-only delivery with generated attachments available in Web history. Telegram preserves topics, formatting and media settings. Delivery rechecks allowed destinations and does not replay uncertain sends. Every platform runs scheduled work in a separate fresh session and records the provider session and automatic close reason.
+
 See [Child agent status checks and result delivery](usage.md#child-agent-status-checks-and-result-delivery).
 
 Recovery and progress notices require explicit delivery tracking recorded when a task is created or deliberately rerun. Legacy untracked records are never replayed automatically. Web result delivery updates the existing session and never creates an empty conversation to replace a closed or missing routing entry.
@@ -1407,3 +1415,16 @@ Even G2 is one consumer and declares `deviceIngress.capability` as `device.even-
 `StreamCallbacks.onUserInput(request, signal)` connects the Codex adapter to shared presentation. Other backend adapters and Claude Code execution remain unchanged. `user-input.ts` normalizes questions, validates answers, and stores single-use requests scoped to conversation and actor for at most ten minutes. Turn termination aborts outstanding input; late answers are discarded. Codex `serverRequest/resolved` also closes a pending question. Unsupported paths omit the callback.
 
 Web polls `GET /api/user-input/:appSessionId` every 1.5 seconds during active Web conversations and answers through POST, behind the existing HTTP boundary with same-host and session-platform checks. Discord uses buttons/modals; Slack uses Bolt action/view handlers. Authenticated chat user IDs must match the initiating actor. Synchronous answers resolve the waiting provider RPC. Async Codex questions arrive as agentMessage items with delivery=async and questions. Answers use turn/steer while active, or turn/start on the same thread after completion. Pending forms keep the outer run alive; thread/turn checks and item-ID deduplication prevent cross-turn delivery. The startup switch `AGENT_USER_INPUT` defaults to true.
+
+
+### Shared admission for Web and original chat conversations
+
+Ordinary Web input into Web/Discord/Slack conversations uses `ConversationService` while retaining the existing appSessionId, contextKey, provider session, workspace and channel settings. Native Discord/Slack handlers retain their rendering and control paths and share execution keys through `conversation-locks.ts`; native-only operation does not depend on the HTTP server.
+
+- `POST /api/sessions/:id/turns` validates `{requestId, message, attachments}`, persists acceptance and returns HTTP 202 with `{turn}`. The same ID and payload returns the existing turn; changed input with the same ID returns 409.
+- `GET /api/sessions/:id/turn-requests/:requestId` returns durable execution and delivery status.
+- `POST /api/sessions/:id/turn-requests/:requestId/retry-delivery` retries only unsent or unavailable delivery, without running the AI again. Ambiguous external posts return 409 instead of blindly reposting.
+- Normal receipts/results are atomically replaced under `DATA_DIR/conversation-turns`. Failed acceptance persistence prevents execution. Restart resumes only accepted work that never started, marks running work interrupted and sending delivery unknown, and resumes completed/pending delivery without rerunning the AI. Secret sessions retain the existing nonpersistent path.
+- Discord deliverResult publishes the original Web user text and attachments before the answer and output files, after successful AI completion. The answering agent name is captured at execution start and saved in the durable receipt for delivery retries and restart recovery. Slack continues to publish only the result. The first returned platform ID still identifies the assistant answer and binds to the captured transcript entry. Ambiguous or partial delivery is not blindly retried.
+- Existing thread-filtered events SSE carries progress; receipt lookup recovers final status. Legacy /api/chat and platform-continue routes remain compatible. Questions from Web-origin turns use the existing Web question UI.
+- Linked creation accepts an optional requestId on POST /api/sessions and reuses its saved sessionId from `DATA_DIR/conversation-creations`. An ambiguous external creation is not automatically repeated.

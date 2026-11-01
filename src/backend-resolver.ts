@@ -299,7 +299,7 @@ export class BackendResolver {
 
       if (envContent.includes('CHANNEL_OVERRIDES=')) {
         // 既存行を置換
-        envContent = envContent.replace(/^CHANNEL_OVERRIDES=.*$/m, line);
+        envContent = envContent.replace(/^CHANNEL_OVERRIDES=.*$/m, () => line);
         // 空行になった場合は削除
         if (!line) {
           envContent = envContent.replace(/\n\n+/g, '\n\n');
@@ -362,6 +362,7 @@ export class BackendResolver {
     }
     const persisted = updateEnvKeyValues({
       AGENT_BACKEND: backend,
+      XANGI_GLOBAL_BACKEND_OVERRIDE: 'true',
       AGENT_MODEL: model,
       AGENT_EFFORT: effort,
     });

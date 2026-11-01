@@ -55,6 +55,7 @@ import {
   closeActiveSession,
   closeSession,
   createSchedulerSession,
+  setProviderSessionId,
   getActiveSessionId,
   activateSession,
   getProviderSessionId,
@@ -107,6 +108,13 @@ export function shouldProcessSlackMessage(
   if (input.channelType === 'im') return true;
   if (input.threadTs && input.hasActiveThreadSession) return true;
   return input.autoReplyEnabled ?? slackConfig.autoReplyChannels?.includes(input.channel) ?? false;
+}
+
+export function slackDeletedThread(event: {
+  previous_message?: { thread_ts?: string };
+  thread_ts?: string;
+}): string | undefined {
+  return event.previous_message?.thread_ts ?? event.thread_ts;
 }
 
 export function slackConversationKey(channelId: string, threadTs?: string): string {
@@ -586,6 +594,7 @@ const slackToolHistoryByMessageKey = new Map<string, TurnHistoryEntry[]>();
 const slackReplySuggestionsByMessageKey = new Map<string, string[]>();
 const busySlackConversations = new Set<string>();
 export const isSlackConversationBusy = (key: string): boolean =>
+  conversationBusy(key, true) ||
   [...busySlackConversations].some((k) => k === key || k.startsWith(key + ':'));
 const processedSlackMessages = new Set<string>();
 
@@ -887,10 +896,20 @@ async function deleteMessageByReaction(
 }
 
 import type { Scheduler } from './scheduler.js';
+import { conversationBusy, reserveConversation } from './conversation-locks.js';
 
 export interface SlackRemoteInputBridge {
+  deliverResult?(input: {
+    appSessionId: string;
+    text: string;
+    attachments: string[];
+  }): Promise<string[]>;
   createSession(channelId: string, title: string): Promise<{ sessionId: string }>;
-  continueSession(input: { appSessionId: string; message: string }): Promise<{ response: null }>;
+  continueSession(input: {
+    appSessionId: string;
+    message: string;
+    attachments?: string[];
+  }): Promise<{ response: null }>;
 }
 export function createSlackRemoteInputBridge(
   client: WebClient,
@@ -898,6 +917,30 @@ export function createSlackRemoteInputBridge(
   config: Config
 ): SlackRemoteInputBridge {
   return {
+    async deliverResult({ appSessionId, text, attachments }) {
+      const entry = getSessionEntry(appSessionId);
+      if (!entry || entry.platform !== 'slack') throw new Error('Slackセッションが見つかりません');
+      const [channel, thread_ts] = entry.contextKey.split(':', 2);
+      const ids: string[] = [];
+      for (const chunk of splitSlackResult(markdownToSlackMrkdwn(text || '✅'))) {
+        const posted = await client.chat.postMessage({
+          channel,
+          ...(thread_ts ? { thread_ts } : {}),
+          text: chunk,
+          unfurl_links: false,
+          unfurl_media: false,
+        });
+        if (!posted.ts) throw new Error('Slackへの投稿結果を確認できません');
+        ids.push(posted.ts);
+      }
+      if (attachments.length)
+        await client.filesUploadV2({
+          channel_id: channel,
+          thread_ts,
+          file_uploads: attachments.map((file) => ({ file })),
+        });
+      return ids;
+    },
     async createSession(channelId, title) {
       const posted = await client.chat.postMessage({
         channel: channelId,
@@ -914,10 +957,10 @@ export function createSlackRemoteInputBridge(
       });
       return { sessionId: result.appSessionId };
     },
-    async continueSession({ appSessionId, message }) {
+    async continueSession({ appSessionId, message, attachments = [] }) {
       const entry = getSessionEntry(appSessionId);
       if (!entry || entry.platform !== 'slack') throw new Error('Slackセッションが見つかりません');
-      if (!message.trim()) throw new Error('メッセージを入力してください');
+      if (!message.trim() && !attachments.length) throw new Error('メッセージを入力してください');
       const [channelId, threadTs] = entry.contextKey.split(':', 2);
       await processMessage(
         channelId,
@@ -929,7 +972,9 @@ export function createSlackRemoteInputBridge(
         agentRunner,
         config,
         false,
-        appSessionId
+        appSessionId,
+        undefined,
+        attachments
       );
       return { response: null };
     },
@@ -1039,7 +1084,7 @@ export function registerSlackSchedulerBridge(deps: {
         title: schedule?.label || prompt,
       });
       try {
-        const { result, attachments } = await runWithBubbleEvents(
+        const { result, attachments, sessionId } = await runWithBubbleEvents(
           agentRunner,
           prompt,
           {
@@ -1058,9 +1103,14 @@ export function registerSlackSchedulerBridge(deps: {
             workdir: agentSnapshot.workspacePath,
           }
         );
+        if (sessionId) setProviderSessionId(freshAppSessionId, sessionId);
         incrementMessageCount(freshAppSessionId);
 
-        const { displayText } = buildAttachmentResult(result, attachments);
+        const { displayText } = buildAttachmentResult(
+          result,
+          attachments,
+          agentSnapshot.workspacePath ?? config.agent.config.workdir
+        );
         await sendSlackResult(
           client,
           channelId,
@@ -1108,7 +1158,7 @@ export function registerSlackSchedulerBridge(deps: {
         const entry = slackProcessingMessages.get(destination);
         if (entry?.intervalId) clearInterval(entry.intervalId);
         slackProcessingMessages.delete(destination);
-        closeSession(freshAppSessionId, 'other');
+        closeSession(freshAppSessionId, 'scheduled');
       }
     } finally {
       releaseAgentTurn();
@@ -1503,7 +1553,9 @@ export async function startSlackBot(options: SlackChannelOptions): Promise<void>
         if (!deletedTs || !channelId) return;
         const contextKey = slackConversationKey(
           channelId,
-          (event as { thread_ts?: string }).thread_ts
+          slackDeletedThread(
+            event as { previous_message?: { thread_ts?: string }; thread_ts?: string }
+          )
         );
         const appSessionId = getActiveSessionId(contextKey) || getActiveSessionId(channelId);
         if (!appSessionId) return;
@@ -1810,12 +1862,14 @@ export async function processMessage(
   config: Config,
   removeReaction = true,
   remoteSessionId?: string,
-  actorId?: string
+  actorId?: string,
+  remoteAttachments: string[] = []
 ): Promise<void> {
   const runKey = conversationKey;
   const skipPermissions = config.agent.config.skipPermissions ?? false;
   const startedAt = Date.now();
-  let prompt = text;
+  const userText = buildPromptWithAttachments(text, remoteAttachments);
+  let prompt = userText;
 
   // プラットフォーム情報をプロンプトに注入
   prompt = `[プラットフォーム: Slack]\n[チャンネル: ${channelId}]${threadTs ? `\n[スレッド: ${threadTs}]` : ''}\n${prompt}`;
@@ -1839,7 +1893,7 @@ export async function processMessage(
     turnId,
     threadLabel,
     platform: 'slack' as const,
-    userText: text,
+    userText,
     isShutdownInterrupted: () => unregisterStreamFinalizer?.isFinalized() ?? false,
   };
 
@@ -1850,8 +1904,9 @@ export async function processMessage(
   // appSessionId は xangi 内部 (sessions.json) のセッション ID。
   // transcript-logger / 編集・削除同期で必要。
   let acquiredRunLock = false;
+  let releaseConversation: (() => void) | undefined;
   try {
-    if (busySlackConversations.has(runKey)) {
+    if (busySlackConversations.has(runKey) || conversationBusy(runKey)) {
       if (remoteSessionId) throw new Error('このSlackセッションは処理中です');
       console.log(`[slack] Skipping busy conversation: runKey=${runKey}`);
       await client.chat.postMessage({
@@ -1861,10 +1916,18 @@ export async function processMessage(
       });
       return;
     }
+    releaseConversation = reserveConversation(runKey);
     busySlackConversations.add(runKey);
     acquiredRunLock = true;
     if (remoteSessionId) {
       activateSession(conversationKey, remoteSessionId);
+      if (remoteAttachments.length) {
+        await client.filesUploadV2({
+          channel_id: channelId,
+          thread_ts: threadTs,
+          file_uploads: remoteAttachments.map((file) => ({ file })),
+        });
+      }
       const mirrored = await client.chat.postMessage({
         channel: channelId,
         text: `🌐 Webから: ${text}`,
@@ -2170,7 +2233,11 @@ export async function processMessage(
     if (replySuggestionsEnabled && extracted.suggestions.length === 0) {
       extracted.suggestions = fallbackReplySuggestions(replySuggestionCount);
     }
-    const { filePaths, displayText } = buildAttachmentResult(extracted.text, structuredAttachments);
+    const { filePaths, displayText } = buildAttachmentResult(
+      extracted.text,
+      structuredAttachments,
+      tWorkdir
+    );
     // finalテキストを mrkdwn へ一度だけ変換し、以降の全描画（本文更新・ボタン付与）で共有する
     const renderedText = markdownToSlackMrkdwn(displayText || '✅');
     const completion = prepareSlackCompletion({
@@ -2310,6 +2377,7 @@ export async function processMessage(
   } finally {
     if (acquiredRunLock) {
       busySlackConversations.delete(runKey);
+      releaseConversation?.();
     }
     // 正常完了・エラー処理後は shutdown finalizer の対象から外す
     unregisterStreamFinalizer?.();

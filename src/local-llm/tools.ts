@@ -13,7 +13,6 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { resolve, join, dirname, relative, sep, isAbsolute, basename, matchesGlob } from 'path';
-import { promisify } from 'util';
 import type { LLMTool, ToolContext, ToolResult, ToolHandler, ToolCatalogEntry } from './types.js';
 import { buildCliEnv } from '../cli-process.js';
 import { loadSkills, type Skill } from '../skills.js';
@@ -32,8 +31,87 @@ async function shellExec(
   }
 ): Promise<{ stdout: string; stderr: string }> {
   const cp = await import('child_process');
-  const execAsync = promisify(cp.exec);
-  return execAsync(command, options);
+  return new Promise((resolveResult, reject) => {
+    if (options.signal?.aborted) {
+      reject(new Error('Command aborted'));
+      return;
+    }
+    const posix = process.platform !== 'win32';
+    const proc = cp.spawn(command, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: true,
+      detached: posix,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let bytes = 0;
+    let failure: Error | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const killTree = (force: boolean): void => {
+      if (!proc.pid) return;
+      try {
+        if (posix) process.kill(-proc.pid, force ? 'SIGKILL' : 'SIGTERM');
+        else
+          cp.spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' }).on(
+            'error',
+            () => undefined
+          );
+      } catch {
+        /* The group may already have exited. */
+      }
+    };
+    const stop = (error: Error): void => {
+      if (failure) return;
+      failure = error;
+      killTree(false);
+      killTimer = setTimeout(() => killTree(true), 1000);
+      killTimer.unref();
+    };
+    const abort = (): void => stop(new Error('Command aborted'));
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
+    const timeout = setTimeout(
+      () => stop(new Error('Command timed out')),
+      options.timeout ?? 120_000
+    );
+    proc.stdout.setEncoding('utf8');
+    proc.stderr.setEncoding('utf8');
+    const append = (chunk: string, isError: boolean): void => {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > (options.maxBuffer ?? 1024 * 1024)) {
+        stop(new Error('Command output exceeded maxBuffer'));
+        return;
+      }
+      if (isError) stderr += chunk;
+      else stdout += chunk;
+    };
+    proc.stdout.on('data', (chunk: string) => append(chunk, false));
+    proc.stderr.on('data', (chunk: string) => append(chunk, true));
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', abort);
+      // A shell may exit while a TERM-ignoring descendant stays alive in its group.
+      if (failure) killTree(true);
+      if (killTimer) clearTimeout(killTimer);
+    };
+    proc.on('error', (error) => {
+      cleanup();
+      reject(error);
+    });
+    proc.on('close', (code) => {
+      cleanup();
+      if (failure || code !== 0)
+        reject(
+          Object.assign(failure ?? new Error('Command exited with code ' + code), {
+            stdout,
+            stderr,
+          })
+        );
+      else resolveResult({ stdout, stderr });
+    });
+  });
 }
 
 // --- Configurable limits ---

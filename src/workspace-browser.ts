@@ -1,3 +1,4 @@
+import { withPathMutation } from './path-mutation.js';
 import { createHash, randomUUID } from 'crypto';
 import {
   lstat,
@@ -280,42 +281,44 @@ export class WorkspaceBrowser {
 
     const normalized = this.normalizePath(filePath);
     const target = await this.resolveExisting(normalized, 'file');
-    const before = await readFile(target, 'utf8');
-    if (contentVersion(before) !== expectedVersion) {
-      throw new WorkspaceBrowserError(
-        'This file changed after it was opened. Reload it before saving.',
-        409
-      );
-    }
-
-    const existingStat = await stat(target);
-    const temporary = join(
-      resolve(target, '..'),
-      `.xangi-workspace-save-${process.pid}-${randomUUID()}`
-    );
-    let handle: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      handle = await open(temporary, 'wx', existingStat.mode);
-      await handle.writeFile(content, 'utf8');
-      await handle.sync();
-      await handle.close();
-      handle = undefined;
-
-      const immediatelyBeforeRename = await readFile(target, 'utf8');
-      if (contentVersion(immediatelyBeforeRename) !== expectedVersion) {
+    return withPathMutation(target, async () => {
+      const before = await readFile(target, 'utf8');
+      if (contentVersion(before) !== expectedVersion) {
         throw new WorkspaceBrowserError(
-          'This file changed while it was being saved. Reload it before trying again.',
+          'This file changed after it was opened. Reload it before saving.',
           409
         );
       }
-      await rename(temporary, target);
-    } finally {
-      await handle?.close().catch(() => undefined);
-      await unlink(temporary).catch(() => undefined);
-    }
 
-    const savedStat = await stat(target);
-    return filePayload(normalized, content, savedStat.mtimeMs);
+      const existingStat = await stat(target);
+      const temporary = join(
+        resolve(target, '..'),
+        `.xangi-workspace-save-${process.pid}-${randomUUID()}`
+      );
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        handle = await open(temporary, 'wx', existingStat.mode);
+        await handle.writeFile(content, 'utf8');
+        await handle.sync();
+        await handle.close();
+        handle = undefined;
+
+        const immediatelyBeforeRename = await readFile(target, 'utf8');
+        if (contentVersion(immediatelyBeforeRename) !== expectedVersion) {
+          throw new WorkspaceBrowserError(
+            'This file changed while it was being saved. Reload it before trying again.',
+            409
+          );
+        }
+        await rename(temporary, target);
+      } finally {
+        await handle?.close().catch(() => undefined);
+        await unlink(temporary).catch(() => undefined);
+      }
+
+      const savedStat = await stat(target);
+      return filePayload(normalized, content, savedStat.mtimeMs);
+    });
   }
 
   private async resolveExisting(

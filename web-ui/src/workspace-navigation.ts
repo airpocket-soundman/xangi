@@ -28,7 +28,7 @@ export function workspaceTargetFromHref(href: string): WorkspaceLinkTarget | und
     href.startsWith('?') ||
     href.startsWith('//') ||
     href === '/' ||
-    /^\/(?:monitor|schedules)(?:$|[/?#])/.test(href) ||
+    /^\/(?:monitor|schedules|chat|settings|extensions)(?:$|[/?#])/.test(href) ||
     /^\/workspace(?:$|[?#])/.test(href) ||
     /^\/(?:api|assets)\//.test(href) ||
     EXPLICIT_URI_SCHEME.test(href)

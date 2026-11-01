@@ -385,6 +385,8 @@ curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install
 
 ## Terminal CLI（xangi）
 
+`xangi --help` / `xangi -h` と各コマンドの `--help` / `-h` は、実処理より先にヘルプを表示します。`xangi settings --help` はGUIを開かず、起動・更新・削除なども実行しません。`xangi tool --help` は `xangi tool help`、`xangi tool <operation> --help` は `xangi tool help <operation>` と同じです。tool・agent・team・workspaceの詳細ヘルプは、従来どおり接続先のtool serverが必要です。
+
 `xangi` は人間が端末から xangi Web セッションに接続するための薄いクライアントです。既存の Even Terminal 互換 API (`/api/sessions` / `/api/prompt` / `/api/messages` / `/api/status`) を使い、Claude Code / Codex CLI などのバックエンドを直接起動しません。実際の backend / model は xangi 本体の設定または `XANGI_EVEN_TERMINAL_BACKEND` 系の設定で決まります。
 
 `xangi` はセッション操作・サービス操作・AI向けtool操作をまとめた正規CLIです。AIエージェントや運用スクリプトは `xangi tool <operation>` を使います。従来の `xangi-cmd <operation>` も互換shimとして同じdispatcherへ中継しますが、新しい文書とスクリプトでは `xangi tool` を使ってください。
@@ -477,6 +479,10 @@ managed版の`xangi update`は、更新確認・ダウンロード・検証・�
 `xangi --version`（`xangi -V`、`xangi version`も可）は、managed版では現在有効な署名済みrelease番号を、checkout版ではGitのtagまたはcommitを表示します。
 
 managed版の`xangi uninstall`は定期update、OS service、xangi本体の順に削除します。workspace、設定、token、履歴は保持するため、表示されたinstall commandを再実行すれば以前の設定を使って再インストールできます。設定、token、履歴も削除する場合だけ`xangi uninstall --purge --yes`を使います。`--purge`は`--yes`が無ければ何も削除せず終了し、どちらの方法でもworkspaceは削除しません。
+
+削除前に、設定・workspace登録・過去sessionのworkspace snapshotと削除対象を実体pathで照合します。workspaceを含む場合はservice停止前に拒否するため、先にworkspaceを管理領域外へ移してください。新規セットアップでもapp・config・state管理領域内のworkspaceは受け付けません。
+
+再起動を伴わないmanaged更新では、稼働中の版の画面ファイルを守るため旧versionの削除を延期します。更新ロックはheartbeat付きで、60秒以上更新されなければ次回更新で回収します。旧形式の単一ファイル`update.lock`は所有者を確認できないため自動削除しません。更新processが停止していることを確認したうえで、その旧lockだけを退避して再実行してください。
 
 開発checkoutの`./bin/xangi`は、`git pull`後もGit管理外の古い`dist/`を実行しないよう、`npm ci`で入れたlocal `tsx`から現在のsourceを起動します。配布bundleはsourceを含まないため、同梱`dist`とNode runtimeを使い、AIが参照するREADMEと利用者向けdocsも同梱します。
 
@@ -785,6 +791,8 @@ Docker環境では `.env` はコンテナ外にあるため、AI（Claude Code�
 
 Discordの `/workspace status` は、チャンネル設定に加え、選択中のエージェント名・パスと、実行した場所のセッションのパスを表示します。親チャンネルで「この場所では未固定」と出ても、スレッド内のセッションが未設定という意味ではありません。スレッドのセッションはそのスレッド内で確認してください。
 
+設定画面の「チャンネル」でも、DiscordまたはSlackのチャンネルを選び、登録済みワークスペースを保存できます。「既定のワークスペースを継承」でチャンネルの指定を解除します。変更は次の `/new` から適用され、既存の会話の作業場所は変わりません。担当エージェントが設定されている場合はその作業場所を表示し、個別変更を無効にします。担当の作業場所は「エージェント」設定で変更してください。
+
 DiscordとSlackではチャンネルごとに作業ディレクトリを選べます。スレッドは親チャンネルの設定を継承します。設定変更は進行中・既存セッションへ遡って適用されず、`/new`後の新規セッションから反映されます。
 
 | コマンド                                | 説明                                         |
@@ -795,7 +803,7 @@ DiscordとSlackではチャンネルごとに作業ディレクトリを選べ�
 | `/workspace use <name>`                 | 登録済みワークスペースをチャンネルへ設定     |
 | `/workspace reset`                      | 起動時の`WORKSPACE_PATH`へ戻す               |
 
-Discordでは各引数をスラッシュコマンドの入力欄へ指定します。Slack App側にも `/workspace` Slash Commandを追加してください。xangi processがアクセスできる既存の任意の絶対パスを登録できます。登録時は実体パスへ正規化し、xangiのstate directory配下は拒否します。Dockerではコンテナへmount済みのパスだけを切り替えられ、host上の未mountパスへはアクセスできません。
+Discordでは各引数をスラッシュコマンドの入力欄へ指定します。`/workspace use` の `name` 欄には、登録済みの名前（`default` を含む）が最大25件表示され、入力した文字で絞り込めます。100文字を超える名前は候補に表示されないため、直接入力してください。新規登録用の `/workspace set` は名前と絶対パスを直接入力します。Slack App側にも `/workspace` Slash Commandを追加してください。xangi processがアクセスできる既存の任意の絶対パスを登録できます。登録時は実体パスへ正規化し、xangiのstate directory配下は拒否します。Dockerではコンテナへmount済みのパスだけを切り替えられ、host上の未mountパスへはアクセスできません。
 
 Web UIでは設定画面の「ワークスペース」から、xangi processがアクセスできる既存の絶対パスを登録できます。設定画面ではパスの直接入力に加え、「参照…」でxangiが動くマシンのフォルダを選べます。ブラウザを開いている端末のローカルフォルダは選択できません。登録解除はregistryから項目だけを外し、ディレクトリとファイルを削除しません。default Workspace、エージェントまたは既存会話が参照しているWorkspace、Discord / Slack等のチャンネルへ設定済みのWorkspaceは登録解除できません。
 
@@ -999,7 +1007,7 @@ AGENT_BACKEND=local-llm
 LOCAL_LLM_MODEL=nemotron-3-nano
 
 # 起動（ollama + xangi-max）
-docker compose up xangi-max -d --build
+docker compose up ollama xangi-max -d --build
 ```
 
 ### GPU版（CUDA + Python + PyTorch）
@@ -1513,9 +1521,11 @@ AIが生成したタイトル内の引用符やカッコは、そのまま保持
 | `SESSION_TITLE_MODE` | `prefix`: 冒頭切り出し、`ai`: AIによる短いタイトル生成 | `ai`       |
 | `DISCORD_SESSION_TITLE_AI_ONCE` | `true`で、xangiが新規作成したDiscordスレッドの最初のturnだけAIタイトルを許可。`false`で従来の全セッション命名へ戻す | `true` |
 
-`ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、10秒のtimeout時は従来のprefixタイトルを維持します。Web・SlackではWeb Chatのセッション名を更新します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
+`ai`では、初回ターンで選択されたものと同じbackend・modelを使い、本編のbackend受付通知後（通知非対応時は最初の本文受信後）に独立した内部タスクとしてタイトル生成を開始します。本編はタイトル生成を待ちません。同時実行数1のLocal LLMでは本編が先に実行枠を確保し、タイトルは後続処理になります。生成失敗、空出力、60秒のtimeout時は従来のprefixタイトルを維持します。Web・SlackではWeb Chatのセッション名を更新します。Discordスレッドはprefix名で即時作成し、AIタイトル生成後に同じ名前へ更新します。
 
 デフォルトでは、AIによる更新をxangiが新規作成したスレッドの最初のturnだけに制限します。既存スレッド、手動で付け直したスレッド名、`/new`後の新しい内部セッションは自動変更しません。既存スレッド内で内部セッションを作成した場合、その内部タイトルには現在のDiscordスレッド名を引き継ぎます。従来どおり各セッションでAI命名する場合は`DISCORD_SESSION_TITLE_AI_ONCE=false`を設定します。
+
+Webから送信した通常会話・Discord/Slack連携会話も、同じ初回AIタイトル生成を使います。タイトル生成を待たずに本文の受付・完了・配送を進め、生成待ちの手動改名や`/new`による切り替えを保護します。
 
 ### 初回履歴先読み（Discord / Slack / Web 共通）
 
@@ -1633,6 +1643,10 @@ AIが生成したタイトル内の引用符やカッコは、そのまま保持
 
 ### WebチャットUI
 
+通常のWeb UI/APIは読取り・変更の両方で別Originからの要求を拒否し、ワイルドカードCORSを付けません。CLIなどOriginを送らないclientは利用できます。拡張device ingressだけは独立したBearer認証契約でcross-originを維持します。Tool Serverのcommand実行・GitHub token発行はloopback client専用で、これらのlocal専用APIを外部proxyで公開しないでください。
+
+全体backend/model/effortを設定操作で明示変更した場合は、再起動後もその値を初期セットアップの選択より優先します。単なる起動用環境値では初期セットアップを上書きしません。内部保存フラグ`XANGI_GLOBAL_BACKEND_OVERRIDE`で両者を区別します。
+
 入力欄は文章量に合わせて伸縮し、送信後は1行分の高さに戻ります。候補文の挿入など、入力操作以外で文章が変わった場合も高さを更新します。
 
 `/settings`では、共通`runtime_settings`が扱う7項目（backend、llmmode、autoreply、notify、threadmode、replysuggestions、respondtobots）と、日常運用で使う非秘密の起動設定を変更できる。チャンネル固有設定はプラットフォームを選び、接続先から取得したチャンネル名で対象を選択する。保存値には対応するチャンネルIDを使い、選択したチャンネルの保存済み設定と現在の実効値を各項目に表示する。各項目には「即時反映」「次のturnから」「再起動後」を表示する。
@@ -1659,7 +1673,7 @@ Slackのチャンネル名取得にはBot Token Scopeの`channels:read`（パブ
 | `WEB_CHAT_PORT`    | WebチャットUIのポート                                                                                                                                                                    | `18888`    |
 | `WEB_CHAT_HOST`    | bindするホスト。`127.0.0.1`は同じ端末だけから到達可能で、別端末から使うにはSSH port forwardingやTailscale Serveが必要。`0.0.0.0`は全インターフェースへ公開する。Web UI自体には認証がない | `0.0.0.0`  |
 
-Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、slash commandとskill GUIを提供する。ユーザーの発言とxangiの回答はどちらもMarkdownで表示し、編集・コピーでは元のテキストを使う。Web会話とDiscord会話では、応答を途中で停止した場合も、それまでの応答を履歴に残す。各ペインの入力欄下には、現在のmodel、そのSessionで現在有効なrunner cwd、最後に完了したturn時点のcontext使用量をstatuslineとして表示する。取得できない項目は表示せず、スマートフォンではpathを省略表示する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。HTTP版の指名問い合わせは送信元ごとの通常Web Sessionへ履歴とprovider文脈を保存する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力が元のDiscordチャンネル／スレッドへ表示され、同じDiscordセッションの文脈で応答する。添付とWeb専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackも`このSlackで続ける`で元の会話へ投稿できる。
+Web ChatはReact + Viteで、新規会話、セッション検索と段階読込、最大8ペイン、ペイン復元、履歴の段階読込、Markdown、編集・削除・コピー、添付、Stop・タイムアウト延長、返信候補、slash commandとskill GUIを提供する。ユーザーの発言とxangiの回答はどちらもMarkdownで表示し、編集・コピーでは元のテキストを使う。Web会話とDiscord会話では、応答を途中で停止した場合も、それまでの応答を履歴に残す。各ペインの入力欄下には、現在のmodel、そのSessionで現在有効なrunner cwd、最後に完了したturn時点のcontext使用量をstatuslineとして表示する。取得できない項目は表示せず、スマートフォンではpathを省略表示する。共通メニューは「チャット / ファイル / 予定 / 監視」で、`/schedules`ではWeb / Discord / Slack / Telegram予定の作成・編集・停止・削除ができる。Web予定は実行ごとに新しい会話を作り、任意のProjectへ所属させられる。セッション名をクリックすると現在のペインで開き、`＋ ペイン`で追加した空ペインにも同じ操作でセッションを表示できる。Web / Discord / Slack由来の各メッセージには`/chat/<appSessionId>#message-<messageId>`形式のリンク操作がある。リンクを開くと対象メッセージへ移動して強調表示し、同じxangiに接続したDiscordまたはSlackへ貼ると、そのメッセージ1件を命令ではない引用データとして参照する。HTTP版の指名問い合わせは送信元ごとの通常Web Sessionへ履歴とprovider文脈を保存する。Discordセッションでは`このDiscordで続ける`を選ぶと、Web入力を共通受付へ渡し、同じ会話ID・AI文脈で応答する。AI処理完了後、ユーザー本文・添付を元のDiscordチャンネル／スレッドへ投稿し、その後に回答・出力ファイルを投稿する。本文中の「ユーザー（Web）」「AI：エージェント名」で発言者を区別する。エージェント未選択時は作業ディレクトリ名を表示する。投稿アカウントは接続済みBotのまま。Web専用コマンドは利用できない。`Web会話として分岐`は元の履歴を引き継ぐ独立したWebセッションを作る。Slackも`このSlackで続ける`で元の会話へ投稿できる。
 
 指名問い合わせは既定で`INTER_INSTANCE_CHAT_PEERS`に登録したURLへBearer認証付きHTTPで送る。受信元は`INTER_INSTANCE_CHAT_ALLOWED_PEERS`へカンマ区切りで指定でき、未設定または`*`は正しい共有tokenを持つ全instanceを許可する。
 
@@ -2056,7 +2070,7 @@ WebのサイドバーでProjectを選び、設定から新しい会話の担当A
 
 1つのProjectに接続できるチャンネルは1つです。同じチャンネルを複数のProjectへ接続できません。接続後に始まる通常会話と予約実行にProjectの共通指示と担当が適用されます。既存の会話や過去ログは取り込まれず、担当変更や接続解除後も既存会話の設定は保持されます。Projectの担当が未指定の場合は、チャンネルの担当、全体の既定担当の順に使用します。Projectに設定中のAgent／Teamは削除できません。
 
-接続Projectで「＋ 新規」から本文を送信すると、接続先にスレッドが作成されます。WebとDiscord／Slackのどちらからでも同じ会話を続けられ、Webからの入力も接続先に表示されます。通常のメンション・自動応答設定が適用されます。Webから送信できるのは本文のみです。添付、Web専用コマンド、編集・削除の双方向同期には対応していません。
+接続Projectで「＋ 新規」から本文を送信すると、接続先にスレッドが作成されます。WebとDiscord／Slackのどちらからでも同じ会話を続けられ、Webからの入力も接続先に表示されます。通常のメンション・自動応答設定が適用されます。Webから本文と添付ファイルを送信できます。添付は📎で選択し、本文なしでも送信できます（1回10件まで）。受付前の明確な入力エラーでは添付を保持し、受付後の通信切断では同じ受付IDを確認します。Web専用コマンド、編集・削除の双方向同期には対応していません。
 
 「＋ 新規」の隣の▾からシークレット会話を選べます。シークレットはWeb内だけで会話し、Projectの既定担当を引き継ぎません。「終了して破棄」で終了します。
 
@@ -2127,7 +2141,7 @@ xangi agent create --name "実装担当" --workspace /absolute/path/to/worktree 
 
 `create` は既存ディレクトリをWorkspaceとして登録し、Agentだけを保存します。プロジェクトは不要です。返されたAgent IDを `xangi agent run AGENT_ID --task "..."` に使います。Git worktreeやスキルは親が準備します。親子のWorkspaceを別にすることは必須ではありません。別ディレクトリはOSレベルのファイルアクセス制限ではありません。
 
-`xangi agent list` は接続先インスタンスの全エージェントを返します。どの会話でも `xangi agent run 担当ID --task "依頼内容と必要な背景"` で依頼できます。`--project` と `--project-name` は使いません。実行IDを控え、並行できる別作業がなければターンを終了します。完了時に元の会話へ結果が届きます。複数の子が動いている場合は最後の完了時にまとめて届けます。手動確認は `status --id 実行ID`、同期実行時だけ `wait --id 実行ID` を使います。稼働中インスタンスのTool ServerとWeb Chatが必要です。
+`xangi agent list` は接続先インスタンスの全エージェントを返します。どの会話でも `xangi agent run 担当ID --task "依頼内容と必要な背景"` で依頼できます。`--project` と `--project-name` は使いません。実行IDを控え、並行できる別作業がなければターンを終了します。完了時に元の会話へ結果が届きます。複数の子が動いていても完了した結果から届け、同時に未通知になっている結果はまとめます。手動確認は `status --id 実行ID`、同期実行時だけ `wait --id 実行ID` を使います。稼働中インスタンスのTool ServerとWeb Chatが必要です。
 
 runは受付後に実行IDを返します。waitは最大25秒待ち、`succeeded` / `failed` になるまで同じIDで繰り返します。実行中の依頼をrunで再送しないでください。`status --id 実行ID` は即座に状態を返します。子には担当の指示・依頼文を渡します。親の会話全体は自動共有しないので、必要な背景を依頼に含めます。親は結果を確認して回答へ統合します。子からはdefaultへの問い合わせだけが可能で、その他の再委譲はできません。親ごとの同時依頼は既定16件です。`AGENT_MAX_CONCURRENT_REQUESTS` で1〜64の整数に設定できます。
 
@@ -2255,6 +2269,12 @@ AIタイトル生成は本文と並行し、最大60秒でタイトル専用処�
 
 
 ### 子Agentの経過確認と結果通知
+
+Discord・Slackの予定処理からAgent・Teamへ依頼した場合も、その予定処理の会話で結果確認を続けます。同じ投稿先で進行中の通常会話へ結果を混ぜず、会話の選択も切り替えません。ユーザーが予定の履歴を明示的に終了・アーカイブした場合は自動再開しません。Webの予定からの依頼は、その予定が作ったWeb会話へ戻ります。
+
+Discord・Slack・Web・LINE・Telegramでは、子が完了すると依頼した親のセッションで結果確認と応答を再開します。予定実行とは別の経路を使います。待機中に親を終了・削除したり、同じ投稿先で別の会話へ切り替えたりした場合は自動再開せず、再試行上限後に結果と再開失敗を通知します。親セッションを特定する情報のない旧依頼も同様です。配送先の未接続が確定している場合は保存済み結果の投稿だけを再試行し、AI処理は繰り返しません。配送成否が不明な場合は重複投稿を避けて自動再送しません。
+
+LINE・Telegramの子完了も共通会話サービスで依頼元を再開します。通常メッセージと同じキューを通し、予定実行は別の新規セッションへ分離します。LINEの生成ファイルはWeb履歴で確認し、Telegramは既存のmedia設定に従います。WebからLINE・Telegramへ直接入力する機能を追加するものではありません。
 
 xangi本体が未通知の完了・失敗と実行中の依頼を定期確認します。Slackでは元のチャンネルとスレッドへ通知します。親が処理中なら次の確認まで待ち、AIの待機ターンは消費しません。通知処理は初回を含め最大3回試行し、上限後はAIを介さず結果と通知失敗を1回送信します。それも失敗した場合はログと実行記録に未通知状態を残します。試行回数と経過報告時刻を保存し、再起動後も引き継ぎます。
 
@@ -2443,3 +2463,12 @@ Codexは通常会話の質問対応時にapp-serverへ接続し、`features.defa
 対象は通常のWeb・Discord・Slack会話です。シークレット、スケジュール、スラッシュコマンド、外部セッションの遠隔入力など、回答者を確定できない経路は対象外です。Claude Code・Copilot・OpenCodeなどへの質問連携は含みません。Claude Codeの実行方式・ツール設定は従来どおりです。
 
 仕様参照: [Codex App Server](https://developers.openai.com/codex/app-server)。追加のSDK依存はありません。
+
+
+### Web入力の受付と通信切断からの復帰
+
+通常のWeb会話とDiscord/Slack連携会話では、送信前に受付IDを保存し、サーバーが受付記録を永続化してHTTP 202を返します。AIの応答完了は待ちません。画面を閉じる・受付応答が途切れるだけでは処理を止めず、同じ受付IDで状態を確認します。受付確認中は文章や写真を入力欄へ戻しません。受付前の明確な入力エラーだけを修正用に戻し、受付後のAI処理失敗は履歴上の失敗として扱います。シークレット会話と既存の制御コマンドは専用経路を維持します。
+
+DiscordではAI処理完了後、Webからの本文・入力写真を元チャットへ投稿し、その後に回答・出力ファイルを投稿します。本文の「ユーザー（Web）」「AI：エージェント名」で発言者を区別します。エージェント未選択時は作業ディレクトリ名を使い、Botアカウント名は変更しません。Web利用者の個人名は共有認証から推測しません。AI処理失敗・中断時は完了時配送を行いません。Slackは従来どおり結果だけを投稿します。Webと元チャットでは同じ会話ID、AI文脈、workspace、チャネル設定を使い、同じ実行先への同時入力は二重起動せず拒否します。元チャットが未接続でも既存会話の結果はWebに保存され、AIを再実行せず配送だけを再試行できます。Discordでは元の本文・添付も配送に含みます。外部投稿の成否が不明な場合は自動再投稿しません。新規連携会話の作成にも受付IDを使い、作成応答の欠落で別スレッドを重複作成しないようにします。
+
+再起動後は、受付済みで未開始の処理だけを再開し、実行中だった処理は中断扱いにして自動再実行しません。通常会話の受付・配送記録は`DATA_DIR/conversation-turns`、会話作成記録は`DATA_DIR/conversation-creations`へ保存します。シークレット会話はこれらへ保存しません。ブラウザ側の未確定な送信はsessionStorageへ保持し、同じタブでの再読込に復帰します。無関係なDiscordとSlackの会話を自動で統合する機能ではありません。

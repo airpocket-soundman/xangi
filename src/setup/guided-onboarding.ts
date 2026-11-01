@@ -1,3 +1,4 @@
+import { assertWorkspaceOutsideManagedDirectories } from '../installer/workspace-protection.js';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -544,6 +545,7 @@ export async function applyGuidedSetup(
   }
   if (!isAbsolute(options.workspacePath))
     throw new Error('workspace pathは絶対pathで指定してください');
+  await assertWorkspaceOutsideManagedDirectories(options.workspacePath, dependencies.layout);
   if (!['existing', 'template', 'blank'].includes(options.workspaceMode)) {
     throw new Error('workspace modeはexisting、template、blankのいずれかです');
   }

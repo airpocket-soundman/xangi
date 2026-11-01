@@ -504,7 +504,10 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
         if (result instanceof Error && phase === 'stream') {
           fatalError = result;
           notifyError(result);
-          reject(result);
+          proc.kill('SIGTERM');
+          setTimeout(() => {
+            if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+          }, 1000).unref();
         }
       };
 
@@ -545,7 +548,10 @@ export abstract class CliRunnerBase extends EventEmitter implements AgentRunner 
           processLine(line, 'flush');
         }
 
-        if (fatalError) return; // 既に reject 済み
+        if (fatalError) {
+          reject(fatalError);
+          return;
+        }
 
         if (code !== 0) {
           const exitError = this.buildExitError(code, parser.exitErrorDetail?.(stderr), stderr);

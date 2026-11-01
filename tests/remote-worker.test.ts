@@ -398,4 +398,19 @@ exit 0
     ).toString('base64url');
     expect(() => decodePairingUri(`xangi-pair://${value}`)).toThrow('plaintext pairing');
   });
+
+  it('R04 rejects null and malformed hello before authentication without crashing the gateway', async () => {
+    const {WebSocket}=await import('ws');const server=createServer();const gateway=new RemoteWorkerGateway();gateway.attach(server);
+    await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+    cleanup.push(()=>{gateway.close();server.close();});
+    const address=server.address();const port=typeof address==='object'&&address?address.port:0;
+    for(const message of [null,[],1,{type:'hello',protocol:1},{type:'hello',protocol:1,workerId:'fake',token:'fake',platform:'linux',arch:'x64',capabilities:[null]}]) {
+      await new Promise<void>((resolve,reject)=>{
+        const socket=new WebSocket('ws://127.0.0.1:'+port+'/api/remote-workers/connect');
+        socket.on('open',()=>socket.send(JSON.stringify(message)));socket.on('close',()=>resolve());socket.on('error',reject);
+      });
+    }
+    expect(server.listening).toBe(true);
+  });
+
 });

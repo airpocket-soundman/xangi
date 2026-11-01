@@ -145,6 +145,8 @@ describe('registerSlackSchedulerBridge', () => {
     expect(getSessionEntry(appSessionId)).toMatchObject({
       scope: 'scheduler',
       lifecycle: 'closed',
+      closeReason: 'scheduled',
+      agent: expect.objectContaining({ providerSessionId: 'provider-1' }),
       messageCount: 1,
     });
   });

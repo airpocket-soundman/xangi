@@ -1,8 +1,9 @@
-import { channelIndividualAgent } from './agent-selection.js';
+import { channelIndividualAgent, defaultAgentWorkspaceId } from './agent-selection.js';
 import { channelAgent, resolveAgentBackend } from './agent-selection.js';
 import type { AgentRunner } from './agent-runner.js';
 import type { BackendResolver } from './backend-resolver.js';
 import type { Config } from './config.js';
+import type { WorkspaceRegistry } from './workspace-registry.js';
 import {
   executeRuntimeSettingsCommand,
   type RuntimeSettingsRequest,
@@ -78,7 +79,8 @@ export function webChannelRuntimeSettingsSnapshot(
   platform: 'discord' | 'slack',
   channelId: string,
   config: Config,
-  resolver: BackendResolver
+  resolver: BackendResolver,
+  workspaceRegistry?: WorkspaceRegistry
 ) {
   const settings = loadSettings();
   const override = resolver.getChannelOverride(channelId);
@@ -103,8 +105,17 @@ export function webChannelRuntimeSettingsSnapshot(
       : 'agent';
   const notifyOverride = settings.discordCompletionNotifyChannels?.[channelId];
   const threadModeOverride = settings.discordThreadModeChannels?.[channelId];
+  const workspaceBinding = workspaceRegistry?.getBinding(platform, channelId);
+  const workspace = workspaceRegistry?.getById(
+    agent?.workspaceId || workspaceBinding || defaultAgentWorkspaceId()
+  );
 
   return {
+    workspace: {
+      enabled: Boolean(workspaceRegistry) && config.features?.workspaceSwitching !== false,
+      value: workspaceBinding ?? 'inherit',
+      effective: workspace,
+    },
     team: agent?.team
       ? { id: agent.team.id, name: agent.team.name, leadership: agent.team.leadership }
       : null,
@@ -171,9 +182,28 @@ export async function updateWebRuntimeSetting(
     resolver: BackendResolver;
     agentRunner: AgentRunner;
     modelDiscovery?: RuntimeSettingsDependencies['modelDiscovery'];
+    workspaceRegistry?: WorkspaceRegistry;
   }
 ): Promise<string> {
   const name = String(input.name ?? '');
+  if (name === 'workspace') {
+    if (dependencies.config.features?.workspaceSwitching === false)
+      throw new Error('workspace switching is disabled');
+    const registry = dependencies.workspaceRegistry;
+    if (!registry) throw new Error('Workspace registry is unavailable');
+    if (input.platform !== 'discord' && input.platform !== 'slack')
+      throw new Error('platform must be discord or slack');
+    if (typeof input.channelId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.channelId))
+      throw new Error('channelId is invalid');
+    if (input.action === 'reset') {
+      await registry.resetBinding(input.platform, input.channelId);
+    } else if (input.action === 'set' && typeof input.value === 'string' && input.value.trim()) {
+      await registry.bind(input.platform, input.channelId, input.value);
+    } else {
+      throw new Error('workspace requires set with a workspace ID, or reset');
+    }
+    return 'ワークスペースを保存しました。次の /new から適用されます。';
+  }
   if (
     ![
       'agent',

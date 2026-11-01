@@ -17,6 +17,13 @@ import {
   useState,
 } from 'react';
 import { ApiError, clearRecoveredReadError, requestJson } from './api';
+import {
+  followConversationTurn,
+  saveSubmission,
+  submissionKey,
+  newRequestId,
+  type ConversationSubmission,
+} from './conversationTurns';
 import { AppTopbar } from './AppTopbar';
 import { NavigationIcon } from './AppNavigation';
 import { SidebarProjects } from './SidebarProjects';
@@ -546,6 +553,9 @@ function ChatPane({
   } | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sharedSending, setSharedSending] = useState(false);
+  const [deliveryRetry, setDeliveryRetry] = useState<{ sessionId: string; requestId: string }>();
+  const [retryingDelivery, setRetryingDelivery] = useState(false);
   const [error, setError] = useState('');
   const [streamText, setStreamText] = useState('');
   const [toolLines, setToolLines] = useState<string[]>([]);
@@ -587,6 +597,7 @@ function ChatPane({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef(active);
+  const sharedAbortRef = useRef<AbortController | undefined>(undefined);
   const linkedMessageId = messageIdFromHash(window.location.hash);
   const linkedMessageScrolledRef = useRef<string | undefined>(undefined);
   const setupStartedSessionRef = useRef<string | undefined>(undefined);
@@ -642,6 +653,8 @@ function ChatPane({
     }
   }, [sessionId]);
 
+  const detailSnapshot = useRef(detail);
+  detailSnapshot.current = detail;
   const loadDetail = useCallback(
     async (prepend = false, suppressError = false): Promise<SessionDetail | undefined> => {
       if (!sessionId) {
@@ -652,7 +665,7 @@ function ChatPane({
         return;
       }
       const sequence = ++loadSequenceRef.current;
-      const cursor = prepend ? detail?.nextCursor : 'tail';
+      const cursor = prepend ? detailSnapshot.current?.nextCursor : 'tail';
       if (prepend) {
         setLoadingOlder(true);
       } else {
@@ -714,7 +727,7 @@ function ChatPane({
         }
       }
     },
-    [detail?.messages.length, detail?.nextBefore, sessionId]
+    [sessionId]
   );
 
   useEffect(() => {
@@ -742,7 +755,7 @@ function ChatPane({
   }, [sessionId]);
 
   useEffect(() => {
-    if (busy) return;
+    if (busy && !sharedSending) return;
     setTimeoutState(
       summary?.isActive
         ? {
@@ -752,7 +765,18 @@ function ChatPane({
           }
         : {}
     );
-  }, [busy, summary?.isActive, summary?.maxTimeoutAt, summary?.timeoutAt, summary?.timeoutMs]);
+  }, [
+    busy,
+    sharedSending,
+    summary?.isActive,
+    summary?.maxTimeoutAt,
+    summary?.timeoutAt,
+    summary?.timeoutMs,
+  ]);
+
+  useEffect(() => {
+    if (sharedSending) setToolLines(summary?.activity?.toolLines || []);
+  }, [sharedSending, summary?.activity?.toolLines]);
 
   useEffect(() => {
     if (!linkedMessageId || !detail || loadingOlder) return;
@@ -783,7 +807,7 @@ function ChatPane({
   }, [busy, summary?.activity?.active, summary?.activity?.textPreview, summary?.activity?.turnId]);
 
   useEffect(() => {
-    if (busy || !summary?.activity?.active) return;
+    if ((busy && !sharedSending) || (!summary?.activity?.active && !sharedSending)) return;
     const threadId = liveThreadId(summary);
     if (!threadId) return;
     const source = new EventSource(`/api/events/stream?thread_id=${encodeURIComponent(threadId)}`);
@@ -791,12 +815,21 @@ function ChatPane({
       try {
         const data = JSON.parse(event.data) as PublishedLiveEvent;
         setObservedLiveTurn((current) => applyPublishedLiveEvent(current, data));
+        if (sharedSending && data.type === 'message.delta')
+          setStreamText(data.full_text || data.text || '');
       } catch {
         // A malformed observer event must not interrupt the chat pane.
       }
     };
     return () => source.close();
-  }, [busy, summary?.activity?.active, summary?.activity?.turnId, summary?.contextKey, sessionId]);
+  }, [
+    busy,
+    sharedSending,
+    summary?.activity?.active,
+    summary?.activity?.turnId,
+    summary?.contextKey,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (refreshVersion > 0 && sessionId && !busy) void loadDetail();
@@ -884,6 +917,116 @@ function ChatPane({
     else setThinkingStartedAt(undefined);
   }
 
+  useEffect(() => {
+    if (!sessionId || sessionId.startsWith('secret_')) return;
+    const stored = window.sessionStorage.getItem(submissionKey(sessionId));
+    if (stored) {
+      try {
+        void sendShared(sessionId, JSON.parse(stored) as ConversationSubmission);
+      } catch {
+        window.sessionStorage.removeItem(submissionKey(sessionId));
+      }
+    }
+    return () => sharedAbortRef.current?.abort();
+  }, [sessionId]);
+
+  async function sendShared(targetId: string, submission: ConversationSubmission) {
+    const controller = new AbortController();
+    sharedAbortRef.current?.abort();
+    sharedAbortRef.current = controller;
+    abortRef.current = controller;
+    try {
+      saveSubmission(targetId, submission);
+      setDraft('');
+      setPendingFiles([]);
+      setError('');
+      setStreamText('');
+      setSharedSending(true);
+      setDeliveryRetry(undefined);
+      setProcessing(true);
+      setRemoteEcho({
+        sessionId: targetId,
+        text: submission.message,
+        previousIds: detail?.messages.map((m) => m.id) ?? [],
+      });
+      const turn = await followConversationTurn(
+        targetId,
+        submission,
+        controller.signal,
+        () => {
+          setError('');
+          submission.files.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
+        },
+        () =>
+          setError(
+            submission.accepted
+              ? '接続を確認しています。送信済みの入力は再送しません'
+              : '受付状況を確認しています。入力を再送しないでください'
+          )
+      );
+      if (controller.signal.aborted) return;
+      if (turn.delivery !== 'failed' && turn.delivery !== 'unknown')
+        window.sessionStorage.removeItem(submissionKey(targetId));
+      setRemoteEcho(null);
+      await Promise.allSettled([loadDetail(), loadTurnHistory(), onSessionsInvalidated()]);
+      if (controller.signal.aborted) return;
+      if (turn.state !== 'completed')
+        setError(
+          turn.error ||
+            (turn.state === 'interrupted'
+              ? '再起動により処理が中断しました。履歴を確認してください'
+              : '処理が停止しました')
+        );
+      else if (turn.delivery === 'failed' || turn.delivery === 'unknown')
+        setError(
+          `結果は保存済みです。元チャットへの投稿${turn.delivery === 'unknown' ? '結果を確認できません' : 'に失敗しました'}。${turn.deliveryError || ''}`
+        );
+      if (turn.delivery === 'failed')
+        setDeliveryRetry({ sessionId: targetId, requestId: submission.requestId });
+    } catch (cause) {
+      if (controller.signal.aborted) return;
+      window.sessionStorage.removeItem(submissionKey(targetId));
+      if (!submission.accepted) {
+        setDraft(submission.message);
+        setPendingFiles(submission.files);
+      }
+      setRemoteEcho(null);
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (controller.signal.aborted)
+        submission.files.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
+      if (sharedAbortRef.current === controller) {
+        setSharedSending(false);
+        setProcessing(false);
+        if (abortRef.current === controller) abortRef.current = undefined;
+        sharedAbortRef.current = undefined;
+      }
+    }
+  }
+
+  async function retryResultDelivery() {
+    if (!deliveryRetry || retryingDelivery) return;
+    setRetryingDelivery(true);
+    try {
+      const { turn } = await requestJson<{ turn: { delivery: string; deliveryError?: string } }>(
+        `/api/sessions/${encodeURIComponent(deliveryRetry.sessionId)}/turn-requests/${deliveryRetry.requestId}/retry-delivery`,
+        { method: 'POST' }
+      );
+      if (turn.delivery === 'delivered' || turn.delivery === 'none') {
+        window.sessionStorage.removeItem(submissionKey(deliveryRetry.sessionId));
+        setDeliveryRetry(undefined);
+        setError('');
+      } else {
+        if (turn.delivery === 'unknown') setDeliveryRetry(undefined);
+        setError(turn.deliveryError || '元チャットへの投稿を確認できません');
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRetryingDelivery(false);
+    }
+  }
+
   const abortClient = useCallback(() => {
     abortRef.current?.abort();
     setProcessing(false);
@@ -904,6 +1047,7 @@ function ChatPane({
   }
 
   async function uploadFiles(files: File[]) {
+    if (!editable || processing || uploading) return;
     const tooLarge = files.find((file) => file.size > config.uploadMaxBytes);
     if (tooLarge) {
       setError(uploadTooLargeMessage(tooLarge.size, config.uploadMaxBytes));
@@ -1133,8 +1277,25 @@ function ChatPane({
 
   async function send(rawMessage?: string, displayMessage?: string, skipPermissions = false) {
     const cleanMessage = (rawMessage ?? draft).trim();
-    if (!cleanMessage || (!sessionId && !linkedDraft) || busy || streamRecovery || !editable)
+    if (
+      (!cleanMessage && !pendingFiles.length) ||
+      (!sessionId && !linkedDraft) ||
+      busy ||
+      uploading ||
+      streamRecovery ||
+      !editable
+    )
       return;
+    const remoteFiles = pendingFiles.map((file) => file.path);
+    const clearSentFiles = () => {
+      pendingFiles.forEach((file) => file.localUrl && URL.revokeObjectURL(file.localUrl));
+      setPendingFiles([]);
+    };
+    const submission = (): ConversationSubmission => ({
+      requestId: newRequestId(),
+      message: cleanMessage,
+      files: [...pendingFiles],
+    });
     if (linkedDraft?.channel) {
       setRemoteEcho({
         sessionId: null,
@@ -1146,19 +1307,22 @@ function ChatPane({
       setError('');
       setProcessing(true);
       try {
+        const creationKey = `xangi_linked_creation:${linkedDraft.id}`;
+        const creationRequest = window.sessionStorage.getItem(creationKey) || newRequestId();
+        window.sessionStorage.setItem(creationKey, creationRequest);
         const result = await requestJson<{ sessionId: string }>(
           '/api/sessions',
           jsonInit('POST', {
             projectId: linkedDraft.id,
-            message: cleanMessage,
+            message: cleanMessage || pendingFiles[0]?.name,
+            requestId: creationRequest,
           })
         );
         setRemoteEcho((current) => (current ? { ...current, sessionId: result.sessionId } : null));
+        saveSubmission(result.sessionId, submission());
+        window.sessionStorage.removeItem(creationKey);
         onSessionChange(result.sessionId);
-        await requestJson(
-          `/api/sessions/${encodeURIComponent(result.sessionId)}/${linkedDraft.channel.platform}-continue`,
-          jsonInit('POST', { message: cleanMessage })
-        );
+        clearSentFiles();
         setDraft('');
         await onSessionsInvalidated();
       } catch (cause) {
@@ -1166,7 +1330,7 @@ function ChatPane({
         setDraft(cleanMessage);
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
-        setProcessing(false);
+        if (!sharedAbortRef.current || sharedAbortRef.current.signal.aborted) setProcessing(false);
       }
       return;
     }
@@ -1191,6 +1355,10 @@ function ChatPane({
       return;
     }
     if (discordRemoteMode) {
+      if (!privacyCommand) {
+        await sendShared(sessionId, submission());
+        return;
+      }
       setRemoteEcho({
         sessionId,
         text: cleanMessage,
@@ -1204,9 +1372,10 @@ function ChatPane({
         await requestJson(
           `/api/sessions/${encodeURIComponent(sessionId)}/${detail?.platform}-continue`,
           {
-            ...jsonInit('POST', { message: cleanMessage }),
+            ...jsonInit('POST', { message: cleanMessage, attachments: remoteFiles }),
           }
         );
+        clearSentFiles();
         await Promise.all([loadDetail(), loadTurnHistory(), onSessionsInvalidated()]);
       } catch (cause) {
         setRemoteEcho(null);
@@ -1221,6 +1390,10 @@ function ChatPane({
     }
     if (cleanMessage.startsWith('/') && rawMessage === undefined) {
       await executeCommand(cleanMessage);
+      return;
+    }
+    if (!sessionId.startsWith('secret_') && !displayMessage) {
+      await sendShared(sessionId, submission());
       return;
     }
     const shownMessage = displayMessage ?? cleanMessage;
@@ -1609,6 +1782,15 @@ function ChatPane({
       {error && (
         <div className="pane-error" role="alert">
           {error}
+          {deliveryRetry && deliveryRetry.sessionId === sessionId && (
+            <button
+              type="button"
+              onClick={() => void retryResultDelivery()}
+              disabled={retryingDelivery}
+            >
+              元のチャットへ結果を再投稿
+            </button>
+          )}
         </div>
       )}
       {uploadState && (
@@ -1661,7 +1843,7 @@ function ChatPane({
           </div>
         </div>
       )}
-      {pendingFiles.length > 0 && (
+      {pendingFiles.length > 0 && !busy && (
         <div className="attachment-tray">
           {pendingFiles.map((file, index) => (
             <div className="attachment" key={`${file.path}-${index}`}>
@@ -1678,11 +1860,7 @@ function ChatPane({
           ))}
         </div>
       )}
-      <UserQuestions
-        key={sessionId}
-        sessionId={sessionId}
-        active={processing && summary?.platform === 'web'}
-      />
+      <UserQuestions key={sessionId} sessionId={sessionId} active={processing} />
       <form
         className={processing ? 'pane-input-area busy' : 'pane-input-area'}
         onSubmit={(event: FormEvent) => {
@@ -1709,7 +1887,7 @@ function ChatPane({
             <button
               type="button"
               className="pane-attach-btn"
-              disabled={!editable || processing || uploading || discordRemoteMode}
+              disabled={!editable || processing || uploading}
               onClick={() => fileInputRef.current?.click()}
               aria-label="ファイルを添付"
             >
@@ -1785,7 +1963,7 @@ function ChatPane({
           <button
             type="submit"
             className="pane-send action-btn"
-            disabled={!draft.trim() || !editable}
+            disabled={(!draft.trim() && !pendingFiles.length) || uploading || !editable}
           >
             送信
           </button>

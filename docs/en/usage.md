@@ -380,6 +380,8 @@ During installation, `[1/6]` through `[6/6]` identify manifest download and veri
 
 ## Terminal CLI (xangi)
 
+`xangi --help` / `xangi -h` and command-level `--help` / `-h` display help before executing actions. `xangi settings --help` does not open the GUI; help also skips startup, updates and deletion. `xangi tool --help` is equivalent to `xangi tool help`, and `xangi tool <operation> --help` to `xangi tool help <operation>`. Detailed tool, agent, team and workspace help still requires the connected tool server.
+
 `xangi` is a thin terminal client for humans to connect to xangi Web sessions. It consumes the existing Even Terminal compatible API (`/api/sessions`, `/api/prompt`, `/api/messages`, `/api/status`) and does not spawn Claude Code, Codex CLI, or other backends directly. The actual backend / model is resolved by the xangi server or the `XANGI_EVEN_TERMINAL_BACKEND` settings.
 
 `xangi` is the canonical CLI for session, service, and agent-facing tool operations. Agents and integration scripts use `xangi tool <operation>`. The legacy `xangi-cmd <operation>` command remains a compatibility shim backed by the same dispatcher, but new documentation and scripts should use `xangi tool`.
@@ -472,6 +474,10 @@ Managed `xangi update` reports checking, downloading, verification, extraction, 
 `xangi --version` (`xangi -V` and `xangi version` are aliases) prints the active signed release for a managed installation, or the Git tag or commit for a checkout.
 
 For a managed installation, `xangi uninstall` removes scheduled updates, the OS service, and the xangi application in that order. It retains the workspace, settings, tokens, and history, so rerunning the printed install command restores the application with the previous configuration. Use `xangi uninstall --purge --yes` only when settings, tokens, and history should also be removed. Without `--yes`, `--purge` exits before deleting anything. Neither mode removes the workspace.
+
+Before deleting anything, uninstall checks the real paths of configured and registered workspaces, including historical session snapshots. If a deletion target contains a workspace, it refuses before stopping services. Move that workspace outside managed app/config/state directories first. New setup also rejects workspaces inside those directories.
+
+Managed updates without activation defer old-version cleanup to preserve assets used by running processes. Update locks use heartbeats; a lease not refreshed for at least 60 seconds can be recovered by the next update. Legacy single-file `update.lock` files cannot prove ownership and are never removed automatically. Confirm that no updater is running before moving aside that legacy file and retrying.
 
 In a development checkout, `./bin/xangi` starts current source through the local `tsx` installed by `npm ci`, preventing an ignored, stale `dist/` tree from surviving a `git pull`. A distribution contains no source tree and uses its bundled `dist` and Node.js runtime; it also bundles the README and user-facing documentation consumed during onboarding.
 
@@ -765,6 +771,8 @@ In a Docker environment, `.env` lives outside the container and cannot be modifi
 
 On Discord, `/workspace status` also shows the selected agent and its workspace path. The current session refers only to the channel or thread where the command is invoked. An unassigned session in the parent channel does not mean that its threads have no workspace; check each thread for its session path.
 
+In Settings → Channels, select a Discord or Slack channel and save a registered workspace. Choose “既定のワークスペースを継承” to clear the channel override. Changes apply after the next `/new`; existing conversations keep their workspace. When an agent is assigned, its workspace is shown and individual workspace changes are disabled. Edit that workspace in the agent settings.
+
 Discord and Slack can select a working directory per channel. Threads inherit the parent channel binding. A binding change never rewrites an existing session; it takes effect for the next session after `/new`.
 
 | Command                                 | Description                                            |
@@ -775,7 +783,7 @@ Discord and Slack can select a working directory per channel. Threads inherit th
 | `/workspace use <name>`                 | Bind an existing workspace to the channel              |
 | `/workspace reset`                      | Return to the startup `WORKSPACE_PATH`                  |
 
-Discord exposes the arguments as slash-command fields. Add a `/workspace` Slash Command to the Slack App configuration as well. Any existing absolute path accessible to the xangi process can be registered. Paths are canonicalized and the xangi state directory is rejected. Docker can switch only to container paths that were mounted in advance; an unmounted host path is not accessible.
+Discord exposes the arguments as slash-command fields. The `name` field of `/workspace use` suggests up to 25 registered names (including `default`), filtered by the text you enter. Names longer than 100 characters are omitted from suggestions; enter them manually. For new registrations with `/workspace set`, enter the name and absolute path directly. Add a `/workspace` Slash Command to the Slack App configuration as well. Any existing absolute path accessible to the xangi process can be registered. Paths are canonicalized and the xangi state directory is rejected. Docker can switch only to container paths that were mounted in advance; an unmounted host path is not accessible.
 
 In the Web UI, use the Workspace section in Settings to register an existing absolute path accessible to the xangi process. On the Settings screen, you can enter a path or use `Browse…` to choose a directory on the machine running xangi. It cannot select a local directory on the device running the browser. Unregistering removes only the registry entry and never deletes its directory or files. The default workspace and any workspace referenced by a Project, an existing conversation, or a Discord, Slack, or other channel binding cannot be unregistered.
 
@@ -981,7 +989,7 @@ AGENT_BACKEND=local-llm
 LOCAL_LLM_MODEL=nemotron-3-nano
 
 # Start (ollama + xangi-max)
-docker compose up xangi-max -d --build
+docker compose up ollama xangi-max -d --build
 ```
 
 ### GPU Version (CUDA + Python + PyTorch)
@@ -1493,9 +1501,11 @@ This section groups the key settings by purpose. See [`.env.example`](../../.env
 
 Quotation marks and brackets in AI-generated titles are preserved. For example, `"fetch failed" error` keeps its opening quotation mark.
 
-In `ai` mode, xangi uses the same backend and model selected for the first turn. Title generation starts as an isolated internal task after the main backend reports readiness, or after the first response text for backends without that signal. The main response never waits for it. With a single-concurrency Local LLM, the main request claims the slot first and title generation follows it. Failure, empty output, or a 10-second timeout preserves the prefix title. Web and Slack update the session name shown in Web Chat. Discord creates the thread immediately with the prefix and renames it after the AI title is ready.
+In `ai` mode, xangi uses the same backend and model selected for the first turn. Title generation starts as an isolated internal task after the main backend reports readiness, or after the first response text for backends without that signal. The main response never waits for it. With a single-concurrency Local LLM, the main request claims the slot first and title generation follows it. Failure, empty output, or a 60-second timeout preserves the prefix title. Web and Slack update the session name shown in Web Chat. Discord creates the thread immediately with the prefix and renames it after the AI title is ready.
 
 By default, AI updates are limited to the first turn of a thread created by xangi. Existing threads, manually renamed threads, and new internal sessions created after `/new` keep the Discord thread name unchanged. When an internal session is created inside an existing thread, its internal title inherits the current Discord thread name. Set `DISCORD_SESSION_TITLE_AI_ONCE=false` to restore AI naming for every session.
+
+Ordinary and linked Discord/Slack conversations sent from Web use the same first-turn AI title generation. Receipt acceptance, response completion, and delivery do not wait for the title task. Manual renames and `/new` session switches during generation are preserved.
 
 ### First-turn history prefetch (Discord / Slack / Web)
 
@@ -1604,6 +1614,10 @@ Shared completion-display settings:
 
 ### Web Chat UI
 
+Ordinary Web UI/API reads and mutations reject foreign Origin headers and do not advertise wildcard CORS. Clients that omit Origin, such as the CLI, continue to work. Extension device ingress retains cross-origin access under its separate Bearer authentication contract. Tool Server command execution and GitHub token issuance are restricted to loopback clients; do not expose these local-only APIs through an external proxy.
+
+Explicit global backend/model/effort changes made through settings survive restart and override the initial setup choice. Arbitrary startup environment values do not override setup. The internal persisted `XANGI_GLOBAL_BACKEND_OVERRIDE` flag distinguishes an explicit settings change.
+
 The composer grows with the message and returns to a single-line height after sending. Its height also updates when text changes programmatically, such as when inserting a suggestion.
 
 `/settings` exposes all seven settings supported by the shared `runtime_settings` dispatcher (backend, llmmode, autoreply, notify, threadmode, replysuggestions, and respondtobots), plus allowlisted non-secret startup settings used in normal operation. For a channel override, choose the platform and then select a channel by the name loaded from that connection; xangi retains the corresponding channel ID as the saved value. Each control shows the selected channel's saved setting and currently effective value. Every item is labeled as applying immediately, on the next turn, or after restart.
@@ -1635,7 +1649,7 @@ While an attachment is transferring, desktop and mobile show its name, position 
 | `WEB_CHAT_UPLOAD_MAX_MB`   | Maximum MiB per Web Chat upload request, including multipart headers                                                                                                                                    | `64`           |
 | `WEB_CHAT_DOWNLOAD_ACCEPT` | Allowed download extensions as a comma-separated `.ext` list                                                                                                                                            | all extensions |
 
-Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, and the slash-command/skill GUI. Both user messages and xangi replies are rendered as Markdown; editing and copying use the original text. When a Web or Discord conversation is stopped during a response, the partial response is retained in the conversation history. A compact status line below each pane shows the current model, the currently effective runner cwd for that Session, and context usage from the last completed turn. The cwd matches the workdir injected into each turn's runtime context; a `cd` performed only inside a one-off shell is not persistent. Unavailable values are omitted, and the path is truncated on narrow screens. Its shared navigation is Chat / Files / Schedules / Monitor; `/schedules` creates, edits, pauses, and deletes jobs for Web, Discord, Slack, and Telegram. Each Web run starts a fresh conversation and can be assigned to an optional Project. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. Every message originating from Web, Discord, or Slack has a `/chat/<appSessionId>#message-<messageId>` link action. Opening it scrolls to and highlights that message. Pasting it into Discord or Slack connected to the same xangi instance quotes only that one message as untrusted data rather than instructions. HTTP directed requests store history and provider context in one regular Web session per source instance. For a Discord session, selecting `このDiscordで続ける` mirrors Web input into the original Discord channel or thread and runs the turn with that same Discord session context. Attachments and Web-only commands are unavailable in this mode. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions also support continuation in the original conversation using `このSlackで続ける`.
+Web Chat uses React + Vite and supports new conversations, paged session search, up to eight restored panes, paged history, Markdown, edit/delete/copy actions, attachments, stop and timeout extension, reply suggestions, and the slash-command/skill GUI. Both user messages and xangi replies are rendered as Markdown; editing and copying use the original text. When a Web or Discord conversation is stopped during a response, the partial response is retained in the conversation history. A compact status line below each pane shows the current model, the currently effective runner cwd for that Session, and context usage from the last completed turn. The cwd matches the workdir injected into each turn's runtime context; a `cd` performed only inside a one-off shell is not persistent. Unavailable values are omitted, and the path is truncated on narrow screens. Its shared navigation is Chat / Files / Schedules / Monitor; `/schedules` creates, edits, pauses, and deletes jobs for Web, Discord, Slack, and Telegram. Each Web run starts a fresh conversation and can be assigned to an optional Project. Clicking a session title opens it in the current pane; after adding an empty pane with `＋ Pane`, the same action displays a session there. Every message originating from Web, Discord, or Slack has a `/chat/<appSessionId>#message-<messageId>` link action. Opening it scrolls to and highlights that message. Pasting it into Discord or Slack connected to the same xangi instance quotes only that one message as untrusted data rather than instructions. HTTP directed requests store history and provider context in one regular Web session per source instance. For a Discord session, selecting `このDiscordで続ける` submits Web input directly to the shared execution service using the same conversation and provider context. After successful AI completion, the user text and attachments are posted to the original Discord channel or thread, followed by the answer and output files. Message headers distinguish `👤 ユーザー（Web）` (Web user) from `🤖 AI：<agent name>`. Without a selected agent, the working directory name is used. The connected Bot account remains the author; Web-only commands are unavailable. `Web会話として分岐` creates a separate Web session that inherits the source history. Slack sessions also support continuation in the original conversation using `このSlackで続ける`.
 
 Directed requests use bearer-authenticated HTTP to URLs registered in `INTER_INSTANCE_CHAT_PEERS` by default. `INTER_INSTANCE_CHAT_ALLOWED_PEERS` accepts a comma-separated inbound allowlist; when unset or `*`, any instance holding the shared token is allowed.
 
@@ -2025,7 +2039,7 @@ Select a Project in the Web sidebar and configure its default Agent or Team and 
 
 Each Project can connect one channel, and a channel cannot belong to multiple Projects. New conversations and scheduled channel runs use the Project's shared instructions and assignee. Existing conversations and past logs are not imported; existing conversations retain their settings after changes or unlinking. If no Project assignee is set, the channel Agent takes precedence over the global default. Agents and Teams assigned to a Project cannot be deleted.
 
-Send a message from New in a connected Project to create a thread in its channel. Continue the same conversation from Web or Discord/Slack; Web input also appears in the connected channel. Normal mention and auto-reply settings apply. Web supports text input only in this mode. Attachments, Web-only commands, and bidirectional edit/delete synchronization are not supported.
+Send a message from New in a connected Project to create a thread in its channel. Continue the same conversation from Web or Discord/Slack; Web input also appears in the connected channel. Normal mention and auto-reply settings apply. Web supports text and file attachments in this mode. Select files with the attachment button; files can be sent without text (up to 10 per send). Attachments are retained after a failed send. Web-only commands and bidirectional edit/delete synchronization are not supported.
 
 Choose a secret conversation from the dropdown beside New. Secret conversations stay in Web and do not inherit the Project's default assignee. Use End and discard to finish them.
 
@@ -2084,7 +2098,7 @@ xangi agent create --name Developer --workspace /absolute/path/to/worktree --rol
 
 `create` registers an existing workspace directory and saves the agent, without creating or joining a project. Use its Agent ID with `xangi agent run AGENT_ID --task "..."`. The parent prepares the Git worktree and skills. Separate parent and child workspaces are optional; separate directories are not an OS-level filesystem sandbox.
 
-`xangi agent list` returns every agent registered on the connected instance. From any conversation, use `xangi agent run AGENT_ID --task "request and necessary context"`. There are no `--project` or `--project-name` options. Keep the run ID and continue other work or end the turn. Completion returns results to the original conversation; concurrent child results are delivered together. Use `status --id RUN_ID` for inspection and `wait --id RUN_ID` only for synchronous work. The running instance Tool Server and Web Chat are required.
+`xangi agent list` returns every agent registered on the connected instance. From any conversation, use `xangi agent run AGENT_ID --task "request and necessary context"`. There are no `--project` or `--project-name` options. Keep the run ID and continue other work or end the turn. Completion returns results to the original conversation; finished child results are delivered without waiting for other children, batching results that are pending at the same time. Use `status --id RUN_ID` for inspection and `wait --id RUN_ID` only for synchronous work. The running instance Tool Server and Web Chat are required.
 
 `run` returns a run ID after acceptance. `wait` waits up to 25 seconds: repeat with the same ID until `succeeded` or `failed`; do not resubmit a running task. `status --id RUN_ID` reads immediately. Children receive project instructions, their agent instructions and the task, not the parent's full conversation. Results return to the requesting parent through these commands. Without a Team grant, children may only consult default, with no further delegation; a default of 16 active requests per parent, configurable from 1 to 64 with `AGENT_MAX_CONCURRENT_REQUESTS`.
 
@@ -2208,6 +2222,12 @@ AI title generation runs alongside the conversation with a 60-second deadline th
 
 
 ### Child agent status checks and result delivery
+
+Agent and Team work requested by a scheduled Discord or Slack turn returns to that schedule conversation. It does not mix results into or switch the active interactive conversation at the same destination. Explicitly closing or archiving the schedule history disables automatic continuation. Work requested by a Web schedule returns to the Web conversation created for that schedule.
+
+On Discord, Slack, Web, LINE, and Telegram, child completion resumes result review and the response in the requesting parent session, separately from scheduled execution. Closing, deleting, or switching away from the parent prevents automatic resumption; the result and resumption failure are reported after the retry limit. Older runs without a parent session identity follow the same fallback. When the delivery transport is definitely unavailable, only the saved result is retried, without rerunning the AI. Uncertain delivery is not resent automatically to avoid duplicate posts.
+
+LINE and Telegram child completion also resumes through the shared conversation service and native incoming-message queues. Scheduled work uses separate fresh sessions. LINE generated files remain available in Web history; Telegram follows existing media settings. This does not add Web-origin user input into LINE or Telegram conversations.
 
 The host periodically checks running work and undelivered terminal results without LLM polling turns. Slack messages target the original channel and thread. Busy parents are checked again on the next tick. Delivery has at most three attempts including the initial attempt; after exhaustion, a direct result/error notice is attempted once without an LLM. Failed notices remain visible in logs and the run record. Attempt counts and progress timestamps survive restart.
 
@@ -2349,3 +2369,12 @@ Codex question-enabled streaming turns use app-server with `features.default_mod
 Secret sessions, schedules, slash commands and remote session inputs without a known actor are outside this initial scope. Claude Code, Copilot and OpenCode question adapters are not included. Claude Code transport and tool configuration retain their existing behavior.
 
 Protocol references: [Codex App Server](https://developers.openai.com/codex/app-server). No additional SDK dependency.
+
+
+### Accepted turns and connection recovery
+
+Web Chat saves a request ID before sending ordinary Web or linked Discord/Slack input. The server persists an acceptance receipt and returns HTTP 202 before AI completion. Closing the page or losing the acceptance response does not cancel or resubmit an accepted turn. The composer remains clear while the same request ID is checked; a definite rejection before acceptance restores the input for correction. An AI failure after acceptance stays in the history and does not restore a draft. Secret sessions and existing control commands retain their separate execution paths.
+
+After successful AI completion, Discord receives the original Web input text and photos, then the answer and output files, labeled with the Web user and answering agent. The Bot account name remains unchanged; shared Web authentication does not identify an individual. Failed or cancelled AI turns do not publish this completion bundle. Slack continues to receive only the completed result. Web and the original chat share the same session, provider context, workspace and channel settings. Concurrent input in the same execution context is rejected rather than starting two runs. Results are stored before external delivery. If the original chat is disconnected, the result remains available on Web; delivery can be retried independently of AI execution, including original input and attachments on Discord. An ambiguous external post is not automatically repeated. A new linked thread also uses a creation request ID, so losing the creation response does not silently create another thread.
+
+After restart, accepted turns that never started can resume; previously running turns are marked interrupted and are not automatically rerun. Receipt and delivery data are stored under `DATA_DIR/conversation-turns`; creation receipts are under `DATA_DIR/conversation-creations`. Secret conversations are excluded from these stores. The pending request in the browser is held in sessionStorage for recovery in the same tab. This does not merge unrelated Discord and Slack conversations.

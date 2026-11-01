@@ -37,20 +37,26 @@ export function sendJson(
 
 export function readJsonObjectBody(
   req: IncomingMessage,
-  maxChars: number
+  maxBytes: number
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks: Buffer[] = [];
+    let bytes = 0;
     req.on('data', (chunk: Buffer) => {
-      body += chunk.toString('utf8');
-      if (body.length > maxChars) {
-        reject(new Error(`Body too large (max ${maxChars} bytes)`));
+      chunks.push(chunk);
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        reject(new Error(`Body too large (max ${maxBytes} bytes)`));
         req.destroy();
       }
     });
     req.on('end', () => {
       try {
-        resolve(body ? (JSON.parse(body) as Record<string, unknown>) : {});
+        const body = Buffer.concat(chunks).toString('utf8');
+        const parsed: unknown = body ? JSON.parse(body) : {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+          throw new Error('Expected JSON object');
+        resolve(parsed as Record<string, unknown>);
       } catch {
         reject(new Error('Invalid JSON body'));
       }

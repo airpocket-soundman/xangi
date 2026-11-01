@@ -28,7 +28,7 @@ for arg in "$@"; do
   exit 1
 done
 
-if [ -z "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR/.git" ] || [ ! -f "$ROOT_DIR/package.json" ]; then
+if [ -z "$ROOT_DIR" ] || { [ ! -d "$ROOT_DIR/.git" ] && [ ! -f "$ROOT_DIR/.git" ]; } || [ ! -f "$ROOT_DIR/package.json" ]; then
   echo "Error: xangi checkout directory is invalid" >&2
   exit 1
 fi
@@ -56,9 +56,9 @@ after="$(git rev-parse HEAD)"
 
 if [ "$before" = "$after" ]; then
   echo "xangi checkout is already up to date ($branch, ${after:0:7})."
-  exit 0
 fi
 
+# A prior install/build may have failed after pull advanced HEAD. Always retry.
 npm ci
 npm run build
 

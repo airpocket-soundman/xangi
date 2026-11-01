@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { ProviderModels, observeClaudeModel } from './provider-model.js';
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
@@ -176,8 +177,14 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     });
     this.process = proc;
     this.processAlive = true;
+    this.cancelling = false;
 
-    proc.stdout?.on('data', (data) => this.handleOutput(data.toString()));
+    const stdoutDecoder = new StringDecoder('utf8');
+    proc.stdout?.on('data', (data: Buffer | string) => {
+      if (this.process === proc && this.processAlive && !this.cancelling && !this.shuttingDown) {
+        this.handleOutput(typeof data === 'string' ? data : stdoutDecoder.write(data));
+      }
+    });
     proc.stderr?.on('data', (data) => {
       console.error('[persistent-runner] stderr:', data.toString());
     });
@@ -567,15 +574,16 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
 
         // タイムアウト時はプロセスをkillして次のリクエスト用に再起動
         // これにより、古いリクエストの出力が新しいリクエストに混ざるのを防ぐ
-        if (this.process) {
-          this.process.kill();
-          this.process = null;
-          this.processAlive = false;
-          this.buffer = '';
-        }
-
+        const processToStop = this.process;
+        this.process = null;
+        this.processAlive = false;
+        this.buffer = '';
         this.emit('timeout-cleared', { channelId: this.channelId, reason: 'timeout' });
         this.resetTimeoutState();
+        if (processToStop) {
+          this.cancelling = true;
+          processToStop.kill();
+        }
         this.processNext();
       }
     }, remainingMs);
@@ -733,10 +741,11 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     // cancellingフラグでcloseイベントがクラッシュ扱いしないようにする
     if (this.process) {
       this.cancelling = true;
-      this.process.kill();
+      const processToStop = this.process;
       this.process = null;
       this.processAlive = false;
       this.buffer = '';
+      processToStop.kill();
     } else {
       // プロセスがない場合はキューの次を直接処理
       this.processNext();
@@ -757,10 +766,11 @@ export class PersistentRunner extends EventEmitter implements AgentRunner {
     if (this.process) {
       console.log('[persistent-runner] Shutting down persistent process...');
       this.process.stdin?.end();
-      this.process.kill();
+      const processToStop = this.process;
       this.process = null;
       this.processAlive = false;
       this.buffer = '';
+      processToStop.kill();
     }
 
     // キューに残っているリクエストをキャンセル

@@ -563,4 +563,17 @@ describe('even-terminal compatibility API', () => {
     expect(body.state).toBe('idle');
     expect(body.provider).toBe('claude');
   });
+
+  it('R43 returns a prompt cursor that excludes the previous turn result', async () => {
+    const {createWebSession}=await import('../src/sessions.js');const existing=createWebSession();
+    const first=await postJson(server.url+'/api/prompt',{text:'first',provider:'codex',sessionId:existing},{Authorization:'Bearer secret'});
+    const sessionId=String(first.body.sessionId);await waitUntil(()=>server.runner.runs.length>0);server.runner.complete('previous answer');
+    await new Promise(resolve=>setTimeout(resolve,10));
+    const next=await postJson(server.url+'/api/prompt',{text:'second',provider:'codex',sessionId},{Authorization:'Bearer secret'});
+    expect(next.status).toBe(202);expect(Number(next.body.after)).toBeGreaterThan(0);
+    const response=await fetch(server.url+'/api/messages?sessionId='+sessionId+'&provider=codex&token=secret&after='+next.body.after);
+    const body=await response.json();expect(JSON.stringify(body.messages)).not.toContain('previous answer');
+    await waitUntil(()=>server.runner.runs.length>0);server.runner.complete('current answer');
+  });
+
 });

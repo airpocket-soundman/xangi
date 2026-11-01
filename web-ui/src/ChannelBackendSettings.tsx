@@ -2,6 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { getJson, requestJson } from './api';
 
 export interface ChannelBackendSnapshot {
+  workspace?: {
+    enabled: boolean;
+    value: string;
+    effective?: { id: string; name: string; path: string };
+  };
   team?: { id: string; name: string; leadership?: string } | null;
   agent?: { id: string; name: string; workspaceId: string } | null;
   backend: {
@@ -31,14 +36,17 @@ export function ChannelBackendSettings({
   snapshot,
   backends,
   enabled,
+  workspaces,
 }: {
   platform: string;
   channelId: string;
   snapshot: ChannelBackendSnapshot;
   backends: string[];
   enabled: boolean;
+  workspaces: Array<{ id: string; name: string; path: string }>;
 }) {
   const [current, setCurrent] = useState(snapshot);
+  const [workspaceId, setWorkspaceId] = useState(snapshot.workspace?.value ?? 'inherit');
   const [agents, setAgents] = useState<
     Array<{ id: string; name: string; backend?: string; model?: string; workspaceId?: string }>
   >([]);
@@ -66,6 +74,7 @@ export function ChannelBackendSettings({
         `/api/runtime-settings/channel?platform=${encodeURIComponent(platform)}&channelId=${encodeURIComponent(channelId)}`
       );
       setCurrent(next);
+      setWorkspaceId(next.workspace?.value ?? 'inherit');
       setNotice('担当を保存しました。次の投稿から新しいセッションで開始します。');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -97,6 +106,32 @@ export function ChannelBackendSettings({
           );
   const value = local ? reasoning : effort;
   const invalid = Boolean(value) && !efforts.includes(value);
+  async function saveWorkspace() {
+    setSaving(true);
+    setNotice('');
+    try {
+      const result = await requestJson<{ message: string }>('/api/runtime-settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'workspace',
+          action: workspaceId === 'inherit' ? 'reset' : 'set',
+          value: workspaceId,
+          platform,
+          channelId,
+        }),
+      });
+      const next = await getJson<ChannelBackendSnapshot>(
+        `/api/runtime-settings/channel?platform=${encodeURIComponent(platform)}&channelId=${encodeURIComponent(channelId)}`
+      );
+      setCurrent(next);
+      setWorkspaceId(next.workspace?.value ?? 'inherit');
+      setNotice(result.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  }
   useEffect(() => {
     let cancelled = false;
     setModels(undefined);
@@ -206,6 +241,60 @@ export function ChannelBackendSettings({
           担当: {current.agent.name}
           。個別設定は保持されています。変更するには担当を解除してください。
         </p>
+      )}
+      {current.workspace && (
+        <>
+          <fieldset
+            disabled={saving || !current.workspace.enabled || Boolean(current.agent)}
+            style={{ border: 0, padding: 0, margin: 0 }}
+          >
+            <div className="settings-runtime-grid">
+              <label>
+                <span>
+                  ワークスペース <span className="settings-apply-badge">次の /new から</span>
+                </span>
+                <select
+                  aria-label="チャンネルのワークスペース"
+                  value={workspaceId}
+                  onChange={(event) => setWorkspaceId(event.target.value)}
+                >
+                  <option value="inherit">既定のワークスペースを継承</option>
+                  {workspaceId !== 'inherit' &&
+                    !workspaces.some((entry) => entry.id === workspaceId) && (
+                      <option value={workspaceId}>保存済み（一覧未取得）</option>
+                    )}
+                  {workspaces.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="settings-channel-status">
+              <button type="button" onClick={() => void saveWorkspace()}>
+                {saving ? '保存中…' : 'チャンネルのワークスペースを保存'}
+              </button>
+            </div>
+          </fieldset>
+          <p style={{ overflowWrap: 'anywhere' }}>
+            現在の作業場所: {current.workspace.effective?.name || '取得できません'}
+            {current.workspace.effective && (
+              <>
+                <br />
+                {current.workspace.effective.path}
+              </>
+            )}
+          </p>
+          {current.agent ? (
+            <p>
+              担当エージェントの作業場所を使います。変更は<a href="#agents">エージェント設定</a>
+              で行えます。
+            </p>
+          ) : (
+            <p>変更は次の /new から適用されます。既存の会話は元の作業場所を使います。</p>
+          )}
+        </>
       )}
       <fieldset
         disabled={!enabled || saving || Boolean(current.agent)}

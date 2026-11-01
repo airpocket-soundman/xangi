@@ -187,6 +187,18 @@ describe('pet-inbox-server', () => {
     expect(server.lastRun!.prompt).toContain('<xangi_reply_suggestions>');
   });
 
+  it('rejects a device turn while Web owns the same execution context', async () => {
+    const { createWebSession, getSessionEntry } = await import('../src/sessions.js');
+    const { reserveConversation } = await import('../src/conversation-locks.js');
+    const appSessionId = createWebSession();
+    const release = reserveConversation(getSessionEntry(appSessionId)!.contextKey)!;
+    try {
+      const response = await postJson(`${server.url}/api/device/inbox`, { text: 'device input', appSessionId });
+      expect(response.status).toBe(409);
+      expect(server.lastRun).toBeNull();
+    } finally { release(); }
+  });
+
   it('accepts device inbox POST and returns a filtered events URL', async () => {
     const { createWebSession } = await import('../src/sessions.js');
     const appSessionId = createWebSession({

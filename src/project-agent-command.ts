@@ -20,6 +20,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { ProjectCatalog } from './project-catalog.js';
 import type { AgentRun, AgentRunStore } from './agent-runs.js';
 import { getActiveSessionId, getSessionEntry, webAppSessionId } from './sessions.js';
+import { resolveRunningSession } from './running-session-context.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { realpath } from 'node:fs/promises';
 import type { ChatPlatform } from './prompts/index.js';
@@ -114,7 +115,11 @@ export async function executeProjectAgentCommand(
   const { catalog, runs, start, workspaces } = dependencies;
   const parent = context?.channelId;
   const session = parent
-    ? getSessionEntry(getActiveSessionId(parent) || webAppSessionId(parent))
+    ? getSessionEntry(
+        resolveRunningSession(parent, context?.platform) ||
+          getActiveSessionId(parent) ||
+          webAppSessionId(parent)
+      )
     : undefined;
   const action = flags.action || 'list';
   const agentId = flags.agent === 'default' ? DEFAULT_TEAM_AGENT_ID : flags.agent;
@@ -521,7 +526,11 @@ export async function executeTeamCommand(
       throw new Error('依頼全体の累計メンバー実行上限を超えます');
   }
   const agentId = `team:${team.id}`;
-  const session = getSessionEntry(getActiveSessionId(parent) || webAppSessionId(parent));
+  const session = getSessionEntry(
+    resolveRunningSession(parent, context?.platform) ||
+      getActiveSessionId(parent) ||
+      webAppSessionId(parent)
+  );
   const ancestors = [team.leaderAgentId!, session?.selectedAgentId || DEFAULT_TEAM_AGENT_ID];
   if (startsLeader && team.members.some((m) => ancestors.includes(m.agentId)))
     throw new Error('リーダー自身または親への循環委譲はできません');

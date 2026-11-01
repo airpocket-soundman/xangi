@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AntigravityRunner } from '../src/antigravity-cli.js';
+import {
+  AntigravityTurnError,
+  formatAgentErrorForUser,
+  isNonRetryableError,
+} from '../src/errors.js';
+import hookTermination from './fixtures/antigravity-hook-termination-1.4.12.json';
 import { processManager } from '../src/process-manager.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1440,6 +1446,355 @@ describe('AntigravityRunner', () => {
       ['チェック\n', '水田チェック\n'],
     ]);
     expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  describe('structured finished_reason', () => {
+    function emitResult(
+      proc: Awaited<ReturnType<typeof waitForProcess>>,
+      mode: string,
+      result: unknown
+    ) {
+      proc.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+      );
+    }
+
+    it.each(
+      ['run', 'stream'].flatMap((mode) =>
+        [null, ''].flatMap((reason) =>
+          [false, true].map((timeoutWarning) => ({ mode, reason, timeoutWarning }))
+        )
+      )
+    )(
+      'treats empty reasons as absent ($mode, reason=$reason, timeout=$timeoutWarning)',
+      async ({ mode, reason, timeoutWarning }) => {
+        const runner = new AntigravityRunner({});
+        const onError = vi.fn();
+        const onComplete = vi.fn();
+        const promise =
+          mode === 'run' ? runner.run('task') : runner.runStream('task', { onError, onComplete });
+        const proc = await waitForProcess();
+        emitResult(proc, mode, {
+          status: 'SUCCESS',
+          response: 'answer',
+          conversation_id: 'normal-conversation',
+          finished_reason: reason,
+        });
+        if (timeoutWarning) {
+          proc.stderr.emit(
+            'data',
+            Buffer.from(
+              '[agy] print timeout after 2s with turn in progress; returning partial output\n'
+            )
+          );
+        }
+        proc.emit('close', 0);
+        const answer = await promise;
+        expect(answer.sessionId).toBe('normal-conversation');
+        if (timeoutWarning) {
+          expect(answer.result).toContain('answer');
+          expect(answer.result).toContain('時間上限に達したため');
+        } else {
+          expect(answer.result).toBe('answer');
+        }
+        expect(onError).not.toHaveBeenCalled();
+        if (mode === 'stream') expect(onComplete).toHaveBeenCalledOnce();
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
+    it.each(
+      ['run', 'stream'].flatMap((mode) =>
+        [null, ''].flatMap((reason) =>
+          [
+            { status: 'ERROR', code: 0 },
+            { status: 'SUCCESS', code: 3 },
+          ].map(({ status, code }) => ({ mode, reason, status, code }))
+        )
+      )
+    )(
+      'does not hide status/exit errors behind empty reasons ($mode, reason=$reason, status=$status, exit=$code)',
+      async ({ mode, reason, status, code }) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const rejected = expect(promise).rejects.toThrow();
+        const proc = await waitForProcess();
+        emitResult(proc, mode, {
+          status,
+          response: status === 'SUCCESS' ? 'partial' : '',
+          ...(status === 'ERROR' ? { error: 'backend error' } : {}),
+          finished_reason: reason,
+        });
+        proc.emit('close', code);
+        await rejected;
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
+    it.each(['run', 'stream'].flatMap((mode) => [0, 3].map((code) => ({ mode, code }))))(
+      'includes a safe unknown reason once ($mode, exit=$code)',
+      async ({ mode, code }) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        emitResult(proc, mode, {
+          status: 'SUCCESS',
+          response: 'partial',
+          finished_reason: 'future_reason-2',
+        });
+        proc.emit('close', code);
+        const error = await observed;
+        expect(error).toBeInstanceOf(AntigravityTurnError);
+        expect((error as Error).message.match(/finished_reason=future_reason-2/g)).toHaveLength(1);
+        expect(formatAgentErrorForUser(error)).toContain('finished_reason=future_reason-2');
+        expect(isNonRetryableError(error)).toBe(true);
+      }
+    );
+
+    it.each(
+      ['run', 'stream'].flatMap((mode) =>
+        ['private/path', 'bad\u001b[31m', 'bad\nline', 'a'.repeat(65)].map((reason) => ({
+          mode,
+          reason,
+        }))
+      )
+    )('does not expose unsafe/long unknown values ($mode, $reason)', async ({ mode, reason }) => {
+      const runner = new AntigravityRunner({});
+      const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+      const observed = promise.catch((error: unknown) => error);
+      const proc = await waitForProcess();
+      emitResult(proc, mode, { status: 'SUCCESS', response: 'partial', finished_reason: reason });
+      proc.emit('close', 0);
+      const error = await observed;
+      expect(error).toBeInstanceOf(AntigravityTurnError);
+      expect((error as Error).message).toContain('unrecognized finished_reason');
+      expect((error as Error).message).not.toContain(reason);
+      expect((error as Error).message).not.toContain('finished_reason=');
+    });
+
+    it.each(['run', 'stream'])(
+      'does not duplicate the timeout notice when stderr also warns (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const proc = await waitForProcess();
+        const result = { status: 'SUCCESS', response: 'partial', finished_reason: 'print_timeout' };
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+        );
+        proc.stderr.emit(
+          'data',
+          Buffer.from(
+            '[agy] print timeout after 2s with turn in progress; returning partial output\n'
+          )
+        );
+        proc.emit('close', 0);
+        expect((await promise).result.match(/時間上限に達したため/g)).toHaveLength(1);
+      }
+    );
+
+    it.each(
+      ['run', 'stream'].flatMap((mode) =>
+        ['', 'Partial answer\n'].flatMap((response) =>
+          [false, true].map((denied) => ({ mode, response, denied }))
+        )
+      )
+    )(
+      'retains partial output without stderr ($mode, response=$response, denied=$denied)',
+      async ({ mode, response, denied }) => {
+        const runner = new AntigravityRunner({});
+        const onText = vi.fn();
+        const onComplete = vi.fn();
+        const promise =
+          mode === 'run'
+            ? runner.run('long task')
+            : runner.runStream('long task', { onText, onComplete });
+        const proc = await waitForProcess();
+        if (mode === 'stream') {
+          proc.stdout.emit(
+            'data',
+            Buffer.from(
+              JSON.stringify({
+                event: 'step_update',
+                step_update: { step_type: 'agent_response', text_delta: 'Partial answer\n' },
+              }) + '\n'
+            )
+          );
+        }
+        const result = {
+          status: 'SUCCESS',
+          response,
+          conversation_id: 'partial-conversation',
+          finished_reason: 'print_timeout',
+          ...(denied ? { denied_actions: [{ display_name: 'ReadUrlContent' }] } : {}),
+        };
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+        );
+        proc.emit('close', 0);
+        const answer = await promise;
+        expect(answer.sessionId).toBe('partial-conversation');
+        expect(answer.result).toContain('時間上限に達したため、この回答は未完了です。');
+        expect(answer.result.match(/時間上限に達したため/g)).toHaveLength(1);
+        if (mode === 'stream' || response) expect(answer.result).toContain('Partial answer');
+        if (denied) expect(answer.result).toContain('ReadUrlContent');
+        expect(await getProcesses()).toHaveLength(1);
+        if (mode === 'stream') {
+          expect(onText.mock.calls.map(([text]) => text).join('')).toBe(answer.result);
+          expect(onComplete).toHaveBeenCalledOnce();
+        }
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'keeps nonzero print_timeout exits as failures (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise = mode === 'run' ? runner.run('task') : runner.runStream('task', {});
+        const rejected = expect(promise).rejects.toMatchObject({ retryable: false });
+        const proc = await waitForProcess();
+        const result = { status: 'SUCCESS', response: 'partial', finished_reason: 'print_timeout' };
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+        );
+        proc.emit('close', 1);
+        await rejected;
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
+
+    it.each(
+      ['run', 'stream'].flatMap((mode) =>
+        ['interrupted', 'error', 'future_reason', 42].flatMap((reason) =>
+          [0, 3].map((code) => ({ mode, reason, code }))
+        )
+      )
+    )(
+      'rejects incomplete turns without retry ($mode, reason=$reason, exit=$code)',
+      async ({ mode, reason, code }) => {
+        const runner = new AntigravityRunner({});
+        const onError = vi.fn();
+        const onComplete = vi.fn();
+        const promise =
+          mode === 'run' ? runner.run('task') : runner.runStream('task', { onError, onComplete });
+        const observed = promise.catch((error: unknown) => error);
+        const proc = await waitForProcess();
+        const result = {
+          status: 'SUCCESS',
+          response: 'partial',
+          conversation_id: 'stopped-conversation',
+          finished_reason: reason,
+        };
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+        );
+        // A legacy warning must not override an explicit interruption/error.
+        proc.stderr.emit(
+          'data',
+          Buffer.from(
+            '[agy] print timeout after 2s with turn in progress; returning partial output\n'
+          )
+        );
+        proc.emit('close', code);
+        const error = await observed;
+        expect(error).toBeInstanceOf(AntigravityTurnError);
+        expect(isNonRetryableError(error)).toBe(true);
+        expect((error as AntigravityTurnError).sessionId).toBe('stopped-conversation');
+        if (reason === 'interrupted') expect(formatAgentErrorForUser(error)).toContain('中断');
+        expect(await getProcesses()).toHaveLength(1);
+        expect(onComplete).not.toHaveBeenCalled();
+        if (mode === 'stream') expect(onError).toHaveBeenCalledOnce();
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'reports the captured PreInvocation stop without retry and accepts the next turn (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const onError = vi.fn();
+        const onComplete = vi.fn();
+        const promise =
+          mode === 'run'
+            ? runner.run('blocked task', { channelId: 'hook-stopped' })
+            : runner.runStream(
+                'blocked task',
+                { onError, onComplete },
+                { channelId: 'hook-stopped' }
+              );
+        const rejected = expect(promise).rejects.toMatchObject({
+          message: hookTermination.result.error,
+          retryable: false,
+        });
+        const proc = await waitForProcess();
+        const result = hookTermination.result;
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+        );
+        proc.stderr.emit('data', Buffer.from(hookTermination.stderr));
+        proc.emit('close', hookTermination.exitCode);
+        await rejected;
+        expect(runner.hasRunner('hook-stopped')).toBe(false);
+        expect(await getProcesses()).toHaveLength(1);
+        expect(onComplete).not.toHaveBeenCalled();
+        if (mode === 'stream') {
+          expect(onError).toHaveBeenCalledOnce();
+          expect(formatAgentErrorForUser(onError.mock.calls[0][0])).toContain(
+            hookTermination.result.error
+          );
+        }
+        const next =
+          mode === 'run'
+            ? runner.run('next task', { channelId: 'hook-stopped' })
+            : runner.runStream('next task', {}, { channelId: 'hook-stopped' });
+        const nextProc = await waitForProcess(2);
+        const nextResult = {
+          status: 'SUCCESS',
+          response: 'next answer',
+          conversation_id: 'next-conversation',
+        };
+        nextProc.stdout.emit(
+          'data',
+          Buffer.from(
+            JSON.stringify(mode === 'run' ? nextResult : { event: 'result', result: nextResult }) +
+              '\n'
+          )
+        );
+        nextProc.emit('close', 0);
+        await expect(next).resolves.toMatchObject({ result: 'next answer' });
+      }
+    );
+
+    it.each(['run', 'stream'])(
+      'does not bypass a stop whose message resembles an artifact or unsupported flag error (%s)',
+      async (mode) => {
+        const runner = new AntigravityRunner({});
+        const promise =
+          mode === 'run'
+            ? runner.run('task', { sessionId: 'existing' })
+            : runner.runStream('task', {}, { sessionId: 'existing' });
+        const rejected = expect(promise).rejects.toMatchObject({ retryable: false });
+        const proc = await waitForProcess();
+        const result = {
+          ...hookTermination.result,
+          error:
+            'write_to_file: /workspace/a.md is not a valid artifact path; artifacts must be in /brain/existing/. flag provided but not defined: -output-format',
+        };
+        proc.stdout.emit(
+          'data',
+          Buffer.from(JSON.stringify(mode === 'run' ? result : { event: 'result', result }) + '\n')
+        );
+        proc.emit('close', 3);
+        await rejected;
+        expect(await getProcesses()).toHaveLength(1);
+      }
+    );
   });
 
   it.each([
