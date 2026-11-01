@@ -7,7 +7,7 @@ export interface PrefetchedHistoryEntry {
 }
 
 export function buildPrefetchedHistoryBlock(
-  platform: 'Discord' | 'Slack' | 'Web',
+  platform: 'Discord' | 'Slack' | 'Web' | 'LINE' | 'Telegram',
   entries: PrefetchedHistoryEntry[]
 ): string {
   const lines = entries.map((entry) => {

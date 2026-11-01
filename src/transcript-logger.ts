@@ -633,14 +633,22 @@ export function deleteMessage(workdir: string, appSessionId: string, messageId: 
   return true;
 }
 
-/**
- * 最後のユーザ/アシスタントメッセージに platformMessageId (Discord/Slack 等の
- * 外部 ID) を後付けで紐付ける。runner からは触らない・transcript の append
- * が終わった後にプラットフォーム側ハンドラから呼ぶ用途。
- *
- * @param role どちらのロールの最後のエントリに付けるか
- * @returns 紐付けに成功したエントリ。対象が無ければ null
- */
+/** Bind delayed delivery to its original entry even if a later turn has finished. */
+export function attachPlatformMessageId(
+  workdir: string,
+  appSessionId: string,
+  messageId: string,
+  platformMessageId: string
+): TranscriptEntry | null {
+  const entries = readSessionMessages(workdir, appSessionId);
+  const entry = entries.find((item) => item.id === messageId);
+  if (!entry) return null;
+  entry.platformMessageId = platformMessageId;
+  rewriteSessionFile(workdir, appSessionId, entries);
+  return entry;
+}
+
+/** Bind native synchronous delivery to the latest entry of the specified role. */
 export function attachPlatformMessageIdToLast(
   workdir: string,
   appSessionId: string,

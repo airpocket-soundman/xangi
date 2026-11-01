@@ -22,6 +22,7 @@ import {
   attachLatestAssistantAttachments,
   deleteMessage,
   attachPlatformMessageIdToLast,
+  attachPlatformMessageId,
   ensureVisibleAssistantResponse,
   findEntryByPlatformMessageId,
   initTranscriptStorage,
@@ -237,6 +238,16 @@ describe('transcript-logger edit/delete', () => {
     expect(tail).toHaveLength(50);
     expect(String(tail[0]?.content).startsWith('20:')).toBe(true);
     expect(String(tail.at(-1)?.content).startsWith('69:')).toBe(true);
+  });
+
+  it('binds delayed delivery to the captured entry instead of a later turn', () => {
+    logPrompt(workdir, sessionId, 'first');
+    const first = logResponse(workdir, sessionId, { result: 'first answer' });
+    logPrompt(workdir, sessionId, 'second');
+    logResponse(workdir, sessionId, { result: 'second answer' });
+    attachPlatformMessageId(workdir, sessionId, first.id!, 'delayed-post');
+    expect(findEntryByPlatformMessageId(workdir, sessionId, 'delayed-post')?.id).toBe(first.id);
+    expect(readSessionMessages(workdir, sessionId).at(-1)?.platformMessageId).toBeUndefined();
   });
 
   it('attachPlatformMessageIdToLast attaches Discord message id to last user entry', () => {

@@ -1,3 +1,4 @@
+import type { PlatformCompletionRefs } from './platform-completion.js';
 import { Client, GatewayIntentBits, Events, Partials, REST, Routes } from 'discord.js';
 import { loadConfig } from './config.js';
 import { getBackendDisplayName } from './agent-runner.js';
@@ -56,6 +57,7 @@ async function main() {
   config.agent.config.workdir = workdir;
   const slackRemoteInputRef: { current?: SlackRemoteInputBridge } = {};
   const discordRemoteInputRef: { current?: DiscordRemoteInputBridge } = {};
+  const completionBridgeRefs: PlatformCompletionRefs = { line: {}, telegram: {} };
   const discordTurnCoordinator = new DiscordTurnCoordinator();
   const destinationLabelResolverRef: {
     current?: (platform: Platform, destinationId: string) => string | undefined;
@@ -181,6 +183,7 @@ async function main() {
       skillsRef,
       discordRemoteInputRef,
       slackRemoteInputRef,
+      completionBridgeRefs,
       destinationLabelResolverRef,
       settingsChannelListers,
       externalChatUrlResolvers,
@@ -194,6 +197,7 @@ async function main() {
   if (config.telegram.enabled) {
     platformStartupTasks.push(
       startTelegramBot({
+        completionBridgeRef: completionBridgeRefs.telegram,
         config,
         agentRunner,
         resolver,
@@ -225,6 +229,7 @@ async function main() {
   if (config.line.enabled) {
     platformStartupTasks.push(
       startLineBot({
+        completionBridgeRef: completionBridgeRefs.line,
         codexTransport: config.line.codexTransport,
         agentRunner,
         resolver,

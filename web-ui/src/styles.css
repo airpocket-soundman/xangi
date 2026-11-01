@@ -1118,6 +1118,7 @@ button:disabled {
   display: flex;
   width: 0;
   align-items: center;
+  justify-content: flex-end;
   overflow: hidden;
   opacity: 0;
   transition:
@@ -7473,6 +7474,17 @@ video.media-preview {
   }
   .sidebar .session-row {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-content: start;
+  }
+  .sidebar .session-main {
+    padding-block: 4px;
+    min-height: 44px;
+    align-items: center;
+  }
+  .sidebar .session-copy {
+    gap: 2px;
+    line-height: 18px;
   }
   .sidebar .session-row .session-actions {
     width: auto;

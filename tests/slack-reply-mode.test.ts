@@ -1593,7 +1593,7 @@ describe('Slack Web continuation', () => {
     await vi.waitFor(() => expect(getSessionEntry(sessionId)?.title).toBe('AIのタイトル'));
   });
 
-  it('mirrors one input, executes once in the same session, and rejects simultaneous input', async () => {
+  it.each([false, true])('mirrors input with attachments=%s and rejects simultaneous input before upload', async (withAttachment) => {
     const { createSlackRemoteInputBridge } = await import('../src/slack.js');
     const key = 'C_WEB:123.456';
     const id = ensureSession(key, { platform: 'slack' });
@@ -1603,18 +1603,24 @@ describe('Slack Web continuation', () => {
     const started = new Promise<void>(resolve => { running = resolve; });
     const runStream = vi.fn().mockImplementation(async () => { running(); await hold; return { result: 'done', sessionId: 'provider-web' }; });
     const postMessage = vi.fn().mockResolvedValue({ ts: '789.123' });
-    const client = { chat: { postMessage, update: vi.fn().mockResolvedValue({}) }, conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'test' } }) } } as unknown as WebClient;
+    const filesUploadV2 = vi.fn().mockResolvedValue({});
+    const client = { filesUploadV2, chat: { postMessage, update: vi.fn().mockResolvedValue({}) }, conversations: { info: vi.fn().mockResolvedValue({ channel: { name: 'test' } }) } } as unknown as WebClient;
     const runner = { runStream, getTimeoutState: () => undefined } as unknown as AgentRunner;
     const config = { agent: { config: { workdir: tempDir } }, slack: { streaming: false, showThinking: false, replySuggestions: false } } as Config;
     const bridge = createSlackRemoteInputBridge(client, runner, config);
     await withoutMinimumDisplayDelay(async () => {
-      const first = bridge.continueSession({ appSessionId: id, message: 'hello' });
+      const first = bridge.continueSession({ appSessionId: id, message: 'hello', ...(withAttachment ? { attachments: ['/tmp/web-uploads/sample.txt'] } : {}) });
       await started;
       try {
-        await expect(bridge.continueSession({ appSessionId: id, message: 'duplicate' })).rejects.toThrow('処理中');
+        await expect(bridge.continueSession({ appSessionId: id, message: 'duplicate', ...(withAttachment ? { attachments: ['/tmp/web-uploads/sample.txt'] } : {}) })).rejects.toThrow('処理中');
       } finally { release(); }
       await first;
     });
+    expect(filesUploadV2).toHaveBeenCalledTimes(withAttachment ? 1 : 0);
+    if (withAttachment) {
+      expect(filesUploadV2).toHaveBeenCalledWith({ channel_id: 'C_WEB', thread_ts: '123.456', file_uploads: [{file: '/tmp/web-uploads/sample.txt'}] });
+      expect(runStream.mock.calls[0][0]).toContain('/tmp/web-uploads/sample.txt');
+    }
     expect(runStream).toHaveBeenCalledTimes(1);
     expect(getActiveSessionId(key)).toBe(id);
     expect(postMessage.mock.calls.filter(([p]) => p.text.startsWith('🌐 Webから:'))).toHaveLength(1);

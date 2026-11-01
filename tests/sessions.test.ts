@@ -191,6 +191,7 @@ describe('sessions', () => {
     it('preserves completed scheduler runs on init', () => {
       const runId = 'scheduler-run-discord-1783929000000-deadbeef';
       initSessions(testDir);
+      const interactive = createSession('channel-1', { platform: 'discord' });
       createSchedulerSession(runId, 'channel-1', {
         platform: 'discord',
         title: 'daily digest',
@@ -200,16 +201,19 @@ describe('sessions', () => {
         cachedInputTokens: 80,
         outputTokens: 30,
       });
-      closeSession(runId);
+      setProviderSessionId(runId, 'scheduled-provider');
+      closeSession(runId, 'scheduled');
 
       initSessions(testDir);
 
       expect(getSessionEntry(runId)).toMatchObject({
         scope: 'scheduler',
         lifecycle: 'closed',
+        closeReason: 'scheduled',
+        agent: expect.objectContaining({ providerSessionId: 'scheduled-provider' }),
         tokenUsage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 30 },
       });
-      expect(getActiveSessionId('channel-1')).toBeUndefined();
+      expect(getActiveSessionId('channel-1')).toBe(interactive);
     });
 
     it('should generate a new bootId on each init', () => {
