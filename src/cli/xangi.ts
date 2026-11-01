@@ -155,6 +155,7 @@ Usage:
   xangi service autostart <enable|disable> [--name NAME] [--dir DIR]
 
 Options:
+  --help, -h      Show help without running the requested action
   --version, -V   Print the installed release or checkout version
   --url URL       xangi Web Chat URL (default: ${DEFAULT_URL})
   --token TOKEN   API token. Env: XANGI_TOKEN or XANGI_EVEN_TERMINAL_TOKEN
@@ -523,6 +524,42 @@ async function chat(config: CliConfig, flags: Record<string, string | boolean>):
 }
 
 export async function run(argv = process.argv): Promise<void> {
+  // Help must take precedence over actions and environment initialization (which
+  // can create managed configuration files even before a command is dispatched).
+  const command = argv[2];
+  const helpRequested = argv.slice(3).some((arg) => arg === '--help' || arg === '-h');
+  if (!command || ['help', '--help', '-h'].includes(command) || helpRequested) {
+    switch (command) {
+      case 'tool':
+        console.log(await runToolCommand(argv.slice(3)));
+        break;
+      case 'agent':
+      case 'team':
+      case 'workspace':
+        console.log(await runToolCommand(['help', command]));
+        break;
+      case 'extension':
+        console.log(await extensionCmd('help', [], { help: true }));
+        break;
+      case 'service':
+        console.log(await serviceCmd('help', {}));
+        break;
+      case 'worker':
+        console.log(await workerCmd('help', {}));
+        break;
+      case 'update':
+        printUpdateHelp();
+        break;
+      case 'settings':
+        console.log(
+          'Usage: xangi settings\n\nOpen the settings GUI in your browser.\n\n  --help, -h  Show this help without opening the GUI'
+        );
+        break;
+      default:
+        printHelp();
+    }
+    return;
+  }
   // Service commands select their target before loading application settings.
   // Loading the caller's .env here can even redirect the PM2 supervisor or mode.
   if (argv[2] === 'service') {
@@ -536,10 +573,6 @@ export async function run(argv = process.argv): Promise<void> {
   loadEnvFiles();
   if (argv[2] === '--version' || argv[2] === '-V' || argv[2] === 'version') {
     printVersion();
-    return;
-  }
-  if (argv[2] === 'update' && argv.slice(3).some((arg) => arg === '--help' || arg === '-h')) {
-    printUpdateHelp();
     return;
   }
   if (argv[2] === 'agent' || argv[2] === 'team' || argv[2] === 'workspace') {

@@ -385,6 +385,8 @@ curl -fsSL https://github.com/karaage0703/xangi/releases/latest/download/install
 
 ## Terminal CLI（xangi）
 
+`xangi --help` / `xangi -h` と各コマンドの `--help` / `-h` は、実処理より先にヘルプを表示します。`xangi settings --help` はGUIを開かず、起動・更新・削除なども実行しません。`xangi tool --help` は `xangi tool help`、`xangi tool <operation> --help` は `xangi tool help <operation>` と同じです。tool・agent・team・workspaceの詳細ヘルプは、従来どおり接続先のtool serverが必要です。
+
 `xangi` は人間が端末から xangi Web セッションに接続するための薄いクライアントです。既存の Even Terminal 互換 API (`/api/sessions` / `/api/prompt` / `/api/messages` / `/api/status`) を使い、Claude Code / Codex CLI などのバックエンドを直接起動しません。実際の backend / model は xangi 本体の設定または `XANGI_EVEN_TERMINAL_BACKEND` 系の設定で決まります。
 
 `xangi` はセッション操作・サービス操作・AI向けtool操作をまとめた正規CLIです。AIエージェントや運用スクリプトは `xangi tool <operation>` を使います。従来の `xangi-cmd <operation>` も互換shimとして同じdispatcherへ中継しますが、新しい文書とスクリプトでは `xangi tool` を使ってください。
