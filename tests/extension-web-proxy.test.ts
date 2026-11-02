@@ -59,6 +59,7 @@ describe('extension service proxy', () => {
       headers: {
         origin,
         authorization: 'Bearer host-secret',
+        'x-xangi-actor': 'agent',
         cookie: 'host=secret; xangi_ext_6f6e65_session=one; xangi_ext_74776f_session=two',
         'content-type': 'application/octet-stream',
       },
@@ -68,6 +69,7 @@ describe('extension service proxy', () => {
     expect(seen.method).toBe('PATCH');
     expect(seen.url).toBe('/upload?name=test');
     expect(seen.headers.authorization).toBe('Bearer private-one');
+    expect(seen.headers['x-xangi-actor']).toBe('user');
     expect(seen.headers.cookie).toBe('session=one');
     expect(seen.headers.origin).toBe(base);
     expect(response.headers.get('set-cookie')).toBe(
@@ -154,6 +156,7 @@ describe('extension service proxy', () => {
     expect(seen.url).toBe('/socket?q=1');
     expect(seen.headers.cookie).toBe('session=one');
     expect(seen.headers.authorization).toBe('Bearer private-one');
+    expect(seen.headers['x-xangi-actor']).toBe('user');
     expect(seen.headers.origin).toBe(base);
     ws.close();
     await once(ws, 'close');

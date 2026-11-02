@@ -21,6 +21,7 @@ describe('extension_request', () => {
   it('injects authorization and URL-encodes query JSON', async () => {
     const baseUrl = await listen((request, response) => {
       expect(request.headers.authorization).toBe('Bearer secret');
+      expect(request.headers['x-xangi-actor']).toBe('agent');
       expect(request.url).toBe('/facts/similar?q=%E7%8C%AB+%26+AI&k=3');
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ ok: true }));

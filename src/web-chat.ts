@@ -2471,7 +2471,7 @@ ${delegatedTeam.prompt}`
           decodeURIComponent(extensionUiMatch[1])
         );
         const upstream = await fetch(`${target.baseUrl}${target.uiPath}`, {
-          headers: { Authorization: target.authorization },
+          headers: { Authorization: target.authorization, 'X-Xangi-Actor': 'user' },
           signal: AbortSignal.timeout(10_000),
         });
         const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
@@ -2493,7 +2493,7 @@ ${delegatedTeam.prompt}`
           'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff',
           'Content-Security-Policy':
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
+            "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
         });
         res.end(body);
       } catch (error) {

@@ -90,6 +90,7 @@ export async function executeExtensionRequest(
     method,
     headers: {
       Authorization: runtime.authorization,
+      'X-Xangi-Actor': 'agent',
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
     body,

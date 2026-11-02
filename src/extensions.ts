@@ -406,7 +406,8 @@ export async function loadExtensionManifest(
   const executable = resolve(root, manifest.entrypoint);
   if (relative(root, executable).startsWith('..'))
     throw new Error('extension entrypoint escapes root');
-  if (options.requireEntrypoint !== false) await access(executable, constants.X_OK);
+  if (options.requireEntrypoint !== false)
+    await access(executable, executable.endsWith('.mjs') ? constants.R_OK : constants.X_OK);
   return manifest;
 }
 
@@ -444,7 +445,9 @@ export async function readExtensionStore(
 ): Promise<ExtensionStore> {
   try {
     const info = await stat(configPath);
-    if ((info.mode & 0o077) !== 0) throw new Error('extensions config permissions must be 0600');
+    // Windows reports synthesized POSIX mode bits; access is controlled by ACLs.
+    if (platform() !== 'win32' && (info.mode & 0o077) !== 0)
+      throw new Error('extensions config permissions must be 0600');
     return parseStore(JSON.parse(await readFile(configPath, 'utf8')) as unknown);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
@@ -662,7 +665,11 @@ export async function runExtensionAction(
   const args: string[] = [action];
   if (options.workspace) args.push('--workspace', options.workspace);
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    const child = spawn(
+      executable.endsWith('.mjs') ? process.execPath : executable,
+      executable.endsWith('.mjs') ? [executable, ...args] : args,
+      { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }
+    );
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 15_000);
@@ -812,10 +819,14 @@ async function startManagedExtension(
   Object.assign(childEnv, managedExtensionHostContext(), {
     XANGI_EXTENSION_AUTH_TOKEN: token,
   });
-  const child = spawn(executable, ['serve', '--workspace', workspace], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: childEnv,
-  });
+  const child = spawn(
+    executable.endsWith('.mjs') ? process.execPath : executable,
+    [...(executable.endsWith('.mjs') ? [executable] : []), 'serve', '--workspace', workspace],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: childEnv,
+    }
+  );
   let ready: ManagedReadyMessage;
   let baseUrl: string;
   try {

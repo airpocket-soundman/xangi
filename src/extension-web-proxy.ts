@@ -26,6 +26,7 @@ function allowed(req: IncomingMessage, websocket = false): boolean {
 function headers(req: IncomingMessage, target: Target, id: string, websocket = false) {
   const result: Record<string, string> = {
     authorization: target.authorization,
+    'x-xangi-actor': 'user',
     // The extension checks its own origin. The browser origin is checked above.
     origin: new URL(target.baseUrl).origin,
   };
